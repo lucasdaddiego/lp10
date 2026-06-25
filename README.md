@@ -131,7 +131,7 @@ Press `?` for a full read-out of the device, connection, and link health:
 ┃                                                                          ┃
 ┃  diagnostics                                        ● connected · 16:40  ┃
 ┃                                                                          ┃
-┃  host     root@192.168.1.13         uptime   3h 25m                      ┃
+┃  host     root@192.0.2.13           uptime   3h 25m                      ┃
 ┃  device   Arylic AR241CE · LS8      os       Linux 5.15.137              ┃
 ┃  firmware AR241CE_9243.16           build    2025-12-24 · app 312        ┃
 ┃  mac      aa:bb:cc:dd:ee:ff         cores    2                           ┃
@@ -140,7 +140,7 @@ Press `?` for a full read-out of the device, connection, and link health:
 ┃  control   tunnel :2018 · live                                           ┃
 ┃  ────────────────────────────── network ───────────────────────────────  ┃
 ┃  link      ethernet · 100 Mbit/s · full duplex                           ┃
-┃  address   192.168.1.13 · gw 192.168.1.1                                 ┃
+┃  address   192.0.2.13 · gw 192.0.2.1                                     ┃
 ┃  traffic   rx 1.2 MB/s · tx 45 KB/s                                      ┃
 ┃  latency   you       11 ms ±6.6  max 31   ▁▂▁█▃▁▂▁▁▂▁█▃▁▂▁▁▂             ┃
 ┃            gw       6.6 ms ±1.1  max 12   ▁▁▂▁▁▁▂▁▁▁▁▁▂▁▁▁▁▂             ┃
