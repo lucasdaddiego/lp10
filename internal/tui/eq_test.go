@@ -41,12 +41,12 @@ func TestEQPaneFocusAdjustToggle(t *testing.T) {
 		t.Errorf("queued cmd=%+v want {EQS 1}", cmd)
 	}
 
-	// Max Vol (MXV) is the last display slot; up bumps it by its step (5): 40 -> 45.
+	// Max Vol (MXV) is the last display slot; right nudges its slider (+step=5): 40 -> 45.
 	m.eqFocus = len(eqOrder) - 1
 	if m.eqSpec().Code != "MXV" {
 		t.Fatalf("last display slot is %s, want MXV", m.eqSpec().Code)
 	}
-	m.key(ke(kUp))
+	m.key(ke(kRight))
 	if v, _ := st.EQValue("MXV"); v != 45 {
 		t.Errorf("MXV=%d want 45", v)
 	}
@@ -80,7 +80,7 @@ func TestEQClampsAtMin(t *testing.T) {
 	st.ApplyTunnel("MXV", 0)
 	m.key(kr('e'))
 	m.eqFocus = len(eqOrder) - 1 // Max Vol is the last display slot
-	m.key(ke(kDown))             // already 0 -> clamps
+	m.key(ke(kLeft))             // already 0 -> clamps
 	if v, _ := st.EQValue("MXV"); v != 0 {
 		t.Errorf("MXV=%d want 0 (clamped)", v)
 	}

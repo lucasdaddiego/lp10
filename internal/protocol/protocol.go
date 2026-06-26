@@ -6,6 +6,8 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
 	"io"
 	"iter"
 	"math"
@@ -116,6 +118,17 @@ type SysInfo struct {
 	RxBytes, TxBytes                 string // active-iface byte counters (cumulative)
 	SignalDBm, LinkQ                 string // Wi-Fi only ("" on ethernet)
 	PingClient, PingGw, PingNet      string // avg RTT ms: laptop / gateway / internet ("" unmeasured)
+	// Newer diag-gated extras (audio chain + contention); "" when the device loop
+	// or this hardware can't provide them (e.g. /proc/asound absent, fixed-clock CPU).
+	PcmState string // ALSA playback state: RUNNING / SETUP / "" (no stream)
+	BufAvail string // ALSA frames free in the ring buffer (status: avail)
+	DacRate  string // actual DAC clock, Hz (vs the source's claimed rate)
+	DacFmt   string // actual DAC sample format, e.g. S16_LE
+	DacCh    string // actual DAC channel count
+	BufSize  string // ALSA ring-buffer size, frames (hw_params: buffer_size)
+	CpuKHz   string // current CPU frequency, kHz
+	Procs    string // /proc/loadavg running/total, e.g. "2/118"
+	NoiseDBm string // Wi-Fi noise floor, dBm (SNR = SignalDBm − NoiseDBm)
 }
 
 // DevInfo holds the static device/network info from the one-shot @@i section
@@ -127,6 +140,7 @@ type DevInfo struct {
 	SSID, Freq, Rate     string // Wi-Fi link: network name, MHz, tx Mbit/s
 	Build, App, Platform string
 	DataUsed, DataTotal  string // /lsync (data partition), KB
+	DNS                  string // configured resolver (first nameserver); "" when absent
 }
 
 // PingStat is one latency target's rolling readout in milliseconds: the average,
@@ -369,7 +383,7 @@ func ApplyRecord(st *State, rec Record) {
 	pos, posOK := num("p")
 	play, playOK := num("t")
 	vol, volOK := num("v")
-	hadData := len(rec["B"]) > 0 || posOK || playOK || volOK
+	hadData := hasB || posOK || playOK || volOK
 
 	var sysinfo *SysInfo
 	if lines := rec["s"]; len(lines) > 0 {
@@ -394,6 +408,12 @@ func ApplyRecord(st *State, rec Record) {
 			si.RxBytes, si.TxBytes = opt(10), opt(11)
 			si.SignalDBm, si.LinkQ = opt(12), opt(13)
 			si.PingClient, si.PingGw, si.PingNet = opt(14), opt(15), opt(16)
+			// Even-newer diag extras appended at the end (audio chain, CPU clock,
+			// scheduler contention, Wi-Fi noise). Older loops stop short -> opt()="".
+			si.PcmState, si.BufAvail = opt(17), opt(18)
+			si.DacRate, si.DacFmt, si.DacCh = opt(19), opt(20), opt(21)
+			si.BufSize, si.CpuKHz = opt(22), opt(23)
+			si.Procs, si.NoiseDBm = opt(24), opt(25)
 			sysinfo = si
 		}
 	}
@@ -437,6 +457,8 @@ func ApplyRecord(st *State, rec Record) {
 				if ff := strings.Fields(v); len(ff) == 2 {
 					di.DataUsed, di.DataTotal = ff[0], ff[1]
 				}
+			case "dns":
+				di.DNS = v
 			}
 		}
 		devinfo = di
@@ -626,6 +648,14 @@ type State struct {
 	eqConnected bool
 	eqVals      map[string]int       // wire code -> last-known value
 	eqHold      map[string]time.Time // wire code -> echo-suppression deadline
+
+	// album art: the decoded cover and the CoverArtUrl it was loaded for, set
+	// by the art worker. Snap exposes the image only while artURL still matches
+	// the playing track, so a stale cover never lingers across a track change.
+	artURL   string
+	artImg   image.Image
+	artDom   color.RGBA // cover's representative hue (computed by the art worker)
+	artDomOK bool       // false for a greyscale cover (keep the theme default)
 }
 
 // NewState returns an initialized State, mirroring the Python constructor
@@ -653,6 +683,32 @@ type Snapshot struct {
 	ErrorAt   time.Time
 	Fatal     bool
 	Attempts  int
+
+	CoverURL string      // current track's cover art URL ("" if none)
+	Art      image.Image // decoded cover for CoverURL, or nil if not yet loaded
+	// Dominant is the cover's representative hue, precomputed by the art worker so
+	// the renderer never scans pixels; DominantOK is false for a greyscale cover or
+	// before the cover loads. Valid only while Art is non-nil.
+	Dominant   color.RGBA
+	DominantOK bool
+
+	// LastArt is the most-recently-decoded cover and the URL it came from,
+	// retained across idle so the idle screen can show a dimmed "ghost" of the
+	// last thing played. Unlike Art, it is not gated on the current track.
+	LastArt      image.Image
+	LastCoverURL string
+}
+
+// SetArt stores the decoded cover image for url (a track's CoverArtUrl) plus its
+// precomputed dominant hue (dom/domOK), computed by the art worker off the render
+// path. The art worker calls this; Snap only surfaces them while url is still the
+// playing track's cover.
+func (st *State) SetArt(url string, img image.Image, dom color.RGBA, domOK bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.artURL = url
+	st.artImg = img
+	st.artDom, st.artDomOK = dom, domOK
 }
 
 // Snap projects the current State, advancing the position clock while playing.
@@ -667,17 +723,31 @@ func (st *State) Snap() Snapshot {
 	if total := t.GetInt("TotalTime"); total > 0 && pos > total {
 		pos = total
 	}
+	cover := t.Str("CoverArtUrl")
+	var art image.Image
+	var dom color.RGBA
+	var domOK bool
+	if cover != "" && cover == st.artURL {
+		art = st.artImg
+		dom, domOK = st.artDom, st.artDomOK
+	}
 	return Snapshot{
-		Connected: st.connected,
-		Track:     t,
-		Pos:       pos,
-		Playing:   st.playing,
-		Vol:       st.vol,
-		Muted:     st.connected && st.vol == 0,
-		Error:     st.errMsg,
-		ErrorAt:   st.errAt,
-		Fatal:     st.fatal,
-		Attempts:  st.attempts - st.retryBase,
+		Connected:    st.connected,
+		Track:        t,
+		Pos:          pos,
+		Playing:      st.playing,
+		Vol:          st.vol,
+		Muted:        st.connected && st.vol == 0,
+		Error:        st.errMsg,
+		ErrorAt:      st.errAt,
+		Fatal:        st.fatal,
+		Attempts:     st.attempts - st.retryBase,
+		CoverURL:     cover,
+		Art:          art,
+		Dominant:     dom,
+		DominantOK:   domOK,
+		LastArt:      st.artImg,
+		LastCoverURL: st.artURL,
 	}
 }
 

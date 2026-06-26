@@ -12,9 +12,10 @@ import (
 	"golang.org/x/text/width"
 )
 
-// amb is the rendered width of ambiguous-width East Asian glyphs: 2 on
-// CJK-configured terminals (where they render double-width), 1 otherwise. Glyph
-// choice follows the same locale.
+// amb is 2 under a CJK locale, 1 otherwise. It no longer affects width
+// measurement (charW fixes ambiguous glyphs at 1 to match lipgloss); it only
+// selects the glyph set — under amb==2, GL falls back to ASCII glyphs so a
+// terminal that *does* render ambiguous double-width still stays aligned.
 var amb = detectAmb()
 
 // GL is the glyph set, with ASCII fallbacks when amb == 2 (so every positioned
@@ -22,7 +23,11 @@ var amb = detectAmb()
 var GL = glyphs(amb)
 
 func detectAmb() int {
+	// POSIX precedence for character handling: LC_ALL > LC_CTYPE > LANG.
 	loc := os.Getenv("LC_ALL")
+	if loc == "" {
+		loc = os.Getenv("LC_CTYPE")
+	}
 	if loc == "" {
 		loc = os.Getenv("LANG")
 	}
@@ -63,14 +68,19 @@ func FmtMs(ms int) string {
 	return fmt.Sprintf("%02d:%02d", s/60, s%60)
 }
 
-// charW is the rendered width of one rune, mirroring unicodedata.east_asian_width:
-// W/F -> 2, A -> amb, everything else -> 1.
+// charW is the rendered width of one rune: W/F -> 2, everything else -> 1.
+//
+// East Asian *Ambiguous* glyphs (●, ·, the box/block/meter glyphs lp10 draws)
+// are width 1 here regardless of locale. lipgloss — which does the actual
+// rendering and padding — always measures them as 1, and so does a modern
+// terminal (Ghostty); counting them as 2 under a CJK locale made DispW disagree
+// with lipgloss and tore the layout by a column. Glyph *selection* still adapts
+// to a CJK locale via `amb` / the GL ASCII fallbacks (defensive for terminals
+// configured to render ambiguous double-width); only measurement is fixed at 1.
 func charW(r rune) int {
 	switch width.LookupRune(r).Kind() {
 	case width.EastAsianWide, width.EastAsianFullwidth:
 		return 2
-	case width.EastAsianAmbiguous:
-		return amb
 	default:
 		return 1
 	}

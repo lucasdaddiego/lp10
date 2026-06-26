@@ -9,30 +9,34 @@
 
 ```
 $ lp10
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃                                                                            ┃
-┃  ♪ LP10 · Living  ● connected · 16:57                               Vol    ┃
-┃                                                                            ┃
-┃  ████████████  De Música Ligera                                      █     ┃
-┃  ████████████  Soda Stereo · Canción Animal                          █     ┃
-┃  ████████████  Spotify · audio/ogg · 44.1 kHz                        █     ┃
-┃  ████████████                                                        █     ┃
-┃  ████████████  ▶ 00:30 ━━━━●───────────────────────────── -03:01     █     ┃
-┃  ████████████         ◀◀            ⏸ pause            ▶▶           92%    ┃
-┃                                                                            ┃
-┃  ────────────────────────────── equalizer ───────────────────────────────  ┃
-┃                                                                            ┃
-┃      EQ      Treble     Mid      Bass    ┃    Sub      Lvl    ┃  Max Vol   ┃
-┃                                          ┃                    ┃            ┃
-┃      ●         ░         ░         ░     ┃     ●        ░     ┃     █      ┃
-┃      ┃         ░         ░         ░     ┃     ┃        ░     ┃     █      ┃
-┃      ┃         █         █         █     ┃     ┃        ░     ┃     █      ┃
-┃      ┃         █         █         █     ┃     ┃        ░     ┃     █      ┃
-┃      ┃         █         █         █     ┃     ┃        █     ┃     █      ┃
-┃      on        +3        0        +3     ┃    on       10     ┃    100     ┃
-┃                                          ┃                    ┃            ┃
-┃                 space play · ↑↓ vol · m mute · e/tab EQ · ? diag · q quit  ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                              ┃
+┃  ♪ LP10 · Living  ● 15:42           Spotify · audio/ogg · 44.1 kHz    Vol    ┃
+┃                                                                              ┃
+┃  ╭────────────────────────╮                                            ░     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│  De Música Ligera                          █     ┃
+┃  │████████████████████████│  Soda Stereo · Canción Animal              █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│  ▶ Playing 00:30 ━●──────────── -03:01     █     ┃
+┃  │████████████████████████│       ◀◀         pause         ▶▶          █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  │████████████████████████│                                            █     ┃
+┃  ╰────────────────────────╯                                           92%    ┃
+┃  ─────────────────────────────── equalizer ────────────────────────────────  ┃
+┃  EQ      ● on                                                                ┃
+┃  Treble  ────────────────────────────────────────●─────────────────────  +3  ┃
+┃  Mid     ────────────────────────●─────────────────────────────────────  -2  ┃
+┃  Bass    ────────────────────────────────────────●─────────────────────  +3  ┃
+┃  Sub     ● on                                                                ┃
+┃  Lvl     ─────────────────────────────────────●────────────────────────  60  ┃
+┃  Max Vol ─────────────────────────────────────────────────────────────● 100  ┃
+┃          space play · ↑↓ vol · m mute · y copy · e/tab EQ · ? diag · q quit  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
@@ -42,20 +46,32 @@ app, no browser, no background daemon: run `lp10`, get one screen.
 
 ## Features
 
-- **Live now-playing** — title, artist · album, source / quality, an animated
-  album motif, a seek bar, and segmented transport buttons.
+- **Live now-playing** — title, artist · album, source / quality, a seek bar,
+  and segmented transport buttons. The art panel shows the **real album cover**
+  — true pixels via the Kitty graphics protocol on Ghostty / kitty, a 24-bit
+  half-block raster on any other truecolor terminal, falling back to an animated
+  plasma motif for radio / idle / lesser terminals. The title and artist are
+  clickable (OSC 8) and link to Spotify.
 - **Graphic equalizer** — the EQ switch and treble / mid / bass tone, a deep-bass
   switch and level, and the output cap (Max Volume) — driven over the device's
   own control channel. Paints instantly from a cached snapshot on launch.
-- **Diagnostics overlay** (`?`) — device and firmware, the active network link
-  (Wi-Fi or ethernet, with live throughput and round-trip latency — jitter, peak,
-  and a rolling sparkline — to your laptop, the gateway, and the internet), audio,
-  and resource gauges (cpu · memory · temp · storage), gathered on the device
-  **only while the overlay is open**.
+- **Diagnostics overlay** (`?`) — a two-column card grid on a wide terminal (a
+  stacked read-out when narrow): device & firmware; the active network link (Wi-Fi
+  or ethernet, with live throughput, Wi-Fi **SNR**, and round-trip latency — jitter,
+  peak, and a rolling sparkline — to your laptop, the gateway, and the internet);
+  the **audio chain** (ALSA playback state, the **buffer fill**, and the DAC's
+  *actual* rate/format/channels vs the source — catching resampling); and resource
+  gauges (cpu + clock · memory · temp · process contention · data). Gathered on the
+  device **only while the overlay is open**; any metric the hardware can't provide
+  degrades to "—".
 - **Finds the device itself** — mDNS auto-discovery at startup locates the LP10 on
   the LAN by its `am=LP10` advertisement, so a changed DHCP lease never needs a
   config edit. Pure mDNS (no dependency, no bound port); falls back to the
   configured host.
+- **Mouse, too** — click the transport buttons, click or drag the volume rail,
+  scroll to nudge the volume (or the EQ band under the cursor), and click an EQ
+  band to grab and set it. Keyboard-first; the mouse is a convenience on top, and
+  can be turned off (`mouse = false`) to keep native terminal text selection.
 - **Adapts to the terminal** — the full dashboard, a compact frame, or a
   one-line mini view, by size.
 - **Light on both ends** — one ssh connection, a single static binary, and an
@@ -72,9 +88,8 @@ on macOS). Nothing else at runtime.
 #    or `ps` output.
 security add-generic-password -U -a root -s lp10 -w
 
-# 2. Build and install.
-go build -o lp10 .
-ln -sf "$PWD/lp10" ~/.bin/lp10        # or anywhere on your PATH
+# 2. Build a stripped release binary into ~/.bin (make sure it's on your PATH).
+make install
 
 # 3. Run — no arguments, just one screen.
 lp10
@@ -91,13 +106,14 @@ the arrow keys.
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
 | `+` / `-` | volume ± step |
-| `↑` / `↓` | player: volume ± step · equalizer: adjust the focused band |
-| `←` / `→` | player: move button focus · equalizer: pick a band |
+| `↑` / `↓` | player: volume ± step · equalizer: pick a band |
+| `←` / `→` | player: move button focus · equalizer: adjust the focused band |
 | `enter` | player: press the focused button · equalizer: toggle an on/off band |
 | `tab` | switch pane (player ↔ equalizer) |
 | `e` | jump focus to the equalizer |
 | `m` | mute (volume 0 ↔ restored level, persisted) |
 | `t` | right-hand time: remaining ↔ total |
+| `y` | copy now-playing (`Title — Artist · Album`) to the clipboard |
 | `?` | diagnostics overlay (see below) |
 | `q` | quit |
 
@@ -106,12 +122,29 @@ album-motif art, a vertical volume slider, and the graphic equalizer) at ≥ 25
 rows / 70 cols, a **compact** frame (no art, inline volume, one-line EQ summary)
 below that, and a one-line **mini** view below 9 rows / 58 cols.
 
+### Mouse
+
+On by default (disable with `mouse = false`). The gestures track what you see:
+
+- **Transport** — click prev / play-pause / next (and, in the compact frame, the
+  mute button).
+- **Volume** — click or drag the vertical rail to set the level; the wheel nudges
+  it by `vol_step` from anywhere not over a control.
+- **Equalizer** (full dashboard) — click a slider row to focus it; the wheel over a
+  row nudges that band; click an on/off band to flip it, or click/drag along a tone
+  band's track to set it by position.
+
+Capturing the mouse means the terminal's own click-to-select is suppressed while
+lp10 runs; set `mouse = false` if you'd rather keep native selection. There's no
+seek/scrub — the device exposes no seek command.
+
 ## Equalizer
 
 The equalizer pane (focus it with `e` or `tab`) drives the device's tone and
-output as a graphic EQ, in three groups — the **EQ** switch and **Treble / Mid /
-Bass** tone │ the deep-bass **Sub** switch and its **Lvl** │ **Max Vol**, the
-output cap, kept last as it's rarely touched.
+output as a stack of horizontal sliders — the **EQ** switch, the **Treble / Mid /
+Bass** tone, the deep-bass **Sub** switch and its **Lvl**, and **Max Vol**, the
+output cap, kept last as it's rarely touched. `↑` / `↓` pick a row; `←` / `→`
+adjust it; `enter` flips an on/off band.
 
 These ride a separate plain-text control connection to the device on TCP
 **2018** (the same channel the vendor app uses), independent of the SSH player
@@ -211,7 +244,7 @@ password auth.
 
 ## Configuration (optional)
 
-`~/.config/lp10/config.toml` — defaults shown:
+`~/.config/lp10/config.toml` (or `$XDG_CONFIG_HOME/lp10/config.toml`) — defaults shown:
 
 ```toml
 host      = "lp10.local"    # fallback IP / mDNS name when discovery is off or finds nothing
@@ -220,7 +253,30 @@ name      = "LP10 · Living" # header label; its tail also disambiguates discove
 vol_step  = 2               # volume change per keypress (1–100)
 ping_host = "spotify.com"   # diagnostics: the device's internet-latency target
 discover  = true            # find the LP10 on the LAN via mDNS at startup
+art       = true            # show the real album cover (off => the plasma motif)
+art_mode  = "auto"          # auto | kitty | halfblock | off  (see below)
+mouse     = true            # click / drag / scroll controls (off keeps native selection)
 ```
+
+### Album art
+
+The art panel renders the track's `CoverArtUrl`, fetched once and cached under
+`~/.local/state/lp10/art/` (so a re-seen cover needs no network and the last
+cover paints instantly on the next launch). `art_mode` picks the renderer:
+
+- `auto` *(default)* — **Kitty** true-pixel graphics on a terminal that
+  advertises support (Ghostty, kitty), a **half-block** raster on any other
+  truecolor terminal, the **plasma motif** otherwise.
+- `kitty` — force the Kitty path even when it isn't auto-detected (e.g. WezTerm /
+  Konsole, or kitty/Ghostty inside tmux where detection backs off). It only falls
+  back if the image can't be encoded; on a terminal that genuinely can't
+  composite, use `halfblock`.
+- `halfblock` — always the 24-bit half-block raster (no graphics protocol).
+- `off` — never fetch, cache, or draw art; keep the plasma motif.
+
+> The Kitty path uses Unicode-placeholder graphics so it composes with the
+> diff renderer. If your terminal claims Kitty support but the cover renders
+> wrong, set `art_mode = "halfblock"`.
 
 ### Discovery
 
@@ -242,8 +298,8 @@ level and the now-playing/EQ snapshot used for instant first paint) lives under
 ## Development
 
 ```sh
-go test ./...        # the full suite, fully off-device
-go vet ./...
+make test    # go vet + the full suite, fully off-device
+make run     # launch the live TUI
 ```
 
 The suite never touches a real device: `LP10_SSH` swaps in a fake ssh transport
@@ -260,8 +316,10 @@ main.go                 entry: askpass hot path, signals, run + teardown
 internal/config/        config file, paths, premute/snapshot persistence
 internal/protocol/      LUCI wire framing, MB42 parse, command reduction, State
 internal/transport/     Keychain/askpass auth, ssh argv, the on-device loop
-internal/workers/       stream / command / watchdog goroutines + teardown
+internal/discovery/     one-shot mDNS query to find the LP10 on the LAN
+internal/workers/       stream / command / watchdog / EQ-tunnel / album-art goroutines + teardown
 internal/tunnel/        the :2018 plain-text EQ/control protocol
+internal/artwork/       album-cover fetch/cache + half-block & Kitty rasterizers
 internal/tui/           Bubble Tea model, rendering, input dispatch, helpers
 internal/fixtures/      embedded wire-record fixtures (shared by tests + fake)
 cmd/fakessh/            fake ssh transport for tests (substituted via LP10_SSH)
@@ -271,7 +329,7 @@ internal/e2e/           end-to-end tests (argv contract, pty smoke)
 
 ## Dependencies
 
-- [`bubbletea`](https://github.com/charmbracelet/bubbletea) / [`lipgloss`](https://github.com/charmbracelet/lipgloss) — terminal UI
+- [`bubbletea`](https://github.com/charmbracelet/bubbletea) / [`lipgloss`](https://github.com/charmbracelet/lipgloss) / [`termenv`](https://github.com/muesli/termenv) — terminal UI
 - [`BurntSushi/toml`](https://github.com/BurntSushi/toml) — config
 - [`mattn/go-runewidth`](https://github.com/mattn/go-runewidth) / [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — display width
 - [`creack/pty`](https://github.com/creack/pty) — pty smoke test only

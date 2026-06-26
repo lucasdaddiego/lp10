@@ -43,7 +43,12 @@ const (
 	defName     = "LP10 · Living"
 	defVolStep  = 2
 	defPingHost = "spotify.com" // diagnostics: the device's internet-latency target
+	defArtMode  = "auto"        // art rendering: auto|kitty|halfblock|off
 )
+
+// artModes is the set of accepted art_mode values; anything else in the config
+// is ignored (keeps the default) rather than silently mis-coerced.
+var artModes = map[string]bool{"auto": true, "kitty": true, "halfblock": true, "off": true}
 
 // HostEnv pins the device host for a single run, overriding config and skipping
 // mDNS discovery.
@@ -59,6 +64,9 @@ type Config struct {
 	PingHost   string // diagnostics overlay: device's internet-ping target
 	Discover   bool   // attempt mDNS auto-discovery at startup (config input)
 	Discovered bool   // set at runtime when discovery resolved the host
+	Art        bool   // render real album art (from the track's CoverArtUrl)
+	ArtMode    string // auto|kitty|halfblock|off — how album art is drawn
+	Mouse      bool   // capture the mouse for click/drag/scroll controls
 	Warn       string
 }
 
@@ -66,7 +74,7 @@ type Config struct {
 // same strict per-field typing as the Python version, clamps vol_step, and lets
 // LP10_HOST override the host for a single run.
 func Load() Config {
-	cfg := Config{Host: defHost, User: defUser, Name: defName, VolStep: defVolStep, PingHost: defPingHost, Discover: true}
+	cfg := Config{Host: defHost, User: defUser, Name: defName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Mouse: true}
 
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -125,6 +133,15 @@ func applyTOML(cfg *Config, data map[string]interface{}) {
 	if v, ok := data["discover"].(bool); ok {
 		cfg.Discover = v
 	}
+	if v, ok := data["art"].(bool); ok {
+		cfg.Art = v
+	}
+	if v, ok := data["art_mode"].(string); ok && artModes[v] {
+		cfg.ArtMode = v
+	}
+	if v, ok := data["mouse"].(bool); ok {
+		cfg.Mouse = v
+	}
 	switch v := data["vol_step"].(type) {
 	case int64:
 		cfg.VolStep = int(v)
@@ -172,6 +189,20 @@ func PremutePath(cfg Config) string {
 func SnapshotPath(cfg Config) string {
 	if d := StateDir(); d != "" {
 		return filepath.Join(d, "snapshot-"+slug(cfg.Host)+".json")
+	}
+	return ""
+}
+
+// ArtCacheDir is the album-art cache directory (state dir /art), created on
+// demand, or "" when there's no usable state dir (art then works network-only).
+// It is shared across hosts: covers are keyed by URL, which is already unique.
+func ArtCacheDir() string {
+	if d := StateDir(); d != "" {
+		p := filepath.Join(d, "art")
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			return ""
+		}
+		return p
 	}
 	return ""
 }

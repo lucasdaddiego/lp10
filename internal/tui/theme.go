@@ -2,11 +2,15 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"math"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/lucasdaddiego/lp10go/internal/artwork"
 )
 
 // theme holds the lipgloss styles and rendering primitives for the UI, built
@@ -26,7 +30,13 @@ type theme struct {
 	track lipgloss.Style   // empty meter/bar cell
 	head  lipgloss.Style   // meter position head
 
-	gaugeEmpty string // diag-gauge empty cell: "█" (color-distinguished) or "░" on a no-color terminal
+	warm []lipgloss.Style // EQ boost ramp (tone > 0): amber -> gold
+	cool []lipgloss.Style // EQ cut ramp (tone < 0): indigo -> sky
+
+	muteTrack lipgloss.Style // the volume rail when muted: a dim red hollow column
+
+	trueColor     bool // terminal advertises 24-bit color (gates the half-block album art)
+	kittyGraphics bool // terminal supports the Kitty graphics protocol (true-pixel album art)
 
 	btnOn  lipgloss.Style // focused button
 	btnOff lipgloss.Style // unfocused button
@@ -45,20 +55,93 @@ func newTheme() *theme {
 	for _, h := range []string{"#157a63", "#1d9e75", "#2bbf94", "#34d9ad", "#5fe0bf"} {
 		t.fill = append(t.fill, fg(h))
 	}
-	t.track = fg("#262b34")
+	t.track = fg("#3a4150") // empty meter/rail cells: a visible grey, not near-black
 	t.head = fg("#8af0d4")
-	// The diag gauges encode fill with colour on a single "█" glyph. On a
-	// no-colour terminal that's indistinguishable, so fall back to a shaded
-	// glyph (same display width) for the empty cells.
-	t.gaugeEmpty = "█"
-	if termenv.EnvColorProfile() == termenv.Ascii {
-		t.gaugeEmpty = "░"
+	// Tone ramps for the graphic-EQ slider knob: a boosted band reads warm, a cut
+	// band reads cool — so the sign of a tone control is legible at a glance.
+	for _, h := range []string{"#6e4a12", "#9c6a1d", "#c98a2b", "#e6a83e", "#ffc861"} {
+		t.warm = append(t.warm, fg(h))
 	}
+	for _, h := range []string{"#26408a", "#2f57b0", "#3f74d6", "#5f95ee", "#86b6ff"} {
+		t.cool = append(t.cool, fg(h))
+	}
+	t.muteTrack = fg("#6e3a3a")
+	t.trueColor = termenv.EnvColorProfile() == termenv.TrueColor
+	t.kittyGraphics = detectKittyGraphics()
 	t.btnOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true).Padding(0, 1)
 	t.btnOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#6b7480")).Padding(0, 1)
 	t.segOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true)
 	t.segOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#aab3c0")).Background(lipgloss.Color("#1c222c"))
 	return t
+}
+
+// detectKittyGraphics reports whether the terminal is known to support the Kitty
+// graphics protocol with Unicode placeholders. There's no in-band capability
+// query before Bubble Tea seizes the terminal, so this goes by environment
+// fingerprint: Ghostty and kitty both implement it; everything else falls back
+// to the half-block raster. A false negative just means half-blocks (still real
+// art); kitty/auto can be forced via the art_mode config.
+func detectKittyGraphics() bool {
+	// A multiplexer inherits the host terminal's env (KITTY_WINDOW_ID, GHOSTTY_*)
+	// but doesn't pass the graphics protocol through, so don't trust those vars
+	// under tmux/screen — the half-block raster renders correctly there.
+	if os.Getenv("TMUX") != "" {
+		return false
+	}
+	if t := os.Getenv("TERM"); strings.HasPrefix(t, "screen") || strings.HasPrefix(t, "tmux") {
+		return false
+	}
+	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("GHOSTTY_RESOURCES_DIR") != "" || os.Getenv("GHOSTTY_BIN_DIR") != "" {
+		return true
+	}
+	switch strings.ToLower(os.Getenv("TERM_PROGRAM")) {
+	case "ghostty", "kitty":
+		return true
+	}
+	term := strings.ToLower(os.Getenv("TERM"))
+	return strings.Contains(term, "kitty") || strings.Contains(term, "ghostty")
+}
+
+// ambientTint is a per-album recolouring derived from the cover's dominant hue:
+// a fill gradient + head for the seek bar, plus a dim pen for the cover frame.
+// nil means "use the theme defaults" (no cover, a greyscale cover, or art
+// disabled). The connected status dot deliberately stays the theme green — it's a
+// status light, so it must not drift to an album hue that reads as a warning.
+type ambientTint struct {
+	fill  []lipgloss.Style
+	head  lipgloss.Style
+	frame lipgloss.Style
+}
+
+// tint derives an ambientTint from a cover's representative colour c. Only the
+// hue (and a clamped saturation) ride along from c; lightness is swept across a
+// fixed dark→bright ramp, so the seek bar keeps the same readable contrast as the
+// default teal — just in the album's colour. Saturation is floored so even a
+// muted cover still reads as tinted, and ceilinged so a neon cover never glares.
+func (t *theme) tint(c color.RGBA) *ambientTint {
+	h, s, _ := artwork.RGBToHSL(c.R, c.G, c.B)
+	s = clampRange(s, 0.35, 0.85)
+	pen := func(h, s, l float64) lipgloss.Style {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(hslHex(h, s, l)))
+	}
+	at := &ambientTint{
+		head:  pen(h, math.Min(s+0.1, 1), 0.78),
+		frame: pen(h, s*0.55, 0.44),
+	}
+	for _, l := range []float64{0.26, 0.34, 0.44, 0.55, 0.68} {
+		at.fill = append(at.fill, pen(h, s, l))
+	}
+	return at
+}
+
+func clampRange(v, lo, hi float64) float64 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (t *theme) rampAt(styles []lipgloss.Style, pos, span int) lipgloss.Style {
@@ -112,6 +195,89 @@ func (t *theme) motifBlock(w, h, frame int) []string {
 	return lines
 }
 
+// sonar renders a w×h animated radar sweep: a beam rotates from a bright central
+// hub, brightening toward the rim and dragging a fading comet-wedge behind it,
+// over a faint static rim ring (the "scope" boundary). Advanced by frame, in the
+// app's teal. Shown in the idle cover slot while (re)connecting, so the box reads
+// as "scanning for the device". Cells are ~2:1, so the vertical delta is doubled
+// to keep the sweep circular. Intensity is carried by colour brightness on dot
+// glyphs (no block-shade fill), so it reads as a clean glow rather than a raster.
+// Each line is exactly w display columns.
+func (t *theme) sonar(w, h, frame int) []string {
+	if w <= 0 || h <= 0 {
+		return nil
+	}
+	cx, cy := float64(w-1)/2, float64(h-1)/2
+	fitR := math.Min(cx, cy*2) // the largest scope circle that fits the box (cells are ~2:1)
+	if fitR < 1 {
+		fitR = 1
+	}
+	theta := float64(frame) * 0.13 // beam angle (radians); ~1 turn / 3.5s at the sonar fps
+	bx, by := math.Cos(theta), math.Sin(theta)
+	const (
+		beamHW = 2.0  // beam half-width (doubled-y units): a thin line, not a wedge
+		trail  = 1.6  // angular length of the fading comet-tail behind the beam (radians)
+		floor  = 0.12 // below this a cell is black — crisp gaps, no grain
+		hubR   = 0.13 // fraction of fitR for the bright central hub
+		ringR  = 0.95 // fraction of fitR for the faint static scope ring
+	)
+	lines := make([]string, h)
+	for y := 0; y < h; y++ {
+		var b strings.Builder
+		for x := 0; x < w; x++ {
+			dx := float64(x) - cx
+			dy := (float64(y) - cy) * 2 // double dy so the scope is circular on ~2:1 cells
+			rr := math.Hypot(dx, dy)
+			r := rr / fitR // 0..1 inside the scope, >1 in the corners (left black)
+			inten := 0.0
+			if r <= 1 && rr > 0 {
+				// the beam: a thin radial line at angle theta, by perpendicular distance
+				// (so it stays one clean stroke at every radius, never a filled wedge).
+				if along := dx*bx + dy*by; along > 0 {
+					perp := -dx*by + dy*bx
+					if line := 1 - math.Abs(perp)/beamHW; line > 0 {
+						inten = line * (0.40 + 0.60*r) // a reaching stroke, brightest at the rim
+					}
+				}
+				// a faint comet-tail: an afterglow arc hugging the rim just behind the beam
+				// (gated to the outer radius so it trails as an arc, not a pie slice).
+				d := math.Mod(theta-math.Atan2(dy, dx), 2*math.Pi)
+				if d < 0 {
+					d += 2 * math.Pi
+				}
+				if d < trail && r > 0.6 {
+					tail := (1 - d/trail) * (r - 0.6) / 0.4 * 0.45
+					if tail > inten {
+						inten = tail
+					}
+				}
+			}
+			// faint static scope ring at the boundary
+			if ring := 0.22 * (1 - math.Abs(r-ringR)/0.05); ring > inten {
+				inten = ring
+			}
+			// bright central hub
+			if r < hubR {
+				if hub := 1 - r/hubR; hub > inten {
+					inten = hub
+				}
+			}
+			if inten < floor {
+				b.WriteByte(' ')
+				continue
+			}
+			glyph := "·"
+			if inten > 0.6 {
+				glyph = "●" // a solid core for the beam head and the hub
+			}
+			b.WriteString(lipgloss.NewStyle().
+				Foreground(lipgloss.Color(hslHex(168, 0.40+0.30*inten, 0.20+0.55*inten))).Render(glyph))
+		}
+		lines[y] = b.String()
+	}
+	return lines
+}
+
 // hslHex converts HSL (h in degrees, s and l in 0..1) to a "#rrggbb" string.
 func hslHex(h, s, l float64) string {
 	c := (1 - math.Abs(2*l-1)) * s
@@ -152,20 +318,29 @@ func to8(v float64) int {
 }
 
 // lineMeter renders a horizontal meter cells wide: a gradient filled run, a
-// bright head, then a dim track — used for the seek and volume bars.
+// bright head, then a dim track — used for the seek and volume bars. The fill
+// ramps over the *played* length (not the whole bar), so it darkens at the start
+// and brightens up to the playhead regardless of progress.
 func (t *theme) lineMeter(frac float64, cells int) string {
+	return t.lineMeterPen(frac, cells, t.fill, t.head)
+}
+
+// lineMeterPen is lineMeter with an explicit fill gradient and head colour, so
+// the seek bar can be recoloured to the album's ambient hue while the volume
+// meter keeps the default teal.
+func (t *theme) lineMeterPen(frac float64, cells int, fill []lipgloss.Style, head lipgloss.Style) string {
 	if cells <= 0 {
 		return ""
 	}
 	frac = clampF(frac)
-	head := int(math.Round(frac * float64(cells)))
+	h := int(math.Round(frac * float64(cells)))
 	var b strings.Builder
 	for i := 0; i < cells; i++ {
 		switch {
-		case i == head-1 || (head == 0 && i == 0):
-			b.WriteString(t.head.Render("●"))
-		case i < head-1:
-			b.WriteString(t.rampAt(t.fill, i, cells).Render("━"))
+		case i == h-1 || (h == 0 && i == 0):
+			b.WriteString(head.Render("●"))
+		case i < h-1:
+			b.WriteString(t.rampAt(fill, i, h).Render("━"))
 		default:
 			b.WriteString(t.track.Render("─"))
 		}
@@ -173,20 +348,21 @@ func (t *theme) lineMeter(frac float64, cells int) string {
 	return b.String()
 }
 
-// gaugeBar renders a horizontal meter cells wide in fillPen on a dim track — the
-// diagnostics gauges. Filled and empty cells use the SAME "█" glyph (only the
-// colour differs), so the bar is one uniform-width two-tone bar rather than a
-// solid fill against a dotted track that reads wider/busier. The caller picks the
-// fill colour for health.
+// gaugeBar renders a horizontal LINE meter cells wide — a heavy rule (GL["fill"]
+// "━") in the health colour over a light rule (GL["track"] "─") in dim grey, like
+// the seek bar and EQ sliders. A thin centred line (rather than a full-height
+// block) keeps vertically-stacked gauges from merging into one solid region, and
+// the heavy/light weight difference still distinguishes fill from track on a
+// no-colour terminal. The caller picks the fill colour for health.
 func (t *theme) gaugeBar(frac float64, cells int, fillPen lipgloss.Style) string {
 	frac = clampF(frac)
 	n := int(math.Round(frac * float64(cells)))
 	var b strings.Builder
 	for i := 0; i < cells; i++ {
 		if i < n {
-			b.WriteString(fillPen.Render("█"))
+			b.WriteString(fillPen.Render(GL["fill"]))
 		} else {
-			b.WriteString(t.track.Render(t.gaugeEmpty))
+			b.WriteString(t.track.Render(GL["track"]))
 		}
 	}
 	return b.String()
@@ -203,7 +379,7 @@ func (t *theme) vbar(frac float64, h int) []string {
 		if fromBottom < filled {
 			lines[row] = t.rampAt(t.fill, fromBottom, h).Render("█")
 		} else {
-			lines[row] = t.track.Render("░")
+			lines[row] = t.track.Render("▓") // a visible grey channel, not a faint ░
 		}
 	}
 	return lines

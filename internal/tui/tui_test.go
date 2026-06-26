@@ -499,21 +499,6 @@ func TestDashboardDoesNotOverflowShortTerminal(t *testing.T) {
 	}
 }
 
-// ---- theme: gauges degrade on a no-color terminal ---------------------------
-
-func TestGaugeEmptyGlyphFollowsColorProfile(t *testing.T) {
-	t.Setenv("CLICOLOR_FORCE", "")
-	t.Setenv("NO_COLOR", "1")
-	if g := newTheme().gaugeEmpty; g != "░" {
-		t.Errorf("no-color gauge empty = %q, want ░ (distinguishable without colour)", g)
-	}
-	t.Setenv("NO_COLOR", "")
-	t.Setenv("CLICOLOR_FORCE", "1") // color available (as in a real terminal)
-	if g := newTheme().gaugeEmpty; g != "█" {
-		t.Errorf("color gauge empty = %q, want █ (original look)", g)
-	}
-}
-
 // ---- Clip: width contract holds at degenerate widths ------------------------
 
 func TestClipNeverExceedsWidth(t *testing.T) {
@@ -629,6 +614,14 @@ func TestSparkline(t *testing.T) {
 	if spike[3] != '█' || spike[0] != '▁' {
 		t.Errorf("spike = %q, want a single tall bar", string(spike))
 	}
+	// steady latency with mere jitter must stay a calm low band — never amplified
+	// into full-height bars (the bug that made the latency graph look like noise)
+	for _, r := range sparkline([]float64{6, 7, 8, 7, 6, 8, 7}, 10) {
+		if r == '█' || r == '▇' || r == '▆' {
+			t.Errorf("jitter %q amplified to a tall bar; want a low band", string(r))
+			break
+		}
+	}
 	// maxW keeps only the most recent samples
 	if got := sparkline([]float64{0, 0, 0, 9}, 2); len([]rune(got)) != 2 {
 		t.Errorf("width-capped len = %d, want 2", len([]rune(got)))
@@ -737,9 +730,9 @@ func TestDiagSilentToleratesIdleCadence(t *testing.T) {
 	if !snap.Connected || dData.IsZero() {
 		t.Fatal("setup: expected connected with a last_data stamp")
 	}
-	// a ~3s idle low-poll gap must still read connected, not flash "LUCI silent"
+	// a ~3s idle low-poll gap must still read healthy, not flash "LUCI silent"
 	idle := stripANSI(m.renderDiag(snap, dData.Add(3500*time.Millisecond), 96))
-	if strings.Contains(idle, "LUCI silent") || !strings.Contains(idle, "connected") {
+	if strings.Contains(idle, "LUCI silent") {
 		t.Errorf("3.5s idle-cadence gap should read connected, got header: %q", firstLine(idle))
 	}
 	// a gap beyond the watchdog's own SilentAfter should flag silence

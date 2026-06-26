@@ -151,9 +151,15 @@ func TestOversizedRecordIsShedNotBuffered(t *testing.T) {
 }
 
 func TestIterRecordsContinuesOnException(t *testing.T) {
+	// An odd/non-track B section must not stop framing: the following well-formed
+	// record is still yielded, intact.
 	lines := []string{"@@B", "valid line", "@@E", "@@p", "MID-Read:49 Data:123", "@@E"}
-	if recs := recordsFrom(lines); len(recs) < 1 {
-		t.Fatalf("records = %d, want >= 1", len(recs))
+	recs := recordsFrom(lines)
+	if len(recs) != 2 {
+		t.Fatalf("records = %d, want 2", len(recs))
+	}
+	if got := recs[1]["p"]; len(got) != 1 || got[0] != "MID-Read:49 Data:123" {
+		t.Errorf("second record p-section = %v, want one MID-Read:49 line", got)
 	}
 }
 
@@ -366,6 +372,52 @@ func TestApplyPlayingRecord(t *testing.T) {
 	}
 	if !s.Connected {
 		t.Error("should be connected")
+	}
+}
+
+// The newer diag-gated @@s extras (audio chain, CPU clock, scheduler contention)
+// and the @@i rootfs/DNS keys parse into SysInfo/DevInfo, and an OLDER short loop
+// (no trailing fields) still parses cleanly with those fields left empty.
+func TestApplyNewDiagFields(t *testing.T) {
+	st := NewState()
+	ApplyRecord(st, records("device_record.txt")[0])  // @@i: now carries root= and dns=
+	ApplyRecord(st, records("playing_record.txt")[0]) // @@s: now carries the audio-chain tail
+	_, _, _, _, si := st.DiagView()
+	if si == nil {
+		t.Fatal("no sysinfo parsed")
+	}
+	for _, c := range []struct{ got, want, name string }{
+		{si.PcmState, "RUNNING", "PcmState"}, {si.BufAvail, "4834", "BufAvail"},
+		{si.DacRate, "44100", "DacRate"}, {si.DacFmt, "S16_LE", "DacFmt"}, {si.DacCh, "2", "DacCh"},
+		{si.BufSize, "22050", "BufSize"}, {si.CpuKHz, "1200000", "CpuKHz"}, {si.Procs, "2/237", "Procs"},
+	} {
+		if c.got != c.want {
+			t.Errorf("SysInfo.%s = %q, want %q", c.name, c.got, c.want)
+		}
+	}
+	if si.NoiseDBm != "" { // ethernet fixture sends "-" -> dropped to ""
+		t.Errorf("NoiseDBm = %q, want \"\" (eth has no Wi-Fi noise)", si.NoiseDBm)
+	}
+	if dev := st.DevInfoView(); dev == nil || dev.DNS != "192.168.1.1" {
+		t.Errorf("DevInfo dns = %v, want 192.168.1.1", dev)
+	}
+}
+
+// An older device loop that stops at the original 17 @@s fields (no audio tail)
+// must still parse — the new fields just stay empty (back-compat).
+func TestApplyOldShortStatsLine(t *testing.T) {
+	st := NewState()
+	old := "@@s\n100.0 0.1 0.1 0.1 100000 200000 2 FW.1 Linux-5 50000 1 1 - - 1 2 3\n@@E\n"
+	for rec := range IterRecords(feeder(splitLines(old))) {
+		ApplyRecord(st, rec)
+	}
+	_, _, _, _, si := st.DiagView()
+	if si == nil || si.Up != "100.0" || si.NCPU != "2" {
+		t.Fatalf("short @@s should still parse base fields: %+v", si)
+	}
+	if si.PcmState != "" || si.BufAvail != "" || si.CpuKHz != "" || si.Procs != "" {
+		t.Errorf("absent trailing fields should be empty, got state=%q avail=%q clk=%q procs=%q",
+			si.PcmState, si.BufAvail, si.CpuKHz, si.Procs)
 	}
 }
 

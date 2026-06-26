@@ -1,7 +1,9 @@
 package transport
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -212,7 +214,15 @@ func TestRemoteLoopParsesDeviceOutput(t *testing.T) {
 func TestRemoteLoopStructuralContract(t *testing.T) {
 	body := RemoteLoop("", "spotify.com")
 	for _, want := range []string{
-		`echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt"`,
+		// the positional @@s line (now with the audio-chain / cpu-clock / proc-count
+		// tail appended at the END so older parsers and fixtures stay compatible)
+		`echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--}"`,
+		// the new diag-gated gathers (all default to "-" so absent paths don't break the line)
+		`for ad in /proc/asound/card*/pcm*p/sub*; do`,
+		`buffer_size) bs=$av;;`,
+		`scaling_cur_freq 2>/dev/null`,
+		`ns=${nz%.}`, // Wi-Fi noise floor (for SNR)
+		`printf 'dns=%s\n' "$dns"`,
 		`if [ "$dg" = 1 ]; then`,
 		`90) case "$data" in 1) dg=1;; *) dg=0;; esac;;`,
 		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; }`,
@@ -230,6 +240,66 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("remote loop missing structural invariant:\n  %s", want)
+		}
+	}
+}
+
+// TestRemoteLoopAudioChainParses proves the ALSA gather (the verbatim snippet from
+// the loop) reads state / avail / rate / format / channels / buffer_size correctly
+// against real /proc/asound-style files — covering both colon styles, the no-stream
+// case, and the multi-PCM glob where only one sub is RUNNING (the closed ones must
+// not clobber it) — so a future edit to that hand-written POSIX-sh fails here, not
+// silently on the device (which CI can't reach). The sample matches the on-device
+// probe of the AR241CE: status has `avail` but no `xruns` line.
+func TestRemoteLoopAudioChainParses(t *testing.T) {
+	const snip = `as=-; ab=-; ar=-; af=-; ac=-; bs=-; for ad in /proc/asound/card*/pcm*p/sub*; do while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in state) as=$av;; avail) ab=$av;; esac; done < "$ad/status" 2>/dev/null; while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac; done < "$ad/hw_params" 2>/dev/null; done`
+	if !strings.Contains(RemoteLoop("", "spotify.com"), snip) {
+		t.Fatal("audio-chain gather snippet not found verbatim in the loop")
+	}
+	// realStatus/realHW mirror the probed AR241CE: aligned colons, avail/avail_max,
+	// no xruns line; hw_params carries buffer_size.
+	const realStatus = "state: RUNNING\nowner_pid   : 14748\ntrigger_time: 237278.20\ntstamp      : 0.0\ndelay       : 17216\navail       : 4834\navail_max   : 27490\n-----\nhw_ptr      : 2231488\nappl_ptr    : 2248704\n"
+	const realHW = "access: MMAP_INTERLEAVED\nformat: S16_LE\nsubformat: STD\nchannels: 2\nrate: 44100 (44100/1)\nperiod_size: 5513\nbuffer_size: 22050\n"
+	mk := func(t *testing.T, pcms map[string][2]string) string {
+		dir := t.TempDir()
+		for pcm, sh := range pcms {
+			sub := filepath.Join(dir, "asound", "card0", pcm, "sub0")
+			if err := os.MkdirAll(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			os.WriteFile(filepath.Join(sub, "status"), []byte(sh[0]), 0o644)
+			os.WriteFile(filepath.Join(sub, "hw_params"), []byte(sh[1]), 0o644)
+		}
+		return dir
+	}
+	run := func(t *testing.T, dir string) string {
+		s := strings.Replace(snip, "/proc/asound", filepath.Join(dir, "asound"), 1)
+		out, err := exec.Command("sh", "-c", s+`; printf '%s %s %s %s %s %s' "$as" "$ab" "$ar" "$af" "$ac" "$bs"`).Output()
+		if err != nil {
+			t.Fatalf("sh: %v", err)
+		}
+		return string(out)
+	}
+	cases := []struct {
+		name string
+		pcms map[string][2]string
+		want string
+	}{
+		{"real AR241CE multi-pcm (only pcm1p running, closed ones must not clobber)",
+			map[string][2]string{
+				"pcm0p": {"closed\n", "closed\n"},
+				"pcm1p": {realStatus, realHW},
+				"pcm3p": {"closed\n", "closed\n"},
+			}, "RUNNING 4834 44100 S16_LE 2 22050"},
+		{"attached colons, hi-res",
+			map[string][2]string{"pcm0p": {"state: DRAINING\navail: 100\n", "format: S24_LE\nchannels: 2\nrate: 96000 (96000/1)\nbuffer_size: 8192\n"}},
+			"DRAINING 100 96000 S24_LE 2 8192"},
+		{"no stream open",
+			map[string][2]string{"pcm0p": {"closed\n", "closed\n"}}, "- - - - - -"},
+	}
+	for _, c := range cases {
+		if got := run(t, mk(t, c.pcms)); got != c.want {
+			t.Errorf("%s: parsed %q, want %q", c.name, got, c.want)
 		}
 	}
 }

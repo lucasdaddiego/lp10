@@ -44,6 +44,55 @@ func TestConfigDefaultsWhenNoFile(t *testing.T) {
 	}
 }
 
+func TestArtDefaults(t *testing.T) {
+	writeConfig(t, "")
+	cfg := Load()
+	if !cfg.Art || cfg.ArtMode != "auto" {
+		t.Errorf("art defaults wrong: Art=%v ArtMode=%q", cfg.Art, cfg.ArtMode)
+	}
+}
+
+func TestMouseDefaultsOnAndOverrides(t *testing.T) {
+	writeConfig(t, "")
+	if cfg := Load(); !cfg.Mouse {
+		t.Error("mouse should default to true")
+	}
+	writeConfig(t, "mouse = false\n")
+	if cfg := Load(); cfg.Mouse {
+		t.Error("mouse = false ignored")
+	}
+}
+
+func TestArtConfigOverride(t *testing.T) {
+	writeConfig(t, "art = false\nart_mode = \"halfblock\"\n")
+	cfg := Load()
+	if cfg.Art {
+		t.Error("art = false ignored")
+	}
+	if cfg.ArtMode != "halfblock" {
+		t.Errorf("art_mode = %q, want halfblock", cfg.ArtMode)
+	}
+}
+
+func TestArtModeRejectsUnknown(t *testing.T) {
+	writeConfig(t, "art_mode = \"sixel\"\n") // not a recognized mode
+	if got := Load().ArtMode; got != "auto" {
+		t.Errorf("unknown art_mode kept %q, want default auto", got)
+	}
+}
+
+func TestArtCacheDir(t *testing.T) {
+	d := filepath.Join(t.TempDir(), "s")
+	t.Setenv("LP10_STATE_DIR", d)
+	got := ArtCacheDir()
+	if got != filepath.Join(d, "art") {
+		t.Fatalf("ArtCacheDir = %q, want %q", got, filepath.Join(d, "art"))
+	}
+	if fi, err := os.Stat(got); err != nil || !fi.IsDir() {
+		t.Errorf("art cache dir not created")
+	}
+}
+
 func TestConfigFileAndEnvOverride(t *testing.T) {
 	writeConfig(t, "host = \"lp10.local\"\nvol_step = 5\nping_host = \"1.1.1.1\"\ndiscover = false\n")
 	cfg := Load()

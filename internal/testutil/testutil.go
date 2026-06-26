@@ -15,7 +15,7 @@ import (
 var envVars = []string{
 	"LP10_HOST", "LP10_SSH", "LP10_ASKPASS", "LP10_FAKE_SCENARIO",
 	"LP10_FAKE_CMDLOG", "LP10_FAKE_DIR", "LP10_FAKE_HEAL_AFTER",
-	"LP10_STATE_DIR", "LP10_USER",
+	"LP10_STATE_DIR",
 }
 
 // Isolate clears ambient LP10_* env and points state + config at temp dirs, so
