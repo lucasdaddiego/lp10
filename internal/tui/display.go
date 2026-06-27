@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"golang.org/x/text/width"
 )
 

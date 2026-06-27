@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
-	"github.com/lucasdaddiego/lp10go/internal/transport"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/transport"
 )
 
 const (

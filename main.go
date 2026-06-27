@@ -21,10 +21,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/discovery"
-	"github.com/lucasdaddiego/lp10go/internal/transport"
-	"github.com/lucasdaddiego/lp10go/internal/tui"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/discovery"
+	"github.com/lucasdaddiego/lp10/internal/transport"
+	"github.com/lucasdaddiego/lp10/internal/tui"
 )
 
 // discoverTimeout bounds the startup mDNS probe. A present device answers in well

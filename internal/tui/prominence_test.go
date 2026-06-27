@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // toggleVerb is the icon-free action label: "pause" while playing (Playing==0),

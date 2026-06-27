@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/fixtures"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/fixtures"
 )
 
 // ---- helpers ----------------------------------------------------------------

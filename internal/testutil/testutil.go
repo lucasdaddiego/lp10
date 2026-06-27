@@ -44,7 +44,7 @@ func goBuildArgs(bin, pkg string) []string {
 	if os.Getenv("LP10_COVERDIR") != "" {
 		// Module-absolute pattern (not ./...): this build runs with the test's CWD
 		// (e.g. internal/e2e), where ./... would match nothing in the binary.
-		args = append(args, "-cover", "-coverpkg=github.com/lucasdaddiego/lp10go/...")
+		args = append(args, "-cover", "-coverpkg=github.com/lucasdaddiego/lp10/...")
 	}
 	return append(args, "-o", bin, pkg)
 }
@@ -61,7 +61,7 @@ func FakeSSH(t *testing.T) string {
 		}
 		bin := filepath.Join(tmp, "fakessh")
 		out, e := exec.Command("go", goBuildArgs(bin,
-			"github.com/lucasdaddiego/lp10go/cmd/fakessh")...).CombinedOutput()
+			"github.com/lucasdaddiego/lp10/cmd/fakessh")...).CombinedOutput()
 		if e != nil {
 			fakeErr = &buildError{e, string(out)}
 			return
@@ -92,7 +92,7 @@ func BuildMain(t *testing.T) string {
 		}
 		bin := filepath.Join(tmp, "lp10")
 		out, e := exec.Command("go", goBuildArgs(bin,
-			"github.com/lucasdaddiego/lp10go")...).CombinedOutput()
+			"github.com/lucasdaddiego/lp10")...).CombinedOutput()
 		if e != nil {
 			mainErr = &buildError{e, string(out)}
 			return

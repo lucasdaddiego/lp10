@@ -10,7 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 var osc8re = regexp.MustCompile("\x1b\\]8;[^\x1b\a]*(\x1b\\\\|\a)")

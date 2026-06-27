@@ -8,10 +8,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/fixtures"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
-	"github.com/lucasdaddiego/lp10go/internal/workers"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/fixtures"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
 // applyFixtureRecords feeds every framed record of a fixture into st.

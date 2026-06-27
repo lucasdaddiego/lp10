@@ -28,8 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/fixtures"
-	"github.com/lucasdaddiego/lp10go/internal/transport"
+	"github.com/lucasdaddiego/lp10/internal/fixtures"
+	"github.com/lucasdaddiego/lp10/internal/transport"
 )
 
 var (

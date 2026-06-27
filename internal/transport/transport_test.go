@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/config"
 )
 
 // withRunSecurity swaps the injectable security(1) runner for one test.

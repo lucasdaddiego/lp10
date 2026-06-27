@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
-	"github.com/lucasdaddiego/lp10go/internal/tunnel"
-	"github.com/lucasdaddiego/lp10go/internal/workers"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
+	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
 func eqModel(t *testing.T) (*model, *protocol.State, chan workers.EQCommand) {

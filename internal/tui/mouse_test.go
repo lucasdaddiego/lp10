@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // ---- synthetic mouse events --------------------------------------------------

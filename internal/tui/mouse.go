@@ -3,7 +3,7 @@ package tui
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/lucasdaddiego/lp10go/internal/tunnel"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
 )
 
 // The dashboard frame fills the whole window (View's lipgloss.Place receives

@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // A coloured cover sets a per-album tint, a grey cover clears it (keep the

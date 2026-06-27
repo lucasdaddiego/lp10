@@ -9,8 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lucasdaddiego/lp10go/internal/artwork"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/artwork"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 func TestArtChoiceResolution(t *testing.T) {

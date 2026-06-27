@@ -18,11 +18,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/lucasdaddiego/lp10go/internal/artwork"
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
-	"github.com/lucasdaddiego/lp10go/internal/tunnel"
-	"github.com/lucasdaddiego/lp10go/internal/workers"
+	"github.com/lucasdaddiego/lp10/internal/artwork"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
+	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
 // Display/timing constants.

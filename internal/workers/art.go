@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/artwork"
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/artwork"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 const (

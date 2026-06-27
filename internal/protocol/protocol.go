@@ -19,7 +19,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/config"
 )
 
 var transportWords = map[string]bool{

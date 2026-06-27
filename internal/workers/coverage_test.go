@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
-	"github.com/lucasdaddiego/lp10go/internal/transport"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/transport"
 )
 
 // covExitSSH writes a fake ssh that exits 0 immediately with no output (clean

@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/lucasdaddiego/lp10go/internal/artwork"
+	"github.com/lucasdaddiego/lp10/internal/artwork"
 )
 
 // theme holds the lipgloss styles and rendering primitives for the UI, built

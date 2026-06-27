@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/lucasdaddiego/lp10go/internal/testutil"
-	"github.com/lucasdaddiego/lp10go/internal/transport"
+	"github.com/lucasdaddiego/lp10/internal/testutil"
+	"github.com/lucasdaddiego/lp10/internal/transport"
 )
 
 // coverEnv passes GOCOVERDIR through to a subprocess when LP10_COVERDIR is set, so

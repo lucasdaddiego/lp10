@@ -1,4 +1,4 @@
-module github.com/lucasdaddiego/lp10go
+module github.com/lucasdaddiego/lp10
 
 go 1.24.0
 

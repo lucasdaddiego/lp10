@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lucasdaddiego/lp10go/internal/config"
-	"github.com/lucasdaddiego/lp10go/internal/protocol"
-	"github.com/lucasdaddiego/lp10go/internal/testutil"
-	"github.com/lucasdaddiego/lp10go/internal/transport"
+	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/testutil"
+	"github.com/lucasdaddiego/lp10/internal/transport"
 )
 
 func waitFor(pred func() bool, timeout time.Duration) bool {
