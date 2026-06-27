@@ -10,11 +10,15 @@ permissions:
 
 jobs:
   test:
-    # Linux runners are free for public repos and fast. lp10 ships for macOS, but
-    # nothing here is darwin-only to build or test: there are no GOOS build tags,
+    # lp10 ships for macOS, so macos-latest is the canonical target. Linux is
+    # cheap and fast and nothing here is darwin-only (no GOOS build tags,
     # security(1) is stubbed in the askpass test, the device shell loop is
-    # POSIX-clean, and ptys / TIOCGWINSZ exist on Linux too.
-    runs-on: ubuntu-latest
+    # POSIX-clean, and ptys / TIOCGWINSZ exist on Linux too), so we test both.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

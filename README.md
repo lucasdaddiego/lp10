@@ -16,30 +16,41 @@ $ lp10
 ┃                                                                              ┃
 ┃  ♪ LP10 · Living  ● 15:42           Spotify · audio/ogg · 44.1 kHz    Vol    ┃
 ┃                                                                              ┃
-┃  ╭────────────────────────╮                                            ░     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│  De Música Ligera                          █     ┃
-┃  │████████████████████████│  Soda Stereo · Canción Animal              █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│  ▶ Playing 00:30 ━●──────────── -03:01     █     ┃
-┃  │████████████████████████│       ◀◀         pause         ▶▶          █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  │████████████████████████│                                            █     ┃
-┃  ╰────────────────────────╯                                           92%    ┃
+┃                                                                              ┃
+┃                                                                              ┃
+┃                                                                              ┃
+┃                                                                              ┃
+┃  ╭──────────────────────────────╮                                      ▓     ┃
+┃  │██████████████████████████████│                                      ▓     ┃
+┃  │██████████████████████████████│                                      ▓     ┃
+┃  │██████████████████████████████│                                      ▓     ┃
+┃  │██████████████████████████████│  De Música Ligera                    ▓     ┃
+┃  │██████████████████████████████│  Soda Stereo                         ▓     ┃
+┃  │██████████████████████████████│  Canción Animal                      ▓     ┃
+┃  │██████████████████████████████│                                      ▓     ┃
+┃  │██████████████████████████████│  ● Spotify · audio/ogg · 44.1 k…     ▓     ┃
+┃  │██████████████████████████████│                                      ▓     ┃
+┃  │██████████████████████████████│  ▶ Playing 00:31 ●─────── -02:59     █     ┃
+┃  │██████████████████████████████│                                      █     ┃
+┃  │██████████████████████████████│     ◀◀        pause       ▶▶         █     ┃
+┃  │██████████████████████████████│                                      █     ┃
+┃  │██████████████████████████████│                                      █     ┃
+┃  │██████████████████████████████│                                      █     ┃
+┃  │██████████████████████████████│                                      █     ┃
+┃  ╰──────────────────────────────╯                                     44%    ┃
+┃                                                                              ┃
+┃                                                                              ┃
+┃                                                                              ┃
+┃                                                                              ┃
 ┃  ─────────────────────────────── equalizer ────────────────────────────────  ┃
 ┃  EQ      ● on                                                                ┃
 ┃  Treble  ────────────────────────────────────────●─────────────────────  +3  ┃
-┃  Mid     ────────────────────────●─────────────────────────────────────  -2  ┃
+┃  Mid     ───────────────────────────────●──────────────────────────────   0  ┃
 ┃  Bass    ────────────────────────────────────────●─────────────────────  +3  ┃
 ┃  Sub     ● on                                                                ┃
-┃  Lvl     ─────────────────────────────────────●────────────────────────  60  ┃
+┃  Lvl     ─────────●────────────────────────────────────────────────────  15  ┃
 ┃  Max Vol ─────────────────────────────────────────────────────────────● 100  ┃
 ┃          space play · ↑↓ vol · m mute · y copy · e/tab EQ · ? diag · q quit  ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
@@ -108,11 +119,12 @@ the arrow keys.
 |-----|--------|
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
-| `+` / `-` | volume ± step |
+| `+` / `-` | volume ± step (`=` / `_` also work) |
 | `↑` / `↓` | player: volume ± step · equalizer: pick a band |
 | `←` / `→` | player: move button focus · equalizer: adjust the focused band |
 | `enter` | player: press the focused button · equalizer: toggle an on/off band |
-| `tab` | switch pane (player ↔ equalizer) |
+| `tab` / `shift-tab` | switch pane (player ↔ equalizer) |
+| `esc` | equalizer pane: step focus back to the player |
 | `e` | jump focus to the equalizer |
 | `m` | mute (volume 0 ↔ restored level, persisted) |
 | `t` | right-hand time: remaining ↔ total |
@@ -160,39 +172,37 @@ playback, and the last-known values are restored instantly from cache on launch.
 
 ## Diagnostics
 
-Press `?` for a full read-out of the device, connection, and link health:
+Press `?` for a full read-out of the device, connection, and link health — the
+two-column card grid on a wide terminal (it collapses to a single stacked column
+when narrow):
 
 ```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃                                                                          ┃
-┃  diagnostics                                        ● connected · 16:40  ┃
-┃                                                                          ┃
-┃  host     root@192.0.2.13           uptime   3h 25m                      ┃
-┃  device   Arylic AR241CE · LS8      os       Linux 5.15.137              ┃
-┃  firmware AR241CE_9243.16           build    2025-12-24 · app 312        ┃
-┃  mac      aa:bb:cc:dd:ee:ff         cores    2                           ┃
-┃  ───────────────────────────── connection ─────────────────────────────  ┃
-┃  player    ssh stream · rx 0.0s ago · 1 attempt                          ┃
-┃  control   tunnel :2018 · live                                           ┃
-┃  ────────────────────────────── network ───────────────────────────────  ┃
-┃  link      ethernet · 100 Mbit/s · full duplex                           ┃
-┃  address   192.0.2.13 · gw 192.0.2.1                                     ┃
-┃  traffic   rx 1.2 MB/s · tx 45 KB/s                                      ┃
-┃  latency   you       11 ms ±6.6  max 31   ▁▂▁█▃▁▂▁▁▂▁█▃▁▂▁▁▂             ┃
-┃            gw       6.6 ms ±1.1  max 12   ▁▁▂▁▁▁▂▁▁▁▁▁▂▁▁▁▁▂             ┃
-┃            spotify   25 ms ±2.0  max 29   ▂▃▂▂▃▂▂▃▂▂▂▃▂▂▃▂▂▃             ┃
-┃  ─────────────────────────────── audio ────────────────────────────────  ┃
-┃  format    audio/ogg · 44.1 kHz                                          ┃
-┃  volume    ████████░░░░░░░░░░  44%                                       ┃
-┃  eq        EQ on · T +3 · M 0 · B +3 · Sub on 15 · Max Vol 100           ┃
-┃  ───────────────────────────── resources ──────────────────────────────  ┃
-┃  cpu       █████░░░░░░░░░░░░░  26%   1m 0.51 · 5m 0.40 · 15m 0.38        ┃
-┃  memory    ███████░░░░░░░░░░░  37%   135 / 215 MB free                   ┃
-┃  temp      ███████████░░░░░░░  52 °C   SoC                               ┃
-┃  storage   ███░░░░░░░░░░░░░░░  17%   1228 / 7168 MB used · data          ┃
-┃                                                                          ┃
-┃  live · any key returns to the dashboard                                 ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                                                      ┃
+┃  diagnostics                                                                                                ● 16:40  ┃
+┃                                                                                                                      ┃
+┃  ╭─ device ─────────────────────────────────────────────╮  ╭─ audio ──────────────────────────────────────────────╮  ┃
+┃  │ host      root@192.168.1.13                          │  │ stream    audio/ogg · 44.1 kHz                       │  ┃
+┃  │ device    Arylic AR241CE · LS8                       │  │ dac       44.1 kHz · S16_LE · 2ch ● live             │  ┃
+┃  │ os        Linux 5.15.137 · 2 cores                   │  │ buffer    ━━━━━━━━━───  78% ring                     │  ┃
+┃  │ firmware  AR241CE_9243.16                            │  │ volume    ━━━━━───────  44%                          │  ┃
+┃  │ build     2025-12-24 · app 312                       │  │ eq        EQ on · T +3 · M 0 · B +3 · Sub on 15 · M… │  ┃
+┃  │ uptime    3h 25m                                     │  ╰──────────────────────────────────────────────────────╯  ┃
+┃  │ mac       aa:bb:cc:dd:ee:ff                          │  ╭─ resources ──────────────────────────────────────────╮  ┃
+┃  ╰──────────────────────────────────────────────────────╯  │ cpu       ━━━─────────  26% 1m 0.51 · 1200 MHz       │  ┃
+┃  ╭─ connection ─────────────────────────────────────────╮  │ tasks     2 running · 237 total                      │  ┃
+┃  │ player    ssh · rx 0.0s ago · 1 attempt              │  │ memory    ━━━━────────  37% 135/215 MB free          │  ┃
+┃  │ control   tunnel :2018 · live                        │  │ temp      ━━━━━━━─────  52 °C SoC                    │  ┃
+┃  ╰──────────────────────────────────────────────────────╯  │ data      ━━──────────  17% 1228/7168 MB /lsync      │  ┃
+┃  ╭─ network ────────────────────────────────────────────╮  ╰──────────────────────────────────────────────────────╯  ┃
+┃  │ link      ethernet · 100 Mbit/s · full duplex        │  ╭─ latency ────────────────────────────────────────────╮  ┃
+┃  │ address   192.168.1.13 · gw 192.168.1.1              │  │ you       11ms ±6.6  ▁▂▁█▃▁▂▁▁▂▁█▃▁▂▁▁▂▁▂▁▁▂▁█▃▁▂    │  ┃
+┃  │ dns       192.168.1.1                                │  │ gw       6.6ms ±1.1  ▁▁▂▁▁▁▂▁▁▁▁▁▂▁▁▁▁▂▁▁▁▂▁▁▁▁▁▂    │  ┃
+┃  │ traffic   rx 0 B/s · tx 0 B/s                        │  │ spotify   25ms ±2.0  ▂▃▂▂▃▂▂▃▂▂▂▃▂▂▃▂▂▃▂▂▃▂▂▃▂▂▃▂    │  ┃
+┃  ╰──────────────────────────────────────────────────────╯  ╰──────────────────────────────────────────────────────╯  ┃
+┃                                                                                                                      ┃
+┃  live · any key returns to the dashboard                                                                             ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
 The resource gauges and the network stats (throughput, Wi-Fi signal, and the three
@@ -339,7 +349,7 @@ internal/e2e/           end-to-end tests (argv contract, pty smoke)
 
 - [`bubbletea`](https://github.com/charmbracelet/bubbletea) / [`lipgloss`](https://github.com/charmbracelet/lipgloss) / [`termenv`](https://github.com/muesli/termenv) — terminal UI
 - [`BurntSushi/toml`](https://github.com/BurntSushi/toml) — config
-- [`mattn/go-runewidth`](https://github.com/mattn/go-runewidth) / [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — display width
+- [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — East-Asian display width
 - [`creack/pty`](https://github.com/creack/pty) — pty smoke test only
 
 ## License
