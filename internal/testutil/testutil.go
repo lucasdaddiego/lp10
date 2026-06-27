@@ -35,6 +35,20 @@ var (
 	fakeErr  error
 )
 
+// goBuildArgs returns the `go build` args for a helper binary, adding coverage
+// instrumentation when LP10_COVERDIR is set so the e2e subprocess execution of
+// main/Run/fakessh counts toward the merged integration-coverage profile (the
+// `make cover` flow). Without it, the binaries build plain, as before.
+func goBuildArgs(bin, pkg string) []string {
+	args := []string{"build"}
+	if os.Getenv("LP10_COVERDIR") != "" {
+		// Module-absolute pattern (not ./...): this build runs with the test's CWD
+		// (e.g. internal/e2e), where ./... would match nothing in the binary.
+		args = append(args, "-cover", "-coverpkg=github.com/lucasdaddiego/lp10go/...")
+	}
+	return append(args, "-o", bin, pkg)
+}
+
 // FakeSSH builds (once per test binary, into a process-stable temp dir) and
 // returns the path to the fake ssh transport, for use as $LP10_SSH.
 func FakeSSH(t *testing.T) string {
@@ -46,8 +60,8 @@ func FakeSSH(t *testing.T) string {
 			return
 		}
 		bin := filepath.Join(tmp, "fakessh")
-		out, e := exec.Command("go", "build", "-o", bin,
-			"github.com/lucasdaddiego/lp10go/cmd/fakessh").CombinedOutput()
+		out, e := exec.Command("go", goBuildArgs(bin,
+			"github.com/lucasdaddiego/lp10go/cmd/fakessh")...).CombinedOutput()
 		if e != nil {
 			fakeErr = &buildError{e, string(out)}
 			return
@@ -77,8 +91,8 @@ func BuildMain(t *testing.T) string {
 			return
 		}
 		bin := filepath.Join(tmp, "lp10")
-		out, e := exec.Command("go", "build", "-o", bin,
-			"github.com/lucasdaddiego/lp10go").CombinedOutput()
+		out, e := exec.Command("go", goBuildArgs(bin,
+			"github.com/lucasdaddiego/lp10go")...).CombinedOutput()
 		if e != nil {
 			mainErr = &buildError{e, string(out)}
 			return

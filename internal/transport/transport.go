@@ -111,6 +111,12 @@ func SSHArgv(cfg config.Config) []string {
 	if binary == "" {
 		binary = "ssh"
 	}
+	// Host-key verification is intentionally disabled: the LP10 regenerates its ssh
+	// host key from a ramfs on every boot, so TOFU/pinning is pointless and would
+	// only nag. UserKnownHostsFile=/dev/null + StrictHostKeyChecking=no is therefore
+	// by design — the one deliberate security tradeoff (it forgoes MITM protection
+	// on the trusted-LAN path; see the README "Security & threat model"). A static
+	// analyzer flagging these two options is a false positive in this context.
 	return []string{binary, "-F", "/dev/null", "-T",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "StrictHostKeyChecking=no",

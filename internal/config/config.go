@@ -38,9 +38,13 @@ const (
 	// real address at startup, so it works out of the box even as the DHCP lease
 	// moves. With discover=false (or no mDNS responder) this literal must itself
 	// resolve — a device not reachable as "lp10.local" then needs host set.
-	defHost     = "lp10.local"
-	defUser     = "root"
-	defName     = "LP10 · Living"
+	defHost = "lp10.local"
+	defUser = "root"
+	// DefaultName is the generic UI label. On a successful mDNS discovery the app
+	// refines it to "LP10 · <device's advertised name>" (see main.go), so no room
+	// name is hardcoded; a user-set `name` overrides it and also serves as the
+	// discovery disambiguation hint among multiple LP10s.
+	DefaultName = "LP10"
 	defVolStep  = 2
 	defPingHost = "spotify.com" // diagnostics: the device's internet-latency target
 	defArtMode  = "auto"        // art rendering: auto|kitty|halfblock|off
@@ -74,7 +78,7 @@ type Config struct {
 // same strict per-field typing as the Python version, clamps vol_step, and lets
 // LP10_HOST override the host for a single run.
 func Load() Config {
-	cfg := Config{Host: defHost, User: defUser, Name: defName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Mouse: true}
+	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Mouse: true}
 
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {

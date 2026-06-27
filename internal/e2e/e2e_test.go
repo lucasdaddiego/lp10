@@ -16,12 +16,25 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/lucasdaddiego/lp10go/internal/testutil"
+	"github.com/lucasdaddiego/lp10go/internal/transport"
 )
+
+// coverEnv passes GOCOVERDIR through to a subprocess when LP10_COVERDIR is set, so
+// a coverage-instrumented helper binary (built by testutil under the same flag)
+// writes its execution coverage there for the merged integration profile. Empty
+// (no-op) under a normal `go test` run.
+func coverEnv() []string {
+	if d := os.Getenv("LP10_COVERDIR"); d != "" {
+		return []string{"GOCOVERDIR=" + d}
+	}
+	return nil
+}
 
 func TestArgvContractExits2(t *testing.T) {
 	bin := testutil.BuildMain(t)
 	cmd := exec.Command(bin, "status")
 	cmd.Env = append(os.Environ(), "LP10_ASKPASS=")
+	cmd.Env = append(cmd.Env, coverEnv()...)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	err := cmd.Run()
@@ -58,7 +71,9 @@ func bootTUI(t *testing.T) *tuiSession {
 		"LP10_STATE_DIR="+filepath.Join(tmp, "state"),
 		"XDG_CONFIG_HOME="+filepath.Join(tmp, "config"),
 	)
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+	cmd.Env = append(cmd.Env, coverEnv()...)
+	// Real X/Y pixel dims so the binary's cellPixelSize() reads them via TIOCGWINSZ.
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80, X: 800, Y: 480})
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
@@ -144,5 +159,48 @@ func TestSigtermExits143AndCleansUp(t *testing.T) {
 	// (rather than os.Exit-ing from a goroutine) — proves teardown ran.
 	if !strings.Contains(s.output(), "\x1b]0;") {
 		t.Error("terminal-title reset (cleanup) did not run on SIGTERM")
+	}
+}
+
+// TestAskpassIntegration drives the real binary down its SSH_ASKPASS hot path
+// (LP10_ASKPASS=1 → transport.AskpassMain → KeychainPassword → realRunSecurity)
+// with a stub `security` on PATH, so every keychain outcome is exercised end to
+// end: a returned password, a missing item, a locked keychain, and security(1)
+// being absent. This covers the askpass/keychain code the fake transport never
+// reaches (the fake ssh never prompts for a password).
+func TestAskpassIntegration(t *testing.T) {
+	bin := testutil.BuildMain(t)
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "security")
+	writeStub := func(body string) {
+		if err := os.WriteFile(stub, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(path string) (out, errOut string, code int) {
+		cmd := exec.Command(bin)
+		cmd.Env = append([]string{"LP10_ASKPASS=1", "PATH=" + path}, coverEnv()...)
+		var o, e bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &o, &e
+		if ee, ok := cmd.Run().(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		}
+		return o.String(), e.String(), code
+	}
+
+	writeStub("echo hunter2\n") // success: password on stdout, rc 0
+	if out, _, code := run(dir); code != 0 || strings.TrimSpace(out) != "hunter2" {
+		t.Errorf("success: out=%q code=%d, want hunter2/0", out, code)
+	}
+	writeStub("echo 'security: ... could not be found.' 1>&2\nexit 44\n") // no item
+	if _, errOut, code := run(dir); code != 1 || !strings.Contains(errOut, transport.MarkerNoItem) {
+		t.Errorf("no-item: stderr=%q code=%d, want %q/1", errOut, code, transport.MarkerNoItem)
+	}
+	writeStub("echo 'User interaction is not allowed.' 1>&2\nexit 1\n") // locked
+	if _, errOut, code := run(dir); code != 1 || !strings.Contains(errOut, transport.MarkerLocked) {
+		t.Errorf("locked: stderr=%q code=%d, want %q/1", errOut, code, transport.MarkerLocked)
+	}
+	if _, errOut, code := run(t.TempDir()); code != 1 || !strings.Contains(errOut, transport.MarkerBroken) {
+		t.Errorf("broken (no security on PATH): stderr=%q code=%d, want %q/1", errOut, code, transport.MarkerBroken)
 	}
 }

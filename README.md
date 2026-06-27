@@ -227,10 +227,12 @@ BusyBox-ash loop on the device streams framed snapshots:
 > **lp10 is built for a trusted home LAN, and only that.**
 
 - **Host keys are deliberately not verified.** The LP10 regenerates its SSH host
-  key on every boot from a ramfs, so pinning is pointless; `StrictHostKeyChecking`
-  is off by design. This means lp10 offers **no protection against a
-  man-in-the-middle** on the path to the device — only run it on a network you
-  control.
+  key on every boot from a ramfs, so pinning is pointless: lp10 runs ssh with
+  `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null` (see
+  `transport.SSHArgv`). This is the **one intentional security tradeoff** — a
+  static analyzer (gosec / CodeQL) will flag it, by design — and it means lp10
+  offers **no protection against a man-in-the-middle** on the path to the device.
+  Only run it on a network you control.
 - **The password never touches the repo.** It lives solely in the macOS Keychain
   and is delivered to ssh through `SSH_ASKPASS`; it is not in the source, git
   history, config files, shell history, or `ps` output.
@@ -249,7 +251,7 @@ password auth.
 ```toml
 host      = "lp10.local"    # fallback IP / mDNS name when discovery is off or finds nothing
 user      = "root"
-name      = "LP10 · Living" # header label; its tail also disambiguates discovery (see below)
+name      = "LP10"          # UI label; discovery refines it to "LP10 · <device name>" (also the disambiguation hint)
 vol_step  = 2               # volume change per keypress (1–100)
 ping_host = "spotify.com"   # diagnostics: the device's internet-latency target
 discover  = true            # find the LP10 on the LAN via mDNS at startup
@@ -280,16 +282,19 @@ cover paints instantly on the next launch). `art_mode` picks the renderer:
 
 ### Discovery
 
-With `discover = true` (the default), lp10 sends one multicast-DNS query at
-startup and connects to whichever LP10 answers — so a changed DHCP lease never
-needs a config edit. It identifies the device by the `am=LP10` fingerprint the
-AirPlay daemon advertises (`_raop._tcp`), reads its current IP, and uses it. If
-you have more than one LP10, the device whose advertised name appears in `name`
-wins (e.g. `name = "LP10 · Living"` picks the one called *Living*); otherwise the
-sole/first one is used. It is pure mDNS — no bound port, no dependency, ~tens of
-milliseconds when the device is present, and it falls back to `host` if nothing
-answers, so startup never blocks on a missing device. Set `discover = false` to
-pin `host` (an IP, or a `.local` name your OS resolves).
+With `discover = true` (the default), lp10 sends a multicast-DNS query at startup
+and connects to whichever LP10 answers — so a changed DHCP lease never needs a
+config edit. It identifies the device by the `am=LP10` fingerprint the AirPlay
+daemon advertises (`_raop._tcp`), reads its current IP, and uses it; the UI is
+then labelled with the device's own advertised name (`LP10 · Living`), so nothing
+is hardcoded. The query goes out **every** active interface, so a multi-homed Mac
+(docked Ethernet, a VPN, or a Wi-Fi you just switched to) still finds a device on
+a non-default interface. With more than one LP10, set `name` to the target's
+advertised name to pick it (e.g. `name = "Living"`); otherwise the sole/first one
+is used. It is pure mDNS — no bound port, no dependency, ~tens of milliseconds
+when the device is present, and it falls back to `host` if nothing answers, so
+startup never blocks on a missing device. Set `discover = false` to pin `host`
+(an IP, or a `.local` name your OS resolves).
 
 `LP10_HOST` overrides `host` for a single run and skips discovery. Persistent state (the pre-mute
 level and the now-playing/EQ snapshot used for instant first paint) lives under

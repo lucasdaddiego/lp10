@@ -171,7 +171,7 @@ func TestStateDirFailureDegradesToNoPersistence(t *testing.T) {
 	if StateDir() != "" {
 		t.Error("StateDir should be \"\" when it cannot be created")
 	}
-	cfg := Config{Host: defHost, User: defUser, Name: defName, VolStep: defVolStep}
+	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep}
 	if PremutePath(cfg) != "" || SnapshotPath(cfg) != "" {
 		t.Error("paths should be empty with no state dir")
 	}

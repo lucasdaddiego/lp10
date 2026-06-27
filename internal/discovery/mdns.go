@@ -10,7 +10,6 @@
 package discovery
 
 import (
-	"errors"
 	"net"
 	"sort"
 	"strings"
@@ -54,75 +53,128 @@ func (d Device) Addr() string {
 // moment a fully-resolved candidate (with an IP) arrives, so a present device is
 // usually found in well under 100ms; absence costs the full timeout.
 //
-// The query is retransmitted a couple of times within the window: mDNS is UDP and
-// lossy, so a single dropped query or reply would otherwise silently fall back to
-// the configured host for the whole launch. Retransmits cost nothing when the
-// device is present (the first reply early-exits). The query egresses the OS's
-// default multicast interface, so on a multi-homed host (VPN + Wi-Fi + Ethernet) a
-// device reachable only via a non-default interface can be missed — the configured
-// host is the fallback for that case.
+// The query is sent out EVERY up, multicast-capable interface — each from its own
+// IPv4 source address — not just the OS default route. That is what makes it work
+// on a multi-homed Mac: docked Ethernet, an active VPN (utun), or a Wi-Fi that was
+// just switched to and isn't the default route yet would all otherwise swallow a
+// single INADDR_ANY query out the wrong NIC, so a device living on another
+// interface was missed. Each socket is retransmitted within the window (mDNS is
+// lossy UDP); a present device's first unicast reply early-exits. The configured
+// host stays the fallback when nothing answers.
 func FindLP10(nameHint string, timeout time.Duration) (Device, bool) {
 	raddr, err := net.ResolveUDPAddr("udp4", mdnsAddr)
 	if err != nil {
 		return Device{}, false
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
+	conns := openQuerySockets()
+	if len(conns) == 0 {
 		return Device{}, false
 	}
-	defer conn.Close()
+	defer func() {
+		for _, c := range conns {
+			c.Close()
+		}
+	}()
+
 	query := buildQuery(service, typePTR)
-	if _, err := conn.WriteToUDP(query, raddr); err != nil {
-		return Device{}, false
+	sendAll := func() {
+		for _, c := range conns {
+			_, _ = c.WriteToUDP(query, raddr)
+		}
+	}
+	sendAll()
+
+	// One reader goroutine per socket funnels raw packets to the collector, which
+	// only this goroutine touches (so no lock is needed). Closing done unblocks a
+	// reader parked on the channel send when we stop early; closing the sockets
+	// (deferred) unblocks one parked in ReadFromUDP — so no reader leaks.
+	packets := make(chan []byte, 64)
+	done := make(chan struct{})
+	for _, c := range conns {
+		go func(c *net.UDPConn) {
+			buf := make([]byte, 9000)
+			for {
+				n, _, rerr := c.ReadFromUDP(buf)
+				if n > 0 {
+					p := append([]byte(nil), buf[:n]...)
+					select {
+					case packets <- p:
+					case <-done:
+						return
+					}
+				}
+				if rerr != nil {
+					return
+				}
+			}
+		}(c)
 	}
 
 	col := newCollector()
-	start := time.Now()
-	deadline := start.Add(timeout)
-	// Retransmit times as fractions of the window so they always fit inside it
-	// regardless of the caller's timeout; a present device almost always answers
-	// the first query, so these only ever matter under packet loss.
-	resend := []time.Time{start.Add(timeout / 4), start.Add(timeout / 2)}
+	overall := time.NewTimer(timeout)
+	defer overall.Stop()
+	// Retransmit a couple of times within the window; a present device almost
+	// always answers the first query, so this only matters under packet loss.
+	resend := time.NewTicker(timeout/3 + time.Millisecond)
+	defer resend.Stop()
 
-	buf := make([]byte, 9000)
 	for {
-		// Wake no later than the next scheduled retransmit so we can send it.
-		readDeadline := deadline
-		if len(resend) > 0 && resend[0].Before(readDeadline) {
-			readDeadline = resend[0]
-		}
-		_ = conn.SetReadDeadline(readDeadline)
-
-		n, _, rerr := conn.ReadFromUDP(buf)
-		if n > 0 {
-			if recs, ok := parsePacket(buf[:n]); ok {
+		select {
+		case p := <-packets:
+			if recs, ok := parsePacket(p); ok {
 				col.add(recs)
 				if d, ok := pickLP10(col.devices(), nameHint); ok && len(d.IP) > 0 {
+					close(done)
 					return d, true // complete candidate — stop early
 				}
 			}
-		}
-		if rerr != nil {
-			// Only a read-deadline timeout is recoverable (a due retransmit or the
-			// overall deadline); a genuine socket error ends the probe.
-			var ne net.Error
-			if !errors.As(rerr, &ne) || !ne.Timeout() {
-				break
-			}
-			now := time.Now()
-			if !now.Before(deadline) {
-				break // overall timeout
-			}
-			for len(resend) > 0 && !now.Before(resend[0]) {
-				resend = resend[1:]
-				if _, werr := conn.WriteToUDP(query, raddr); werr != nil {
-					resend = nil // socket won't take writes; keep reading, stop resending
-					break
-				}
-			}
+		case <-resend.C:
+			sendAll()
+		case <-overall.C:
+			close(done)
+			return pickLP10(col.devices(), nameHint) // timed out: accept a host-only match too
 		}
 	}
-	return pickLP10(col.devices(), nameHint) // timed out: accept a host-only match too
+}
+
+// openQuerySockets opens one UDP socket per up, non-loopback, multicast-capable
+// interface, each bound to that interface's IPv4 address so the query egresses
+// that specific NIC (the kernel picks the multicast egress interface from the
+// bound source address). It falls back to a single INADDR_ANY socket — the OS
+// default multicast route, the original behaviour — when no interface address is
+// usable, so discovery never regresses.
+func openQuerySockets() []*net.UDPConn {
+	var conns []*net.UDPConn
+	ifaces, _ := net.Interfaces()
+	for _, ifi := range ifaces {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagLoopback != 0 || ifi.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		addrs, _ := ifi.Addrs()
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			ip4 := ip.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+				continue // want a routable IPv4, not ::1/127/169.254
+			}
+			if c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip4, Port: 0}); err == nil {
+				conns = append(conns, c)
+			}
+			break // the interface's primary IPv4 is enough
+		}
+	}
+	if len(conns) == 0 {
+		if c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); err == nil {
+			conns = append(conns, c)
+		}
+	}
+	return conns
 }
 
 // ---- selection --------------------------------------------------------------

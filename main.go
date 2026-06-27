@@ -57,6 +57,11 @@ func main() {
 	if cfg.Discover && os.Getenv(config.HostEnv) == "" {
 		if dev, ok := discovery.FindLP10(cfg.Name, discoverTimeout); ok {
 			cfg.Host, cfg.Discovered = dev.Addr(), true
+			// Label the UI with the device's own advertised name ("LP10 · Living")
+			// when the user hasn't set a custom name — so no room name is hardcoded.
+			if cfg.Name == config.DefaultName && dev.Name != "" {
+				cfg.Name = config.DefaultName + " · " + dev.Name
+			}
 		}
 	}
 
