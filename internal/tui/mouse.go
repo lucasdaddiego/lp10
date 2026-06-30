@@ -57,51 +57,22 @@ type eqZone struct {
 }
 
 // fracToVol maps a 0..1 fraction to a clamped 0..100 percentage (rounded).
-func fracToVol(frac float64) int {
-	v := int(frac*100 + 0.5)
-	if v < 0 {
-		return 0
-	}
-	if v > 100 {
-		return 100
-	}
-	return v
-}
+func fracToVol(frac float64) int { return max(0, min(100, int(frac*100+0.5))) }
 
 // hfrac maps an absolute x onto a fill rectangle r: the left edge reads 0.0 and
 // the right edge reads 1.0 (left→min value, right→max value for a horizontal
 // slider). Endpoints are reachable; values outside r are clamped.
 func hfrac(r rect, x int) float64 {
-	den := r.w - 1
-	if den < 1 {
-		den = 1
-	}
-	f := float64(x-r.x) / float64(den)
-	if f < 0 {
-		return 0
-	}
-	if f > 1 {
-		return 1
-	}
-	return f
+	den := max(r.w-1, 1)
+	return clampF(float64(x-r.x) / float64(den))
 }
 
 // vfrac maps an absolute y onto a fill rectangle r so the top row reads full and
 // the bottom row empty (the inverse of a bottom-up bar). Endpoints are reachable:
 // clicking the top sets 1.0, the bottom 0.0.
 func vfrac(r rect, y int) float64 {
-	den := r.h - 1
-	if den < 1 {
-		den = 1
-	}
-	f := float64(den-(y-r.y)) / float64(den)
-	if f < 0 {
-		return 0
-	}
-	if f > 1 {
-		return 1
-	}
-	return f
+	den := max(r.h-1, 1)
+	return clampF(float64(den-(y-r.y)) / float64(den))
 }
 
 // handleMouse dispatches one mouse event against the zones recorded by the last

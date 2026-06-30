@@ -280,11 +280,8 @@ func TestCov_FindLP10EarlyReturnViaResponder(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for _, lc := range listeners {
-		lc := lc
 		_ = lc.SetReadDeadline(time.Now().Add(3 * time.Second))
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			buf := make([]byte, 2048)
 			for {
 				n, src, err := lc.ReadFromUDP(buf)
@@ -295,7 +292,7 @@ func TestCov_FindLP10EarlyReturnViaResponder(t *testing.T) {
 					_, _ = lc.WriteToUDP(reply, src)
 				}
 			}
-		}()
+		})
 	}
 
 	d, ok := FindLP10("CovEarly", 3*time.Second)

@@ -117,11 +117,11 @@ func TestMouseTransportCompact(t *testing.T) {
 // true display column even past wide/zero-width runes.
 func TestMouseZonesAlignWithRender(t *testing.T) {
 	colOf := func(line, sub string) int {
-		i := strings.Index(line, sub)
-		if i < 0 {
+		before, _, ok := strings.Cut(line, sub)
+		if !ok {
 			return -1
 		}
-		return lipgloss.Width(line[:i])
+		return lipgloss.Width(before)
 	}
 	for _, sz := range [][2]int{{40, 120}, {20, 80}} {
 		m, _, _ := makeModel(t) // fixture is playing -> the toggle reads "pause"

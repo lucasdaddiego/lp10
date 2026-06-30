@@ -288,8 +288,8 @@ func TestCov_FitBranches(t *testing.T) {
 // must equal resample's byte-for-byte. Regression for the blocky-upscale fix.
 func TestCov_FitEnlargesViaResample(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
-	for y := 0; y < 4; y++ {
-		for x := 0; x < 4; x++ {
+	for y := range 4 {
+		for x := range 4 {
 			src.Set(x, y, color.RGBA{uint8(x * 60), uint8(y * 60), 0, 255})
 		}
 	}

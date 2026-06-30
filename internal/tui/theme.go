@@ -33,8 +33,6 @@ type theme struct {
 	warm []lipgloss.Style // EQ boost ramp (tone > 0): amber -> gold
 	cool []lipgloss.Style // EQ cut ramp (tone < 0): indigo -> sky
 
-	muteTrack lipgloss.Style // the volume rail when muted: a dim red hollow column
-
 	trueColor     bool // terminal advertises 24-bit color (gates the half-block album art)
 	kittyGraphics bool // terminal supports the Kitty graphics protocol (true-pixel album art)
 
@@ -65,7 +63,6 @@ func newTheme() *theme {
 	for _, h := range []string{"#26408a", "#2f57b0", "#3f74d6", "#5f95ee", "#86b6ff"} {
 		t.cool = append(t.cool, fg(h))
 	}
-	t.muteTrack = fg("#6e3a3a")
 	t.trueColor = termenv.EnvColorProfile() == termenv.TrueColor
 	t.kittyGraphics = detectKittyGraphics()
 	t.btnOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true).Padding(0, 1)
@@ -134,15 +131,7 @@ func (t *theme) tint(c color.RGBA) *ambientTint {
 	return at
 }
 
-func clampRange(v, lo, hi float64) float64 {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
+func clampRange(v, lo, hi float64) float64 { return max(lo, min(hi, v)) }
 
 func (t *theme) rampAt(styles []lipgloss.Style, pos, span int) lipgloss.Style {
 	r := 0.0
@@ -169,10 +158,10 @@ func (t *theme) motifBlock(w, h, frame int) []string {
 	ph := float64(frame) * 0.16
 	const warpAmp = 0.9
 	lines := make([]string, h)
-	for y := 0; y < h; y++ {
+	for y := range h {
 		fy := float64(y)
 		var b strings.Builder
-		for x := 0; x < w; x++ {
+		for x := range w {
 			fx := float64(x)
 			// gentle low-frequency vector warp so the bands braid organically;
 			// small coeffs + amp keep ax,ay within ~1 cell of fx,fy (stays smooth)
@@ -222,9 +211,9 @@ func (t *theme) sonar(w, h, frame int) []string {
 		ringR  = 0.95 // fraction of fitR for the faint static scope ring
 	)
 	lines := make([]string, h)
-	for y := 0; y < h; y++ {
+	for y := range h {
 		var b strings.Builder
-		for x := 0; x < w; x++ {
+		for x := range w {
 			dx := float64(x) - cx
 			dy := (float64(y) - cy) * 2 // double dy so the scope is circular on ~2:1 cells
 			rr := math.Hypot(dx, dy)
@@ -306,16 +295,7 @@ func hslHex(h, s, l float64) string {
 }
 
 // to8 maps a 0..1 channel to a clamped 0..255 byte.
-func to8(v float64) int {
-	switch {
-	case v <= 0:
-		return 0
-	case v >= 1:
-		return 255
-	default:
-		return int(v*255 + 0.5)
-	}
-}
+func to8(v float64) int { return max(0, min(255, int(v*255+0.5))) }
 
 // lineMeter renders a horizontal meter cells wide: a gradient filled run, a
 // bright head, then a dim track — used for the seek and volume bars. The fill
@@ -335,7 +315,7 @@ func (t *theme) lineMeterPen(frac float64, cells int, fill []lipgloss.Style, hea
 	frac = clampF(frac)
 	h := int(math.Round(frac * float64(cells)))
 	var b strings.Builder
-	for i := 0; i < cells; i++ {
+	for i := range cells {
 		switch {
 		case i == h-1 || (h == 0 && i == 0):
 			b.WriteString(head.Render("●"))
@@ -358,7 +338,7 @@ func (t *theme) gaugeBar(frac float64, cells int, fillPen lipgloss.Style) string
 	frac = clampF(frac)
 	n := int(math.Round(frac * float64(cells)))
 	var b strings.Builder
-	for i := 0; i < cells; i++ {
+	for i := range cells {
 		if i < n {
 			b.WriteString(fillPen.Render(GL["fill"]))
 		} else {
@@ -374,7 +354,7 @@ func (t *theme) vbar(frac float64, h int) []string {
 	frac = clampF(frac)
 	filled := int(math.Round(frac * float64(h)))
 	lines := make([]string, h)
-	for row := 0; row < h; row++ {
+	for row := range h {
 		fromBottom := h - 1 - row
 		if fromBottom < filled {
 			lines[row] = t.rampAt(t.fill, fromBottom, h).Render("█")
@@ -385,12 +365,4 @@ func (t *theme) vbar(frac float64, h int) []string {
 	return lines
 }
 
-func clampF(f float64) float64 {
-	if f < 0 {
-		return 0
-	}
-	if f > 1 {
-		return 1
-	}
-	return f
-}
+func clampF(f float64) float64 { return clampRange(f, 0, 1) }

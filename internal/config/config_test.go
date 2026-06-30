@@ -187,7 +187,7 @@ func TestStateDirFailureDegradesToNoPersistence(t *testing.T) {
 
 func TestSnapshotWithCorruptTrackIsRejected(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	SaveSnapshot(p, map[string]interface{}{"track": "junk-string", "vol": 4})
+	SaveSnapshot(p, map[string]any{"track": "junk-string", "vol": 4})
 	if LoadSnapshot(p) != nil {
 		t.Error("snapshot with a string track must be rejected")
 	}
@@ -214,15 +214,15 @@ func TestPremuteDefaultsAndClamps(t *testing.T) {
 
 func TestSnapshotRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	snap := map[string]interface{}{
-		"track": map[string]interface{}{"TrackName": "x"}, "vol": 44, "playing": 0, "pos": 1,
+	snap := map[string]any{
+		"track": map[string]any{"TrackName": "x"}, "vol": 44, "playing": 0, "pos": 1,
 	}
 	SaveSnapshot(p, snap)
 	got := LoadSnapshot(p)
 	if got == nil {
 		t.Fatal("snapshot did not round-trip")
 	}
-	tr, _ := got["track"].(map[string]interface{})
+	tr, _ := got["track"].(map[string]any)
 	if tr["TrackName"] != "x" {
 		t.Errorf("track.TrackName = %v, want x", tr["TrackName"])
 	}
@@ -281,7 +281,7 @@ func TestSaveSnapshotWithMarshalErrorIsSwallowed(t *testing.T) {
 
 func TestLoadSnapshotWithNonDictTrack(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	SaveSnapshot(p, map[string]interface{}{"track": []string{"not", "a", "dict"}, "vol": 44})
+	SaveSnapshot(p, map[string]any{"track": []string{"not", "a", "dict"}, "vol": 44})
 	if LoadSnapshot(p) != nil {
 		t.Error("non-dict track should reject the snapshot")
 	}

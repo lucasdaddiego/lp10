@@ -13,7 +13,7 @@ import (
 // pyStr mirrors Python str() for non-string values landing in a string field.
 func TestCov_pyStr(t *testing.T) {
 	cases := []struct {
-		in   interface{}
+		in   any
 		want string
 	}{
 		{true, "True"},                           // bool true
@@ -353,7 +353,7 @@ func TestCov_UpdateNetRingTrim(t *testing.T) {
 	st := NewState()
 	t0 := time.Now()
 	// Push 35 latency samples; the ring caps at pingRingMax (30), keeping newest.
-	for i := 0; i < 35; i++ {
+	for i := range 35 {
 		st.updateNet(&SysInfo{PingClient: strconv.Itoa(i)}, t0.Add(time.Duration(i)*time.Second))
 	}
 	ps := st.NetView().Ping[0]

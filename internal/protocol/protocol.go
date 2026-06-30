@@ -10,9 +10,11 @@ import (
 	"image/color"
 	"io"
 	"iter"
+	"maps"
 	"math"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,7 +60,7 @@ var (
 )
 
 // Track is a sanitized now-playing record: string/int/bool fields only.
-type Track map[string]interface{}
+type Track map[string]any
 
 // Str returns the string field, or "" if absent or not a string.
 func (t Track) Str(k string) string {
@@ -147,7 +149,7 @@ type DevInfo struct {
 // confKeys is the allowlist of capability ids the one-shot @@c block may carry;
 // any other key is dropped at the parse boundary (mirroring DevInfo's whitelist).
 // The values are "on" / "off" / "" (unknown) — see the @@c emitter in
-// transport.remoteLoopA.
+// transport's remote_loop.sh.
 var confKeys = map[string]bool{
 	"spotify": true, "airplay": true, "dlna": true, "bt": true,
 	"cast": true, "tidal": true, "qobuz": true, "usb": true,
@@ -233,7 +235,7 @@ func IterRecords(nextLine func() (string, bool)) iter.Seq[Record] {
 
 // Int coerces a value to an int the way protocol._int does: bool -> not an int,
 // int/float truncate, NaN/Inf rejected, numeric strings parsed.
-func Int(v interface{}) (int, bool) {
+func Int(v any) (int, bool) {
 	switch x := v.(type) {
 	case bool:
 		return 0, false
@@ -291,8 +293,8 @@ func printable(s string) string {
 
 // SanitizeTrack whitelist-copies device/snapshot track JSON into known-typed
 // fields. Returns a (possibly empty) Track, or nil when obj is not an object.
-func SanitizeTrack(obj interface{}) Track {
-	m, ok := obj.(map[string]interface{})
+func SanitizeTrack(obj any) Track {
+	m, ok := obj.(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -325,7 +327,7 @@ func SanitizeTrack(obj interface{}) Track {
 
 // pyStr mirrors Python's str() for the non-string values that may land in a
 // string field (Python str(True) == "True", str(1.5) == "1.5").
-func pyStr(v interface{}) string {
+func pyStr(v any) string {
 	switch x := v.(type) {
 	case bool:
 		if x {
@@ -356,11 +358,11 @@ func ParseMB42(block string) (Track, bool) {
 		return nil, false
 	}
 	obj := parseJSON(m[1])
-	mp, ok := obj.(map[string]interface{})
+	mp, ok := obj.(map[string]any)
 	if !ok {
 		return nil, false
 	}
-	raw, ok := mp["Window CONTENTS"].(map[string]interface{})
+	raw, ok := mp["Window CONTENTS"].(map[string]any)
 	if !ok {
 		return nil, false
 	}
@@ -404,95 +406,9 @@ func ApplyRecord(st *State, rec Record) {
 	vol, volOK := num("v")
 	hadData := hasB || posOK || playOK || volOK
 
-	var sysinfo *SysInfo
-	if lines := rec["s"]; len(lines) > 0 {
-		f := strings.Fields(printable(lines[0]))
-		if len(f) >= 8 {
-			si := &SysInfo{
-				Up:    f[0],
-				Load:  f[1] + " " + f[2] + " " + f[3],
-				Avail: f[4], Total: f[5], NCPU: f[6], FW: f[7],
-			}
-			// optional trailing extras (newer loops, diag-gated): OS, SoC temp,
-			// rx/tx byte counters, Wi-Fi signal/link, then the three ping RTTs.
-			// "-" is the loop's placeholder for a value it couldn't read.
-			opt := func(i int) string {
-				if i < len(f) && f[i] != "-" {
-					return f[i]
-				}
-				return ""
-			}
-			si.OS = opt(8)
-			si.TempmC = opt(9)
-			si.RxBytes, si.TxBytes = opt(10), opt(11)
-			si.SignalDBm, si.LinkQ = opt(12), opt(13)
-			si.PingClient, si.PingGw, si.PingNet = opt(14), opt(15), opt(16)
-			// Even-newer diag extras appended at the end (audio chain, CPU clock,
-			// scheduler contention, Wi-Fi noise). Older loops stop short -> opt()="".
-			si.PcmState, si.BufAvail = opt(17), opt(18)
-			si.DacRate, si.DacFmt, si.DacCh = opt(19), opt(20), opt(21)
-			si.BufSize, si.CpuKHz = opt(22), opt(23)
-			si.Procs, si.NoiseDBm = opt(24), opt(25)
-			sysinfo = si
-		}
-	}
-
-	var devinfo *DevInfo
-	if lines := rec["i"]; len(lines) > 0 {
-		di := &DevInfo{}
-		for _, ln := range lines {
-			k, v, ok := strings.Cut(printable(ln), "=")
-			if !ok {
-				continue
-			}
-			switch k {
-			case "net":
-				di.Net = v
-			case "iface":
-				di.Iface = v
-			case "ip":
-				di.IP = v
-			case "mac":
-				di.MAC = v
-			case "gw":
-				di.Gateway = v
-			case "speed":
-				di.Speed = v
-			case "duplex":
-				di.Duplex = v
-			case "ssid":
-				di.SSID = v
-			case "freq":
-				di.Freq = v
-			case "rate":
-				di.Rate = v
-			case "build":
-				di.Build = v
-			case "app":
-				di.App = v
-			case "platform":
-				di.Platform = v
-			case "data":
-				if ff := strings.Fields(v); len(ff) == 2 {
-					di.DataUsed, di.DataTotal = ff[0], ff[1]
-				}
-			case "dns":
-				di.DNS = v
-			}
-		}
-		devinfo = di
-	}
-
-	var confinfo *ConfInfo
-	if lines := rec["c"]; len(lines) > 0 {
-		ci := &ConfInfo{Svc: make(map[string]string, len(confKeys))}
-		for _, ln := range lines {
-			if k, v, ok := strings.Cut(printable(ln), "="); ok && confKeys[k] {
-				ci.Svc[k] = v
-			}
-		}
-		confinfo = ci
-	}
+	sysinfo := parseSysInfo(rec["s"])
+	devinfo := parseDevInfo(rec["i"])
+	confinfo := parseConfInfo(rec["c"])
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -540,6 +456,107 @@ func ApplyRecord(st *State, rec Record) {
 	}
 }
 
+// parseSysInfo parses the @@s positional stats line into a SysInfo (nil if the
+// section is absent or has fewer than the 8 required fields). Fields past the
+// eighth are optional diag extras newer loops append; "-" marks an unread value.
+func parseSysInfo(lines []string) *SysInfo {
+	if len(lines) == 0 {
+		return nil
+	}
+	f := strings.Fields(printable(lines[0]))
+	if len(f) < 8 {
+		return nil
+	}
+	si := &SysInfo{
+		Up:    f[0],
+		Load:  f[1] + " " + f[2] + " " + f[3],
+		Avail: f[4], Total: f[5], NCPU: f[6], FW: f[7],
+	}
+	// optional trailing extras (newer loops, diag-gated): OS, SoC temp, rx/tx byte
+	// counters, Wi-Fi signal/link, the three ping RTTs, then the audio chain / CPU
+	// clock / scheduler contention / Wi-Fi noise. Older loops stop short -> opt()="".
+	opt := func(i int) string {
+		if i < len(f) && f[i] != "-" {
+			return f[i]
+		}
+		return ""
+	}
+	si.OS = opt(8)
+	si.TempmC = opt(9)
+	si.RxBytes, si.TxBytes = opt(10), opt(11)
+	si.SignalDBm, si.LinkQ = opt(12), opt(13)
+	si.PingClient, si.PingGw, si.PingNet = opt(14), opt(15), opt(16)
+	si.PcmState, si.BufAvail = opt(17), opt(18)
+	si.DacRate, si.DacFmt, si.DacCh = opt(19), opt(20), opt(21)
+	si.BufSize, si.CpuKHz = opt(22), opt(23)
+	si.Procs, si.NoiseDBm = opt(24), opt(25)
+	return si
+}
+
+// parseDevInfo parses the @@i static device/network key=value block (nil if absent).
+func parseDevInfo(lines []string) *DevInfo {
+	if len(lines) == 0 {
+		return nil
+	}
+	di := &DevInfo{}
+	for _, ln := range lines {
+		k, v, ok := strings.Cut(printable(ln), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "net":
+			di.Net = v
+		case "iface":
+			di.Iface = v
+		case "ip":
+			di.IP = v
+		case "mac":
+			di.MAC = v
+		case "gw":
+			di.Gateway = v
+		case "speed":
+			di.Speed = v
+		case "duplex":
+			di.Duplex = v
+		case "ssid":
+			di.SSID = v
+		case "freq":
+			di.Freq = v
+		case "rate":
+			di.Rate = v
+		case "build":
+			di.Build = v
+		case "app":
+			di.App = v
+		case "platform":
+			di.Platform = v
+		case "data":
+			if ff := strings.Fields(v); len(ff) == 2 {
+				di.DataUsed, di.DataTotal = ff[0], ff[1]
+			}
+		case "dns":
+			di.DNS = v
+		}
+	}
+	return di
+}
+
+// parseConfInfo parses the @@c capability key=value block, keeping only the
+// confKeys allowlist (nil if absent).
+func parseConfInfo(lines []string) *ConfInfo {
+	if len(lines) == 0 {
+		return nil
+	}
+	ci := &ConfInfo{Svc: make(map[string]string, len(confKeys))}
+	for _, ln := range lines {
+		if k, v, ok := strings.Cut(printable(ln), "="); ok && confKeys[k] {
+			ci.Svc[k] = v
+		}
+	}
+	return ci
+}
+
 // ReduceCommands collapses a command list: last volume wins (at its own
 // position), consecutive PAUSE/RESUME runs collapse to the final one, every
 // NEXT/PREV is preserved, order stable.
@@ -550,13 +567,7 @@ func ReduceCommands(cmds []Command) []Command {
 		case c.Mid == 64 || c.Mid == 90:
 			// last value wins for volume (64) and the stats toggle (90):
 			// drop any earlier command with the same mid, keep this one
-			kept := out[:0]
-			for _, cc := range out {
-				if cc.Mid != c.Mid {
-					kept = append(kept, cc)
-				}
-			}
-			out = append(kept, c)
+			out = append(slices.DeleteFunc(out, func(cc Command) bool { return cc.Mid == c.Mid }), c)
 		case c.Mid == 40 && (c.Data == "PAUSE" || c.Data == "RESUME") &&
 			len(out) > 0 && out[len(out)-1].Mid == 40 &&
 			(out[len(out)-1].Data == "PAUSE" || out[len(out)-1].Data == "RESUME"):
@@ -785,15 +796,7 @@ func (st *State) Snap() Snapshot {
 	}
 }
 
-func clamp100(v int) int {
-	if v < 0 {
-		return 0
-	}
-	if v > 100 {
-		return 100
-	}
-	return v
-}
+func clamp100(v int) int { return max(0, min(100, v)) }
 
 // setVolLocked sets the volume and arms the echo-suppression hold, capturing a
 // pre-mute level to persist (returned) when transitioning into mute.
@@ -882,9 +885,7 @@ func (st *State) SetEQLocal(code string, val int) {
 func (st *State) PreloadEQ(vals map[string]int) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	for code, v := range vals {
-		st.eqVals[code] = v
-	}
+	maps.Copy(st.eqVals, vals)
 }
 
 // EQValue returns one control's last-known value and whether it is known yet.
@@ -900,11 +901,7 @@ func (st *State) EQValue(code string) (int, bool) {
 func (st *State) EQView() (connected bool, vals map[string]int) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	vals = make(map[string]int, len(st.eqVals))
-	for k, v := range st.eqVals {
-		vals[k] = v
-	}
-	return st.eqConnected, vals
+	return st.eqConnected, maps.Clone(st.eqVals)
 }
 
 // Note records a transient error message (no-op once fatal).
@@ -1066,7 +1063,7 @@ func pingStat(r []float64) PingStat {
 	if len(r) == 0 {
 		return PingStat{}
 	}
-	ps := PingStat{OK: true, Peak: r[0], Series: append([]float64(nil), r...)}
+	ps := PingStat{OK: true, Peak: r[0], Series: slices.Clone(r)}
 	var sum float64
 	for _, v := range r {
 		sum += v
@@ -1141,10 +1138,10 @@ func (st *State) ToggleOptimistic() bool {
 // UseNumber so that out-of-range literals like 1e999 parse losslessly (Python's
 // json.loads accepts them as inf); the conversion to int happens later in Int,
 // which then drops them, matching the Python sanitizer.
-func parseJSON(s string) interface{} {
+func parseJSON(s string) any {
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.UseNumber()
-	var v interface{}
+	var v any
 	if dec.Decode(&v) != nil {
 		return nil
 	}

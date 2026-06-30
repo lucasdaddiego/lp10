@@ -7,7 +7,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/lucasdaddiego/lp10)](https://goreportcard.com/report/github.com/lucasdaddiego/lp10)
 [![Go Reference](https://pkg.go.dev/badge/github.com/lucasdaddiego/lp10.svg)](https://pkg.go.dev/github.com/lucasdaddiego/lp10)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-![go](https://img.shields.io/badge/go-1.24%2B-00ADD8)
+![go](https://img.shields.io/badge/go-1.26%2B-00ADD8)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
 ```
@@ -98,7 +98,7 @@ app, no browser, no background daemon: run `lp10`, get one screen.
 
 ## Install
 
-Requires **macOS or Linux**, a recent **Go** toolchain (1.24+), and **OpenSSH**
+Requires **macOS or Linux**, a recent **Go** toolchain (1.26+), and **OpenSSH**
 (already on macOS; `openssh-client` on Linux). On Linux you also need
 `secret-tool` (`libsecret-tools`) plus a running keyring — see step 1. Nothing
 else at runtime.
@@ -354,8 +354,9 @@ level and the now-playing/EQ snapshot used for instant first paint) lives under
 ## Development
 
 ```sh
-make test    # go vet + the full suite, fully off-device
-make run     # launch the live TUI
+make test     # go vet + the full suite, fully off-device
+make run      # launch the live TUI
+make generate # regenerate the embedded device loop after editing remote_loop.src.sh
 ```
 
 The suite never touches a real device: `LP10_SSH` swaps in a fake ssh transport
@@ -363,7 +364,10 @@ The suite never touches a real device: `LP10_SSH` swaps in a fake ssh transport
 `eof`, `garbage`, `authfail`, `keychain-locked`, `heal`), and `LP10_STATE_DIR`
 isolates persistent state. The on-device shell loop is checked for validity
 (`sh -n`) and its parsers are exercised against captured device output, so edits
-to it fail in CI rather than silently on the device.
+to it fail in CI rather than silently on the device. The loop is authored as
+readable shell in `internal/transport/remote_loop.src.sh` and minified into the
+embedded `remote_loop.sh` by `go generate` (`make generate`); a stale embed fails
+the suite.
 
 ## Project layout
 
@@ -372,6 +376,7 @@ main.go                 entry: askpass hot path, signals, run + teardown
 internal/config/        config file, paths, premute/snapshot persistence
 internal/protocol/      LUCI wire framing, MB42 parse, command reduction, State
 internal/transport/     secret-store/askpass auth, ssh argv, the on-device loop
+internal/transport/loopgen/  minifies remote_loop.src.sh into the embedded remote_loop.sh
 internal/discovery/     one-shot mDNS query to find the LP10 on the LAN
 internal/workers/       stream / command / watchdog / EQ-tunnel / album-art goroutines + teardown
 internal/tunnel/        the :2018 plain-text EQ/control protocol

@@ -170,18 +170,14 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 		lines := strings.Split(trimmed, "\n")
 		st.Note(clip160(lines[len(lines)-1]))
 	}
-	if !st.Stop.Wait(backoff) {
-		backoff *= 2
-		if backoff > MaxBackoff {
-			backoff = MaxBackoff
-		}
-	}
-	return backoff
+	return waitBackoff(st, backoff)
 }
 
+// clip160 truncates an ssh-stderr line for a UI Note, dropping any trailing partial
+// rune the byte cut would otherwise leave (ToValidUTF8 strips the invalid tail).
 func clip160(s string) string {
 	if len(s) > 160 {
-		return s[:160]
+		return strings.ToValidUTF8(s[:160], "")
 	}
 	return s
 }
@@ -200,15 +196,22 @@ func applyRecordSafe(st *protocol.State, rec protocol.Record) (ok bool) {
 	return true
 }
 
+// closeStdinLocked closes the child's stdin while holding WLock, so the close can't
+// race a concurrent write; an already-closed/raced Close panic is swallowed.
+func closeStdinLocked(st *protocol.State, proc *protocol.Proc) {
+	defer func() { recover() }()
+	st.WLock.Lock()
+	defer st.WLock.Unlock()
+	if proc.Stdin != nil {
+		proc.Stdin.Close()
+	}
+}
+
 // reap closes stdin, awaits/kills the child, and releases every pipe.
 func reap(st *protocol.State, proc *protocol.Proc) {
 	func() {
 		defer func() { recover() }()
-		st.WLock.Lock()
-		if proc.Stdin != nil {
-			proc.Stdin.Close()
-		}
-		st.WLock.Unlock()
+		closeStdinLocked(st, proc)
 		if !proc.WaitTimeout(1 * time.Second) {
 			if proc.Cmd.Process != nil {
 				proc.Cmd.Process.Kill()
@@ -224,10 +227,10 @@ func reap(st *protocol.State, proc *protocol.Proc) {
 
 // selfSnap is the persisted subset of a snapshot: the player state plus the
 // last-known EQ/tone values, so both panes paint instantly on the next launch.
-func selfSnap(st *protocol.State) map[string]interface{} {
+func selfSnap(st *protocol.State) map[string]any {
 	s := st.Snap()
 	_, eq := st.EQView()
-	return map[string]interface{}{
+	return map[string]any{
 		"track": s.Track, "pos": s.Pos, "playing": s.Playing, "vol": s.Vol, "eq": eq,
 	}
 }
@@ -392,14 +395,7 @@ func Teardown(st *protocol.State, cmds chan<- *protocol.Command, drain time.Dura
 		if proc == nil {
 			return
 		}
-		func() {
-			defer func() { recover() }()
-			st.WLock.Lock()
-			if proc.Stdin != nil {
-				proc.Stdin.Close()
-			}
-			st.WLock.Unlock()
-		}()
+		closeStdinLocked(st, proc)
 		if proc.WaitTimeout(300 * time.Millisecond) {
 			return
 		}

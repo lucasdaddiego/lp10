@@ -12,7 +12,7 @@ import (
 
 // hasRow reports whether some line of flat contains every one of subs.
 func hasRow(flat string, subs ...string) bool {
-	for _, ln := range strings.Split(flat, "\n") {
+	for ln := range strings.SplitSeq(flat, "\n") {
 		ok := true
 		for _, s := range subs {
 			if !strings.Contains(ln, s) {

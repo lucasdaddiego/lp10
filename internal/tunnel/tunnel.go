@@ -73,13 +73,7 @@ func Clamp(code string, v int) int {
 	if !ok {
 		return v
 	}
-	if v < s.Min {
-		return s.Min
-	}
-	if v > s.Max {
-		return s.Max
-	}
-	return v
+	return max(s.Min, min(s.Max, v))
 }
 
 // Set is the wire string that assigns a value, e.g. Set("MXV", 100) == "MXV:100;".
@@ -127,15 +121,15 @@ func ParseFrames(buf string) (out []Update, rest string) {
 }
 
 func parseFrame(frame string) (code string, val int, ok bool) {
-	c := strings.IndexByte(frame, ':')
-	if c < 0 {
+	before, after, ok0 := strings.Cut(frame, ":")
+	if !ok0 {
 		return "", 0, false // bare "CODE" (our own query echo) — ignore
 	}
-	code = frame[:c]
+	code = before
 	if _, known := specByCode[code]; !known {
 		return "", 0, false
 	}
-	n, err := strconv.Atoi(strings.TrimSpace(frame[c+1:]))
+	n, err := strconv.Atoi(strings.TrimSpace(after))
 	if err != nil {
 		return "", 0, false
 	}

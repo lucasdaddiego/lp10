@@ -7,12 +7,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Under a CJK locale (amb==2), the East-Asian-Ambiguous UI glyphs lp10 draws
+// Under a CJK locale (localeAmb==2), the East-Asian-Ambiguous UI glyphs lp10 draws
 // must still measure width-1 — matching lipgloss (which renders/pads) and a
 // modern terminal — so DispW and lipgloss never disagree and tear the layout.
 func TestAmbiguousGlyphsMeasureNarrowUnderCJK(t *testing.T) {
-	defer func(orig int) { amb = orig }(amb)
-	amb = 2 // simulate a CJK locale
+	defer func(orig int) { localeAmb = orig }(localeAmb)
+	localeAmb = 2 // simulate a CJK locale
 	for _, r := range []rune{'●', '○', '·', '━', '─', '┃', '│', '█', '░', '▀', '…', '▁', '▇',
 		'╭', '╮', '╰', '╯', '┏', '┓', '┊'} { // cover-frame corners, idle-motif beam, mute column
 		if got := charW(r); got != 1 {

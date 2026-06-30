@@ -34,5 +34,9 @@ jobs:
           fi
       - name: vet
         run: go vet ./...
+      - name: modernize
+        # go fix -diff prints a patch and exits non-zero when the tree isn't at the
+        # toolchain modernizer's fixpoint; run `go fix ./...` locally to clear it.
+        run: go fix -diff ./...
       - name: test
         run: go test -race ./...

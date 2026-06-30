@@ -10,8 +10,10 @@
 package discovery
 
 import (
+	"cmp"
+	"encoding/binary"
 	"net"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -190,11 +192,8 @@ func pickLP10(ds []Device, nameHint string) (Device, bool) {
 		return Device{}, false
 	}
 	// stable order so an unhinted pick among several LP10s is deterministic
-	sort.Slice(lp, func(i, j int) bool {
-		if lp[i].Name != lp[j].Name {
-			return lp[i].Name < lp[j].Name
-		}
-		return lp[i].MAC < lp[j].MAC
+	slices.SortFunc(lp, func(a, b Device) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.MAC, b.MAC))
 	})
 	if nameHint != "" {
 		for _, d := range lp {
@@ -286,12 +285,12 @@ type rr struct {
 	ip     net.IP   // A address
 }
 
-func be16(b []byte, i int) uint16 { return uint16(b[i])<<8 | uint16(b[i+1]) }
+func be16(b []byte, i int) uint16 { return binary.BigEndian.Uint16(b[i:]) }
 
 func encodeName(name string) []byte {
 	var b []byte
-	for _, lbl := range strings.Split(strings.TrimSuffix(name, "."), ".") {
-		if lbl == "" {
+	for lbl := range strings.SplitSeq(strings.TrimSuffix(name, "."), ".") {
+		if lbl == "" || len(lbl) > 63 { // 63 = max DNS label; a longer one would corrupt the length byte
 			continue
 		}
 		b = append(b, byte(len(lbl)))
@@ -304,9 +303,8 @@ func buildQuery(name string, qtype uint16) []byte {
 	msg := make([]byte, 12) // header: id=0, flags=0, counts=0…
 	msg[5] = 1              // QDCOUNT = 1
 	msg = append(msg, encodeName(name)...)
-	msg = append(msg, byte(qtype>>8), byte(qtype))
-	q := classQU | 1 // QU | IN
-	return append(msg, byte(q>>8), byte(q))
+	msg = binary.BigEndian.AppendUint16(msg, qtype)
+	return binary.BigEndian.AppendUint16(msg, classQU|1) // QCLASS: QU | IN
 }
 
 // parseName decodes a (possibly compressed) name starting at off, returning the
@@ -374,7 +372,7 @@ func parsePacket(msg []byte) ([]rr, bool) {
 	}
 	qd, an, ns, ar := int(be16(msg, 4)), int(be16(msg, 6)), int(be16(msg, 8)), int(be16(msg, 10))
 	off := 12
-	for i := 0; i < qd; i++ { // skip questions
+	for range qd { // skip questions
 		_, no, ok := parseName(msg, off)
 		if !ok {
 			return nil, false

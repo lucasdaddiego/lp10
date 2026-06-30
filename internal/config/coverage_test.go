@@ -58,7 +58,7 @@ func TestCov_ApplyTOMLAllKeys(t *testing.T) {
 		Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep,
 		PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Mouse: true,
 	}
-	applyTOML(&cfg, map[string]interface{}{
+	applyTOML(&cfg, map[string]any{
 		"host":      "10.0.0.1",
 		"user":      "pi",
 		"name":      "Kitchen",
@@ -80,7 +80,7 @@ func TestCov_ApplyTOMLAllKeys(t *testing.T) {
 // an integral float (9.0) within int range is accepted.
 func TestCov_ApplyTOMLIntegralFloatVolStep(t *testing.T) {
 	cfg := Config{VolStep: defVolStep}
-	applyTOML(&cfg, map[string]interface{}{"vol_step": float64(9.0)})
+	applyTOML(&cfg, map[string]any{"vol_step": float64(9.0)})
 	if cfg.VolStep != 9 {
 		t.Errorf("integral float vol_step should apply as 9, got %d", cfg.VolStep)
 	}
@@ -91,7 +91,7 @@ func TestCov_ApplyTOMLIntegralFloatVolStep(t *testing.T) {
 // out-of-range float are ignored, and a wrong-typed string field is ignored.
 func TestCov_ApplyTOMLRejectsBadValues(t *testing.T) {
 	cfg := Config{ArtMode: defArtMode, VolStep: defVolStep, Host: defHost}
-	applyTOML(&cfg, map[string]interface{}{
+	applyTOML(&cfg, map[string]any{
 		"art_mode": "sixel",      // not in artModes -> ignored
 		"vol_step": float64(2.5), // non-integral float -> ignored
 		"host":     int64(123),   // wrong type for a string field -> ignored
@@ -108,7 +108,7 @@ func TestCov_ApplyTOMLRejectsBadValues(t *testing.T) {
 
 	// An integral but out-of-range float must also be rejected (no overflow).
 	cfg2 := Config{VolStep: defVolStep}
-	applyTOML(&cfg2, map[string]interface{}{"vol_step": 1e19})
+	applyTOML(&cfg2, map[string]any{"vol_step": 1e19})
 	if cfg2.VolStep != defVolStep {
 		t.Errorf("out-of-range float vol_step should be ignored, got %d", cfg2.VolStep)
 	}
@@ -226,12 +226,12 @@ func TestCov_LoadSnapshotInvalidJSON(t *testing.T) {
 func TestCov_LoadSnapshotTrackVariants(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
 
-	SaveSnapshot(p, map[string]interface{}{"vol": 12})
+	SaveSnapshot(p, map[string]any{"vol": 12})
 	if got := LoadSnapshot(p); got == nil || got["vol"] == nil {
 		t.Errorf("snapshot without a track key should round-trip, got %v", got)
 	}
 
-	SaveSnapshot(p, map[string]interface{}{"track": nil, "vol": 3})
+	SaveSnapshot(p, map[string]any{"track": nil, "vol": 3})
 	if got := LoadSnapshot(p); got == nil {
 		t.Error("snapshot with an explicit null track should be accepted")
 	}

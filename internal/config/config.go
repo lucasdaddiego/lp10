@@ -48,6 +48,7 @@ const (
 	defVolStep  = 2
 	defPingHost = "spotify.com" // diagnostics: the device's internet-latency target
 	defArtMode  = "auto"        // art rendering: auto|kitty|halfblock|off
+	defPremute  = 30            // pre-mute level restored on any read problem
 )
 
 // artModes is the set of accepted art_mode values; anything else in the config
@@ -90,7 +91,7 @@ func Load() Config {
 	// resolve to a cwd-relative <cwd>/.config path that varies run to run.
 	if base != "" {
 		path := filepath.Join(base, "lp10", "config.toml")
-		var data map[string]interface{}
+		var data map[string]any
 		_, err := toml.DecodeFile(path, &data)
 		switch {
 		case err == nil:
@@ -117,7 +118,7 @@ func Load() Config {
 // only strings; vol_step accepts an integer or an integral float. Anything else
 // (including a bool, or a string for a numeric field) is silently ignored, to
 // avoid surprising coercions from typos.
-func applyTOML(cfg *Config, data map[string]interface{}) {
+func applyTOML(cfg *Config, data map[string]any) {
 	if v, ok := data["host"].(string); ok {
 		cfg.Host = v
 	}
@@ -243,15 +244,15 @@ func clampVol(v int) int {
 // any problem (missing path, unreadable, or non-numeric content).
 func LoadPremute(path string) int {
 	if path == "" {
-		return 30
+		return defPremute
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return 30
+		return defPremute
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil {
-		return 30
+		return defPremute
 	}
 	return clampVol(n)
 }
@@ -266,7 +267,7 @@ func SavePremute(path string, v int) {
 
 // LoadSnapshot reads the cached snapshot. A corrupt file (not an object, or a
 // non-object/non-null "track") returns nil so it cannot become a crash loop.
-func LoadSnapshot(path string) map[string]interface{} {
+func LoadSnapshot(path string) map[string]any {
 	if path == "" {
 		return nil
 	}
@@ -274,16 +275,16 @@ func LoadSnapshot(path string) map[string]interface{} {
 	if err != nil {
 		return nil
 	}
-	var v interface{}
+	var v any
 	if json.Unmarshal(b, &v) != nil {
 		return nil
 	}
-	snap, ok := v.(map[string]interface{})
+	snap, ok := v.(map[string]any)
 	if !ok {
 		return nil
 	}
 	if tr, present := snap["track"]; present && tr != nil {
-		if _, ok := tr.(map[string]interface{}); !ok {
+		if _, ok := tr.(map[string]any); !ok {
 			return nil
 		}
 	}
@@ -291,7 +292,7 @@ func LoadSnapshot(path string) map[string]interface{} {
 }
 
 // SaveSnapshot persists the snapshot as JSON. Failures are swallowed.
-func SaveSnapshot(path string, snap interface{}) {
+func SaveSnapshot(path string, snap any) {
 	if path == "" {
 		return
 	}

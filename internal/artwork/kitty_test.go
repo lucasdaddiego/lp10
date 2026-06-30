@@ -142,9 +142,9 @@ func TestResamplePreservesSolid(t *testing.T) {
 // chunks (each APC is "\x1b_G<keys>;<payload>\x1b\\").
 func extractKittyPayload(transmit string) string {
 	var sb strings.Builder
-	for _, chunk := range strings.Split(transmit, "\x1b\\") {
-		if i := strings.IndexByte(chunk, ';'); i >= 0 {
-			sb.WriteString(chunk[i+1:])
+	for chunk := range strings.SplitSeq(transmit, "\x1b\\") {
+		if _, after, ok := strings.Cut(chunk, ";"); ok {
+			sb.WriteString(after)
 		}
 	}
 	return sb.String()

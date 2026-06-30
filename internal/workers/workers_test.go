@@ -149,7 +149,7 @@ func TestSnapshotPersistsDuringStream(t *testing.T) {
 		if snap == nil {
 			return false
 		}
-		tr, _ := snap["track"].(map[string]interface{})
+		tr, _ := snap["track"].(map[string]any)
 		return tr["TrackName"] == "De Música Ligera"
 	}, 8*time.Second) {
 		t.Fatalf("track snapshot never persisted: %v", config.LoadSnapshot(st.SnapshotFile))

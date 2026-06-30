@@ -21,8 +21,8 @@ func TestCoverAspectNotStretched(t *testing.T) {
 	const url = "https://i.scdn.co/image/0000000000000000000000000000000000000000" // playing_record's cover
 	mk := func(w, h int) image.Image {
 		im := image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
+		for y := range h {
+			for x := range w {
 				im.Set(x, y, color.RGBA{180, 180, 180, 255})
 			}
 		}
@@ -37,7 +37,7 @@ func TestCoverAspectNotStretched(t *testing.T) {
 		m.sty.trueColor = true
 		m.cfg.Art, m.cfg.ArtMode = true, "halfblock"
 		m.rows, m.cols, m.cellW, m.cellH = 34, 120, 10, 20 // measured 2:1 cells
-		for _, ln := range strings.Split(m.renderDashboard(st.Snap(), time.Time{}, 114, true), "\n") {
+		for ln := range strings.SplitSeq(m.renderDashboard(st.Snap(), time.Time{}, 114, true), "\n") {
 			if c := strings.Count(stripANSI(ln), "▀"); c > 0 {
 				h++
 				if c > w {
@@ -262,8 +262,8 @@ func TestLogicTickAdvancesMarquee(t *testing.T) {
 
 func fillImg(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.Set(x, y, c)
 		}
 	}

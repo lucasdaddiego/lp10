@@ -2,6 +2,7 @@ package tui
 
 import (
 	"image/color"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -1329,9 +1330,7 @@ func richDiag(t *testing.T, freq string, over map[int]string) (*model, *protocol
 	applyRaw(st, sRec(map[int]string{1: "1.4", 9: "80000"}))
 	applyRaw(st, sRec(map[int]string{1: "1.4", 9: "80000", 10: "2000", 11: "1500"}))
 	last := map[int]string{1: "1.4", 9: "80000", 10: "3000", 11: "2500", 14: "50"}
-	for k, v := range over {
-		last[k] = v
-	}
+	maps.Copy(last, over)
 	applyRaw(st, sRec(last))
 	m, _, _ := modelWith(st)
 	m.cfg.Discovered = true // the · mDNS host tag

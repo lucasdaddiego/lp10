@@ -122,16 +122,17 @@ func TestCov_BoundedLines(t *testing.T) {
 	if !ok || len(first) != maxLine {
 		t.Fatalf("first chunk len=%d want %d", len(first), maxLine)
 	}
-	total := first
+	var total strings.Builder
+	total.WriteString(first)
 	for {
 		s, more := next()
 		if !more {
 			break
 		}
-		total += s
+		total.WriteString(s)
 	}
-	if total != long {
-		t.Fatalf("reassembled %d bytes, want %d", len(total), len(long))
+	if total.String() != long {
+		t.Fatalf("reassembled %d bytes, want %d", len(total.String()), len(long))
 	}
 }
 

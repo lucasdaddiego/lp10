@@ -114,7 +114,7 @@ func sizeForPlacement(img image.Image, pxW, pxH int) image.Image {
 		return img
 	}
 	// scale to fit within the footprint, preserving aspect (contain)
-	scale := math.Min(float64(pxW)/float64(sw), float64(pxH)/float64(sh))
+	scale := min(float64(pxW)/float64(sw), float64(pxH)/float64(sh))
 	dw := int(float64(sw)*scale + 0.5)
 	dh := int(float64(sh)*scale + 0.5)
 	if dw < 1 {
@@ -135,7 +135,7 @@ func sizeForPlacement(img image.Image, pxW, pxH int) image.Image {
 	// centre the scaled cover on a transparent footprint-sized canvas
 	canvas := image.NewRGBA(image.Rect(0, 0, pxW, pxH))
 	ox, oy := (pxW-dw)/2, (pxH-dh)/2
-	for y := 0; y < dh; y++ {
+	for y := range dh {
 		di := canvas.PixOffset(ox, oy+y)
 		si := scaled.PixOffset(0, y)
 		copy(canvas.Pix[di:di+dw*4], scaled.Pix[si:si+dw*4])
@@ -147,17 +147,8 @@ func sizeForPlacement(img image.Image, pxW, pxH int) image.Image {
 // aspect. Used only as the fallback when the cell pixel size is unknown.
 func fit(img image.Image, minPx, maxPx int) image.Image {
 	b := img.Bounds()
-	long := b.Dx()
-	if b.Dy() > long {
-		long = b.Dy()
-	}
-	target := long
-	if target < minPx {
-		target = minPx
-	}
-	if target > maxPx {
-		target = maxPx
-	}
+	long := max(b.Dy(), b.Dx())
+	target := min(max(long, minPx), maxPx)
 	if long == 0 || target == long {
 		return img
 	}
@@ -190,12 +181,12 @@ func resample(src image.Image, w, h int) *image.RGBA {
 		}
 		return v
 	}
-	for dy := 0; dy < h; dy++ {
+	for dy := range h {
 		fy := (float64(dy)+0.5)*float64(sh)/float64(h) - 0.5 // sample at the dest pixel centre
 		y0 := int(math.Floor(fy))
 		ty := fy - float64(y0)
 		y0c, y1c := clamp(y0, sh-1), clamp(y0+1, sh-1)
-		for dx := 0; dx < w; dx++ {
+		for dx := range w {
 			fx := (float64(dx)+0.5)*float64(sw)/float64(w) - 0.5
 			x0 := int(math.Floor(fx))
 			tx := fx - float64(x0)
@@ -237,10 +228,7 @@ func kittyTransmit(id, cols, rows int, payload string) string {
 	var b strings.Builder
 	first := true
 	for {
-		n := chunk
-		if n > len(payload) {
-			n = len(payload)
-		}
+		n := min(chunk, len(payload))
 		piece := payload[:n]
 		payload = payload[n:]
 		more := 0
@@ -275,11 +263,11 @@ func kittyPlaceholders(id, cols, rows int) []string {
 	ph := string(rune(KittyPlaceholder))
 	fg := fmt.Sprintf("\x1b[38;2;%d;%d;%dm", (id>>16)&0xff, (id>>8)&0xff, id&0xff)
 	lines := make([]string, rows)
-	for r := 0; r < rows; r++ {
+	for r := range rows {
 		var b strings.Builder
 		b.WriteString(fg)
 		rowDia := string(kittyDiacritics[r])
-		for c := 0; c < cols; c++ {
+		for c := range cols {
 			b.WriteString(ph)
 			b.WriteString(rowDia)
 			b.WriteString(string(kittyDiacritics[c]))

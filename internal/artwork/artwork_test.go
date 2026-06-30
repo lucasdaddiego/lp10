@@ -17,8 +17,8 @@ import (
 // solid builds a w×h image filled with c.
 func solid(w, h int, c color.RGBA) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.Set(x, y, c)
 		}
 	}
@@ -191,8 +191,8 @@ func TestDominant(t *testing.T) {
 
 	// a small vivid splash on a near-grey field still wins on saturation weight
 	img := solid(40, 40, color.RGBA{120, 122, 124, 255})
-	for y := 0; y < 8; y++ {
-		for x := 0; x < 8; x++ {
+	for y := range 8 {
+		for x := range 8 {
 			img.Set(x, y, color.RGBA{30, 60, 220, 255}) // blue corner
 		}
 	}

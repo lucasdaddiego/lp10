@@ -133,7 +133,7 @@ func TestGarbageLinesDoNotRaiseOrCorrupt(t *testing.T) {
 
 func TestOversizedRecordIsShedNotBuffered(t *testing.T) {
 	lines := []string{"@@B"}
-	for i := 0; i < 100000; i++ {
+	for range 100000 {
 		lines = append(lines, strings.Repeat("x", 80))
 	}
 	lines = append(lines, "@@E", "@@p", "@@E")
@@ -247,7 +247,7 @@ func TestParseMB42ReturnsNoneWhenWindowContentsNotDict(t *testing.T) {
 }
 
 func TestUnknownKeysDroppedAtBoundary(t *testing.T) {
-	tr := SanitizeTrack(map[string]interface{}{
+	tr := SanitizeTrack(map[string]any{
 		"TrackName":    "x",
 		"ChannelCount": 2,      // now whitelisted -> kept
 		"TotallyBogus": "nope", // not whitelisted -> dropped
@@ -264,7 +264,7 @@ func TestSanitizeTrackWithNonDict(t *testing.T) {
 	if SanitizeTrack("not a dict") != nil {
 		t.Error("string input should yield nil")
 	}
-	if SanitizeTrack([]interface{}{1, 2, 3}) != nil {
+	if SanitizeTrack([]any{1, 2, 3}) != nil {
 		t.Error("list input should yield nil")
 	}
 	if SanitizeTrack(nil) != nil {
@@ -285,7 +285,7 @@ func TestIntReturnsNoneForBool(t *testing.T) {
 
 func TestIntCoercion(t *testing.T) {
 	cases := []struct {
-		in   interface{}
+		in   any
 		want int
 		ok   bool
 	}{
@@ -294,7 +294,7 @@ func TestIntCoercion(t *testing.T) {
 		{-1, -1, true},
 		{nil, 0, false},
 		{"x", 0, false},
-		{map[string]interface{}{}, 0, false},
+		{map[string]any{}, 0, false},
 	}
 	for _, c := range cases {
 		got, ok := Int(c.in)
@@ -342,7 +342,7 @@ func TestPrintableMatchesCPythonCategories(t *testing.T) {
 
 func TestIntNonfiniteFloats(t *testing.T) {
 	posInf := 1.0
-	for i := 0; i < 400; i++ {
+	for range 400 {
 		posInf *= 10
 	}
 	if _, ok := Int(posInf); ok {
@@ -741,7 +741,7 @@ func TestDeviceRecordFixtureParses(t *testing.T) {
 func TestFloodingSectionDoesNotShedSiblings(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("@@B\n")
-	for i := 0; i < maxRecLines+50; i++ {
+	for range maxRecLines + 50 {
 		b.WriteString("garbage line\n")
 	}
 	b.WriteString("@@p\nMID-Read:49 Data:4242 Length:4\n")

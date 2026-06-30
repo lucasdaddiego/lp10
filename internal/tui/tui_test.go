@@ -309,8 +309,8 @@ func TestSourceNameOnSanitizedTrack(t *testing.T) {
 
 func TestPreloadSnapshotIsPausedAndSanitized(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]interface{}{
-		"track": map[string]interface{}{"TrackName": "x", "Junk": struct{}{}},
+	preloadSnapshot(st, map[string]any{
+		"track": map[string]any{"TrackName": "x", "Junk": struct{}{}},
 		"pos":   5000, "vol": 30, "playing": 0,
 	})
 	s := st.Snap()
@@ -333,7 +333,7 @@ func TestPreloadSnapshotIsPausedAndSanitized(t *testing.T) {
 
 func TestPreloadSnapshotRejectsJunkValues(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]interface{}{"track": 42, "pos": "junk", "vol": nil})
+	preloadSnapshot(st, map[string]any{"track": 42, "pos": "junk", "vol": nil})
 	s := st.Snap()
 	if s.Track != nil || s.Pos != 0 || s.Vol != 0 {
 		t.Errorf("junk preload should yield empty state: %+v", s)
@@ -350,10 +350,10 @@ func TestPreloadSnapshotNoneIsNoop(t *testing.T) {
 
 func TestPreloadSnapshotSeedsEQ(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]interface{}{
-		"track": map[string]interface{}{"TrackName": "x"},
+	preloadSnapshot(st, map[string]any{
+		"track": map[string]any{"TrackName": "x"},
 		"pos":   1000, "vol": 30,
-		"eq": map[string]interface{}{
+		"eq": map[string]any{
 			"MXV": 100.0, "BAS": 3.0, "EQS": 1.0,
 			"ZZZ": 5.0,    // unknown code -> dropped
 			"TRE": "junk", // non-numeric -> dropped
@@ -384,8 +384,8 @@ func TestPreloadSnapshotSeedsEQ(t *testing.T) {
 
 func TestPreloadSnapshotBasic(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]interface{}{
-		"track": map[string]interface{}{"TrackName": "Test"}, "pos": 1000, "vol": 50, "playing": 0,
+	preloadSnapshot(st, map[string]any{
+		"track": map[string]any{"TrackName": "Test"}, "pos": 1000, "vol": 50, "playing": 0,
 	})
 	s := st.Snap()
 	if s.Track.Str("TrackName") != "Test" || s.Pos != 1000 || s.Vol != 50 || s.Playing != 2 {
@@ -428,7 +428,7 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 	m, _, collect := makeModel(t)
 
 	// closed overlay: never asks the box for stats
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		m.syncStats()
 	}
 	if c := collect(); len(c) != 0 {
@@ -444,7 +444,7 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 
 	// it does not re-send every tick — only after the re-assert interval
 	// (statsTicks counts StatsReassertTicks decrements down to 0)
-	for i := 0; i < StatsReassertTicks; i++ {
+	for range StatsReassertTicks {
 		m.syncStats()
 	}
 	if c := collect(); len(c) != 0 {
@@ -696,8 +696,8 @@ func TestDiagLatencyBlockFullRender(t *testing.T) {
 		t.Error("a sparkline should render in the latency block")
 	}
 	// log the network→audio slice for eyeballing
-	lines := strings.Split(full, "\n")
-	for _, ln := range lines {
+	lines := strings.SplitSeq(full, "\n")
+	for ln := range lines {
 		if strings.Contains(ln, "link") || strings.Contains(ln, "address") ||
 			strings.Contains(ln, "traffic") || strings.Contains(ln, "latency") ||
 			strings.Contains(ln, "you") || strings.Contains(ln, "gw ") || strings.Contains(ln, "spotify") {
@@ -743,8 +743,8 @@ func TestDiagSilentToleratesIdleCadence(t *testing.T) {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, ok := strings.Cut(s, "\n"); ok {
+		return before
 	}
 	return s
 }

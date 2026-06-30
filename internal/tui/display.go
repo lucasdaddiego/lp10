@@ -3,6 +3,7 @@
 package tui
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,25 +13,19 @@ import (
 	"golang.org/x/text/width"
 )
 
-// amb is 2 under a CJK locale, 1 otherwise. It no longer affects width
+// localeAmb is 2 under a CJK locale, 1 otherwise. It no longer affects width
 // measurement (charW fixes ambiguous glyphs at 1 to match lipgloss); it only
-// selects the glyph set — under amb==2, GL falls back to ASCII glyphs so a
+// selects the glyph set — under localeAmb==2, GL falls back to ASCII glyphs so a
 // terminal that *does* render ambiguous double-width still stays aligned.
-var amb = detectAmb()
+var localeAmb = detectAmb()
 
-// GL is the glyph set, with ASCII fallbacks when amb == 2 (so every positioned
+// GL is the glyph set, with ASCII fallbacks when localeAmb == 2 (so every positioned
 // glyph is width-1).
-var GL = glyphs(amb)
+var GL = glyphs(localeAmb)
 
 func detectAmb() int {
 	// POSIX precedence for character handling: LC_ALL > LC_CTYPE > LANG.
-	loc := os.Getenv("LC_ALL")
-	if loc == "" {
-		loc = os.Getenv("LC_CTYPE")
-	}
-	if loc == "" {
-		loc = os.Getenv("LANG")
-	}
+	loc := cmp.Or(os.Getenv("LC_ALL"), os.Getenv("LC_CTYPE"), os.Getenv("LANG"))
 	if len(loc) >= 2 {
 		switch strings.ToLower(loc[:2]) {
 		case "ja", "ko", "zh":
@@ -75,7 +70,7 @@ func FmtMs(ms int) string {
 // rendering and padding — always measures them as 1, and so does a modern
 // terminal (Ghostty); counting them as 2 under a CJK locale made DispW disagree
 // with lipgloss and tore the layout by a column. Glyph *selection* still adapts
-// to a CJK locale via `amb` / the GL ASCII fallbacks (defensive for terminals
+// to a CJK locale via `localeAmb` / the GL ASCII fallbacks (defensive for terminals
 // configured to render ambiguous double-width); only measurement is fixed at 1.
 func charW(r rune) int {
 	switch width.LookupRune(r).Kind() {

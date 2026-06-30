@@ -80,7 +80,7 @@ func TestGetDecodesGIF(t *testing.T) {
 
 func TestPruneCache(t *testing.T) {
 	dir := t.TempDir()
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		p := filepath.Join(dir, "f"+strconv.Itoa(i))
 		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)

@@ -13,6 +13,7 @@ package artwork
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -29,7 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -143,7 +144,7 @@ func PruneCache(dir string, keep int) {
 	if len(files) <= keep {
 		return
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod > files[j].mod }) // newest first
+	slices.SortFunc(files, func(a, b f) int { return cmp.Compare(b.mod, a.mod) }) // newest first
 	for _, old := range files[keep:] {
 		_ = os.Remove(old.path)
 	}
@@ -211,9 +212,9 @@ func HalfBlock(img image.Image, wCells, hCells int) []string {
 	px := downscale(img, wCells, hCells*2)
 	lines := make([]string, hCells)
 	var b strings.Builder
-	for cy := 0; cy < hCells; cy++ {
+	for cy := range hCells {
 		b.Reset()
-		for cx := 0; cx < wCells; cx++ {
+		for cx := range wCells {
 			tr, tg, tb := rgbAt(px, cx, cy*2)
 			br, bg, bb := rgbAt(px, cx, cy*2+1)
 			fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%d;48;2;%d;%d;%dm▀", tr, tg, tb, br, bg, bb)
@@ -246,8 +247,8 @@ func Dominant(img image.Image) (color.RGBA, bool) {
 	)
 	px := downscale(img, grid, grid)
 	var weight, rs, gs, bs [buckets]float64
-	for y := 0; y < grid; y++ {
-		for x := 0; x < grid; x++ {
+	for y := range grid {
+		for x := range grid {
 			r, g, b := rgbAt(px, x, y)
 			h, s, l := RGBToHSL(r, g, b)
 			if l < 0.12 || l > 0.92 || s < 0.18 {
@@ -284,8 +285,8 @@ func Dominant(img image.Image) (color.RGBA, bool) {
 // (recolouring the meter to a cover's hue), so the two stay in lock-step.
 func RGBToHSL(r, g, b uint8) (h, s, l float64) {
 	rf, gf, bf := float64(r)/255, float64(g)/255, float64(b)/255
-	maxc := math.Max(rf, math.Max(gf, bf))
-	minc := math.Min(rf, math.Min(gf, bf))
+	maxc := max(rf, gf, bf)
+	minc := min(rf, gf, bf)
 	l = (maxc + minc) / 2
 	d := maxc - minc
 	if d == 0 {
@@ -331,8 +332,8 @@ func Ghost(img image.Image) image.Image {
 		}
 		return uint8(v)
 	}
-	for y := 0; y < b.Dy(); y++ {
-		for x := 0; x < b.Dx(); x++ {
+	for y := range b.Dy() {
+		for x := range b.Dx() {
 			r, g, bl, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA() // 16-bit
 			rf, gf, bf := float64(r>>8), float64(g>>8), float64(bl>>8)
 			luma := 0.299*rf + 0.587*gf + 0.114*bf
@@ -353,13 +354,13 @@ func downscale(src image.Image, w, h int) *image.RGBA {
 	if w <= 0 || h <= 0 || sw <= 0 || sh <= 0 {
 		return dst
 	}
-	for dy := 0; dy < h; dy++ {
+	for dy := range h {
 		y0 := b.Min.Y + dy*sh/h
 		y1 := b.Min.Y + (dy+1)*sh/h
 		if y1 <= y0 {
 			y1 = y0 + 1
 		}
-		for dx := 0; dx < w; dx++ {
+		for dx := range w {
 			x0 := b.Min.X + dx*sw/w
 			x1 := b.Min.X + (dx+1)*sw/w
 			if x1 <= x0 {
