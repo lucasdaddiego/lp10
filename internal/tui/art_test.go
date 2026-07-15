@@ -18,7 +18,7 @@ import (
 // block's cell footprint tracks the source shape (a square stays square in display;
 // a 2:1 source renders visibly wider). Regression for the stretched-disc fix.
 func TestCoverAspectNotStretched(t *testing.T) {
-	const url = "https://i.scdn.co/image/0000000000000000000000000000000000000000" // playing_record's cover
+	const url = "https://127.0.0.1:9/image/00000000000000000000000000000000000000" // playing_record's cover
 	mk := func(w, h int) image.Image {
 		im := image.NewRGBA(image.Rect(0, 0, w, h))
 		for y := range h {

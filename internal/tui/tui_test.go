@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -688,7 +689,7 @@ func TestDiagSilentToleratesIdleCadence(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.sty = newTheme() // normally set on first View()
 	m.rows, m.cols = 44, 100
-	_, dData, _, _, _ := st.DiagView()
+	_, dData, _, _ := st.DiagView()
 	snap := st.Snap()
 	if !snap.Connected || dData.IsZero() {
 		t.Fatal("setup: expected connected with a last_data stamp")
@@ -710,4 +711,53 @@ func firstLine(s string) string {
 		return before
 	}
 	return s
+}
+
+// Both startup problems must reach the user through State's single note slot:
+// a media-key failure must APPEND to a config warning, never replace it. (The
+// pty test in internal/e2e only exercises the media-key arm on a Mac that
+// hasn't granted Accessibility; this pins the composition on every platform.)
+func TestStartupNote(t *testing.T) {
+	tapErr := errors.New("grant Accessibility")
+	for _, c := range []struct {
+		warn string
+		err  error
+		want string
+	}{
+		{"", nil, ""},
+		{"config.toml ignored: bad", nil, "config.toml ignored: bad"},
+		{"", tapErr, "media keys off — grant Accessibility"},
+		{"config.toml ignored: bad", tapErr, "config.toml ignored: bad · media keys off — grant Accessibility"},
+	} {
+		if got := startupNote(c.warn, c.err); got != c.want {
+			t.Errorf("startupNote(%q, %v) = %q, want %q", c.warn, c.err, got, c.want)
+		}
+	}
+}
+
+// The diag overlay's error line must not present a recovered transient hiccup
+// as a live fault: transient notes render age-stamped and age out after
+// diagErrWindow; a fatal error is current state and always renders.
+func TestDiagErrLineAging(t *testing.T) {
+	now := time.Now()
+	W := 80
+
+	fresh := protocol.Snapshot{Error: "command not delivered", ErrorAt: now.Add(-3 * time.Second)}
+	if line, ok := diagErrLine(fresh, now, W); !ok || !strings.Contains(stripANSI(line), "s ago") {
+		t.Errorf("a fresh transient error should render age-stamped, got %q ok=%v", stripANSI(line), ok)
+	}
+
+	stale := protocol.Snapshot{Error: "command not delivered", ErrorAt: now.Add(-diagErrWindow - time.Second)}
+	if line, ok := diagErrLine(stale, now, W); ok {
+		t.Errorf("a transient error past diagErrWindow must age out of the overlay, got %q", stripANSI(line))
+	}
+
+	fatal := protocol.Snapshot{Error: "ssh authentication failed", ErrorAt: now.Add(-time.Hour), Fatal: true}
+	if line, ok := diagErrLine(fatal, now, W); !ok || strings.Contains(stripANSI(line), "ago") {
+		t.Errorf("a fatal error is current state: always shown, no age stamp; got %q ok=%v", stripANSI(line), ok)
+	}
+
+	if _, ok := diagErrLine(protocol.Snapshot{}, now, W); ok {
+		t.Error("no error should render no line")
+	}
 }

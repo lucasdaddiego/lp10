@@ -76,7 +76,12 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 		"LP10_SSH="+fake,
 		"LP10_FAKE_SCENARIO=normal",
 		"LP10_ASKPASS=",
-		"LP10_HOST=",
+		// A non-empty LP10_HOST keeps the run hermetic: main skips mDNS
+		// discovery (which would otherwise find a real LP10 on the developer's
+		// LAN), and the :2018 tunnel worker dials loopback — instantly refused
+		// — instead of a real device. An empty value would NOT do this: the
+		// discovery gate only checks that the variable is non-empty.
+		"LP10_HOST=127.0.0.1",
 		"LP10_STATE_DIR="+stateDir,
 		"XDG_CONFIG_HOME="+cfgDir,
 	)

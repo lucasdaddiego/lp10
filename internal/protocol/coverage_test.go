@@ -219,14 +219,14 @@ func TestCov_EQAccessors(t *testing.T) {
 func TestCov_NoteAndFatal(t *testing.T) {
 	st := NewState()
 	st.Note("transient")
-	if _, _, _, msg, _ := st.DiagView(); msg != "transient" {
+	if msg := st.Snap().Error; msg != "transient" {
 		t.Errorf("errMsg = %q, want \"transient\"", msg)
 	}
 
 	// SetFatal latches; Note is a no-op while fatal.
 	st.SetFatal("boom")
 	st.Note("ignored while fatal")
-	if _, _, _, msg, _ := st.DiagView(); msg != "boom" {
+	if msg := st.Snap().Error; msg != "boom" {
 		t.Errorf("errMsg = %q, want \"boom\" (Note no-ops once fatal)", msg)
 	}
 	if !st.Snap().Fatal {
@@ -238,7 +238,7 @@ func TestCov_NoteAndFatal(t *testing.T) {
 	if st.Snap().Fatal {
 		t.Error("ClearFatalOnData should clear the fatal flag")
 	}
-	if _, _, _, msg, _ := st.DiagView(); msg != "" {
+	if msg := st.Snap().Error; msg != "" {
 		t.Errorf("errMsg = %q, want cleared after ClearFatalOnData", msg)
 	}
 }

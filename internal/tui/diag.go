@@ -281,6 +281,27 @@ func (m *model) diagStatus(connected bool, dData, now time.Time) (hr string, hrW
 	}
 }
 
+// diagErrLine renders the overlay's bottom error line (prettified, not the raw
+// ssh dump — the sections above already carry the state), or ok=false when
+// there is nothing current to show. A fatal error always shows: it IS present
+// state, latched until data flows again. A transient note is history the moment
+// it is recorded, so it shows age-stamped for diagErrWindow and then leaves —
+// a recovered hiccup must not sit under a healthy masthead reading as a live
+// fault.
+func diagErrLine(s protocol.Snapshot, now time.Time, W int) (string, bool) {
+	switch {
+	case s.Error == "":
+		return "", false
+	case s.Fatal:
+		return stWarn.Render(Clip(GL["warn"]+" "+friendlyError(s.Error), W)), true
+	case now.Sub(s.ErrorAt) < diagErrWindow:
+		age := fmt.Sprintf(" · %.1fs ago", now.Sub(s.ErrorAt).Seconds())
+		return stWarn.Render(Clip(GL["warn"]+" "+friendlyError(s.Error)+age, W)), true
+	default:
+		return "", false
+	}
+}
+
 // wifiBand renders the " · ch N · 2.4|5 GHz" suffix from the @@i freq (MHz), or
 // "" when the frequency is unknown.
 func wifiBand(freq string) string {
@@ -432,7 +453,7 @@ func (m *model) renderDiag(s protocol.Snapshot, now time.Time, W int) string {
 
 func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) string {
 	t := m.sty
-	lastRx, dData, att, derr, si := m.st.DiagView()
+	lastRx, dData, att, si := m.st.DiagView()
 	dev := m.st.DevInfoView()
 	dt := m.st.DetailsView()
 	netv := m.st.NetView()
@@ -589,10 +610,8 @@ func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) str
 
 	// footer (and any device error) pins to the bottom; the gap fills the frame
 	var tail []string
-	if derr != "" {
-		// prettified, not the raw ssh dump — the overlay already shows the state
-		// (disconnected · tunnel down · N attempts), so keep only the readable reason
-		tail = append(tail, stWarn.Render(Clip(GL["warn"]+" "+friendlyError(derr), W)), "")
+	if line, ok := diagErrLine(s, now, W); ok {
+		tail = append(tail, line, "")
 	}
 	tail = append(tail, t.sDmr.Render(diagFooter))
 
@@ -614,7 +633,7 @@ func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) str
 // 7-card grid.
 func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) string {
 	t := m.sty
-	lastRx, dData, att, derr, si := m.st.DiagView()
+	lastRx, dData, att, si := m.st.DiagView()
 	dev := m.st.DevInfoView()
 	dt := m.st.DetailsView()
 	netv := m.st.NetView()
@@ -917,8 +936,8 @@ func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) strin
 	// footer + a small colour legend so the verdict/ribbon hues decode at a glance.
 	legend := t.sAcc.Render("●") + t.sDmr.Render(" good   ") + stWarn.Render("●") + t.sDmr.Render(" warn   ") + stRed.Render("●") + t.sDmr.Render(" fault")
 	var tail []string
-	if derr != "" {
-		tail = append(tail, stWarn.Render(Clip(GL["warn"]+" "+friendlyError(derr), W)), "")
+	if line, ok := diagErrLine(s, now, W); ok {
+		tail = append(tail, line, "")
 	}
 	tail = append(tail, between(t.sDmr.Render(diagFooter), DispW(diagFooter), legend, DispW("● good   ● warn   ● fault"), W))
 	return strings.Join(frameBody(content, tail, m.rows-2, false), "\n")

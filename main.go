@@ -36,6 +36,34 @@ const discoverTimeout = 1 * time.Second
 
 const usage = "lp10: takes no arguments — run `lp10` for the live TUI"
 
+// resolveDevice applies best-effort mDNS discovery to cfg, so a changed DHCP
+// lease never needs a config edit: find the LP10 on the LAN (via find — the
+// injectable discovery.FindLP10) and use its current address. Pinning the host
+// (LP10_HOST) or `discover = false` skips it; the configured host is the
+// fallback when nothing answers, so startup never blocks on a missing device.
+func resolveDevice(cfg config.Config, find func(string, time.Duration) (discovery.Device, bool)) config.Config {
+	if !cfg.Discover || os.Getenv(config.HostEnv) != "" {
+		return cfg
+	}
+	// Hint discovery with the user's custom name only: the default label is
+	// not a room name, and a hint no device answers to would hold FindLP10
+	// to its full timeout (it only early-exits on a hint match) — losing
+	// the fast startup path for every un-configured setup.
+	hint := ""
+	if cfg.Name != config.DefaultName {
+		hint = cfg.Name
+	}
+	if dev, ok := find(hint, discoverTimeout); ok {
+		cfg.Host, cfg.Discovered = dev.Addr(), true
+		// Label the UI with the device's own advertised name ("LP10 · Living")
+		// when the user hasn't set a custom name — so no room name is hardcoded.
+		if cfg.Name == config.DefaultName && dev.Name != "" {
+			cfg.Name = config.DefaultName + " · " + dev.Name
+		}
+	}
+	return cfg
+}
+
 func main() {
 	// Askpass hot path first: ssh re-execs this binary as SSH_ASKPASS on every
 	// connection attempt, so it must stay cheap and run before anything else.
@@ -49,21 +77,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg := config.Load()
-	// Best-effort mDNS discovery so a changed DHCP lease never needs a config
-	// edit: find the LP10 on the LAN and use its current address. Pinning the
-	// host (LP10_HOST) or `discover = false` skips it; the configured host is the
-	// fallback when nothing answers, so startup never blocks on a missing device.
-	if cfg.Discover && os.Getenv(config.HostEnv) == "" {
-		if dev, ok := discovery.FindLP10(cfg.Name, discoverTimeout); ok {
-			cfg.Host, cfg.Discovered = dev.Addr(), true
-			// Label the UI with the device's own advertised name ("LP10 · Living")
-			// when the user hasn't set a custom name — so no room name is hardcoded.
-			if cfg.Name == config.DefaultName && dev.Name != "" {
-				cfg.Name = config.DefaultName + " · " + dev.Name
-			}
-		}
-	}
+	cfg := resolveDevice(config.Load(), discovery.FindLP10)
 
 	// tui.Run handles SIGTERM/SIGHUP and Ctrl-C cooperatively and returns the
 	// exit code (0 clean, 130 interrupt, 143 signal) after running teardown and

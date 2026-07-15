@@ -52,8 +52,12 @@ func (d Device) Addr() string {
 // FindLP10 sends mDNS queries and watches for replies up to timeout, returning
 // the LP10 whose friendly name matches nameHint (a substring match against, say,
 // the config "name"), or the sole/first LP10 otherwise. It returns early the
-// moment a fully-resolved candidate (with an IP) arrives, so a present device is
-// usually found in well under 100ms; absence costs the full timeout.
+// moment a fully-resolved candidate (with an IP) arrives that the hint endorses
+// — an unhinted search accepts any LP10, but a non-matching device never
+// short-circuits a hinted one, since the named device may simply be slower to
+// answer. So a present device is usually found in well under 100ms; absence —
+// or a hinted name that nothing on the LAN answers to — costs the full timeout,
+// after which the non-matching devices come back into play as the fallback.
 //
 // The query is sent out EVERY up, multicast-capable interface — each from its own
 // IPv4 source address — not just the OS default route. That is what makes it work
@@ -105,9 +109,14 @@ func FindLP10(nameHint string, timeout time.Duration) (Device, bool) {
 		case p := <-packets:
 			if recs, ok := parsePacket(p); ok {
 				col.add(recs)
-				if d, ok := pickLP10(col.devices(), nameHint); ok && len(d.IP) > 0 {
+				// Early exit only on a candidate the hint actually endorses: with
+				// several LP10s on the LAN the named one may answer later, and
+				// pickLP10's first-device fallback must not let a faster wrong
+				// device hijack the race. Unhinted, any complete LP10 wins.
+				if d, ok := pickLP10(col.devices(), nameHint); ok && len(d.IP) > 0 &&
+					(nameHint == "" || hintMatches(d, nameHint)) {
 					close(done)
-					return d, true // complete candidate — stop early
+					return d, true // complete, endorsed candidate — stop early
 				}
 			}
 		case <-resend.C:
@@ -203,12 +212,19 @@ func pickLP10(ds []Device, nameHint string) (Device, bool) {
 	})
 	if nameHint != "" {
 		for _, d := range lp {
-			if d.Name != "" && strings.Contains(strings.ToLower(nameHint), strings.ToLower(d.Name)) {
+			if hintMatches(d, nameHint) {
 				return d, true
 			}
 		}
 	}
 	return lp[0], true
+}
+
+// hintMatches reports whether d's advertised name appears in the user's name
+// hint (e.g. hint "LP10 · Living" matches a device named "Living"). An empty
+// device name never matches — strings.Contains(hint, "") is always true.
+func hintMatches(d Device, hint string) bool {
+	return d.Name != "" && strings.Contains(strings.ToLower(hint), strings.ToLower(d.Name))
 }
 
 // ---- record collection ------------------------------------------------------

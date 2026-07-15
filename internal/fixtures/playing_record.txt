@@ -6,7 +6,7 @@ MID-Read:42 Data:{
 	{
 		"Album" : "Canción Animal",
 		"Artist" : "Soda Stereo",
-		"CoverArtUrl" : "https://i.scdn.co/image/0000000000000000000000000000000000000000",
+		"CoverArtUrl" : "https://127.0.0.1:9/image/00000000000000000000000000000000000000",
 		"Current Source" : 4,
 		"Mime" : "audio/ogg",
 		"Next" : true,

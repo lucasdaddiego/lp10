@@ -399,11 +399,12 @@ func (st *State) LastTrackAndRx() (Track, time.Time) {
 
 // ---- diagnostics views ----
 
-// DiagView snapshots the fields the diagnostics overlay reads in one lock.
-func (st *State) DiagView() (lastRx, lastData time.Time, attempts int, errMsg string, sysinfo *SysInfo) {
+// DiagView snapshots the fields the diagnostics overlay reads in one lock. The
+// overlay's error line comes from Snap (Error/ErrorAt/Fatal), not from here.
+func (st *State) DiagView() (lastRx, lastData time.Time, attempts int, sysinfo *SysInfo) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.lastRx, st.lastData, st.attempts, st.errMsg, st.sysinfo
+	return st.lastRx, st.lastData, st.attempts, st.sysinfo
 }
 
 // DevInfoView returns the static device/network info (or nil before the first

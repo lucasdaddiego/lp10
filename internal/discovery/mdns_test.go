@@ -3,7 +3,9 @@ package discovery
 import (
 	"net"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // pktBuilder assembles a DNS message with name compression (repeated suffixes
@@ -163,6 +165,79 @@ func TestPickLP10(t *testing.T) {
 	hostOnly := Device{Name: "Living", Model: "LP10", Host: "Living.local"}
 	if d, ok := pickLP10([]Device{hostOnly}, ""); !ok || d.Addr() != "Living.local" {
 		t.Errorf("host-only pick = %+v, %v", d, ok)
+	}
+}
+
+// A hinted search must not early-exit on the first complete LP10 that answers
+// when that device is not the hinted one: with several LP10s on the LAN, the
+// named device may answer later and must still win. Regression for the
+// faster-wrong-device race — falling back to the first device is only for the
+// timeout path, when the named device never answered at all. Best-effort like
+// the other responder tests: a degraded multicast environment skips, not fails.
+func TestFindLP10HintedWaitsForNamedDevice(t *testing.T) {
+	listeners := covResponders()
+	if len(listeners) == 0 {
+		t.Skip("no multicast-capable interface available; responder path skipped")
+	}
+	defer func() {
+		for _, lc := range listeners {
+			lc.Close()
+		}
+	}()
+
+	mk := func(mac, name, ip string) []byte {
+		inst := mac + "@" + name + "." + service
+		b := newPkt(4)
+		b.addPTR(service, inst)
+		b.addSRV(inst, 7000, name+".local")
+		b.addTXT(inst, "am=LP10", "cn=0,1")
+		b.addA(name+".local", ip)
+		return append([]byte(nil), b.buf...)
+	}
+	// The wrong device answers every query instantly; the hinted one ~120ms
+	// later — comfortably inside the window, so only a premature early exit
+	// (the regression) can pick CovWrong before the timeout.
+	wrong := mk("C0FFEE00AAAA", "CovWrong", "192.168.213.88")
+	target := mk("C0FFEE00BBBB", "CovTarget", "192.168.213.89")
+
+	var wg sync.WaitGroup
+	for _, lc := range listeners {
+		_ = lc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		wg.Go(func() {
+			buf := make([]byte, 2048)
+			for {
+				n, src, err := lc.ReadFromUDP(buf)
+				if err != nil {
+					return // closed or deadline → stop
+				}
+				if n > 0 {
+					_, _ = lc.WriteToUDP(wrong, src)
+					time.AfterFunc(120*time.Millisecond, func() { _, _ = lc.WriteToUDP(target, src) })
+				}
+			}
+		})
+	}
+
+	start := time.Now()
+	d, ok := FindLP10("CovTarget", 3*time.Second)
+	elapsed := time.Since(start)
+
+	for _, lc := range listeners {
+		lc.Close()
+	}
+	wg.Wait()
+
+	if !ok {
+		t.Skip("no reply made it back (degraded multicast); the race is not exercisable here")
+	}
+	// The regression assert: an early exit — well before the timeout — may only
+	// be the hinted device. At the timeout the fallback legitimately picks over
+	// whatever arrived (CovWrong included, or a real LP10 on the LAN).
+	if elapsed < 2*time.Second && d.Name != "CovTarget" {
+		t.Fatalf("hinted search early-exited on %q after %v; only the named device may short-circuit", d.Name, elapsed)
+	}
+	if d.Name == "CovTarget" && len(d.IP) == 0 {
+		t.Errorf("named device returned without its IP: %+v", d)
 	}
 }
 

@@ -21,6 +21,14 @@ const (
 	ErrorDisplayDuration = 4 * time.Second
 	MaxTitleLength       = 120
 
+	// diagErrWindow is how long the diagnostics overlay keeps showing a
+	// transient error after it was recorded (age-stamped). Longer than the
+	// dashboard's ErrorDisplayDuration — the overlay is where one goes to
+	// investigate AFTER the flash — but bounded, so a long-recovered hiccup
+	// can't sit under a healthy masthead reading as a live fault. Fatal errors
+	// are exempt: they are current state, latched until data flows again.
+	diagErrWindow = 60 * time.Second
+
 	// StatsReassertTicks re-sends the "stats on" signal while the diagnostics
 	// overlay is open (30 ticks × 100ms ≈ 3s), so the device — which resets the
 	// flag on every reconnect — resumes emitting @@s within a few seconds of a

@@ -382,7 +382,7 @@ func TestApplyNewDiagFields(t *testing.T) {
 	st := NewState()
 	ApplyRecord(st, records("device_record.txt")[0])  // @@i: now carries root= and dns=
 	ApplyRecord(st, records("playing_record.txt")[0]) // @@s: now carries the audio-chain tail
-	_, _, _, _, si := st.DiagView()
+	_, _, _, si := st.DiagView()
 	if si == nil {
 		t.Fatal("no sysinfo parsed")
 	}
@@ -411,7 +411,7 @@ func TestApplyOldShortStatsLine(t *testing.T) {
 	for rec := range IterRecords(feeder(splitLines(old))) {
 		ApplyRecord(st, rec)
 	}
-	_, _, _, _, si := st.DiagView()
+	_, _, _, si := st.DiagView()
 	if si == nil || si.Up != "100.0" || si.NCPU != "2" {
 		t.Fatalf("short @@s should still parse base fields: %+v", si)
 	}

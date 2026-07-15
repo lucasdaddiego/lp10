@@ -52,6 +52,22 @@ func preloadSnapshot(st *protocol.State, cached map[string]any) {
 	}
 }
 
+// startupNote composes the single startup note from the config-load warning
+// and the media-key error. State keeps ONE note slot, so the two must share it
+// — noted separately, the media-keys note would overwrite an earlier config
+// warning before the first paint (exactly on a first run, where Accessibility
+// isn't granted yet and a config typo matters most). The config warning leads
+// so it survives clipping on a narrow terminal.
+func startupNote(warn string, keyErr error) string {
+	if keyErr != nil {
+		if warn != "" {
+			warn += " · "
+		}
+		warn += "media keys off — " + keyErr.Error()
+	}
+	return warn
+}
+
 // Run wires up State, the worker goroutines, and the Bubble Tea program, then
 // tears everything down on exit. Returns the process exit code: 0 clean quit,
 // 130 Ctrl-C, 143 SIGTERM/SIGHUP.
@@ -59,9 +75,6 @@ func Run(cfg config.Config) (int, error) {
 	st := protocol.NewState()
 	st.PremuteFile = config.PremutePath(cfg)
 	st.SnapshotFile = config.SnapshotPath(cfg)
-	if cfg.Warn != "" {
-		st.Note(cfg.Warn)
-	}
 	preloadSnapshot(st, config.LoadSnapshot(st.SnapshotFile))
 
 	cmds := make(chan *protocol.Command, 1024)
@@ -98,8 +111,11 @@ func Run(cfg config.Config) (int, error) {
 		// granted mid-session), confirming the keys are now live.
 		OnActive: func() { st.Note("media keys on") },
 	})
-	if keyErr != nil {
-		st.Note("media keys off — " + keyErr.Error())
+	// Surface the startup problems (broken config, no media-key tap) as ONE
+	// note: State keeps a single message slot, so noting them separately would
+	// let the later clobber the earlier before the first paint ever showed it.
+	if n := startupNote(cfg.Warn, keyErr); n != "" {
+		st.Note(n)
 	}
 	defer stopKeys()
 

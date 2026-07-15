@@ -1338,7 +1338,7 @@ func TestCov_diagCardsSilentHeader(t *testing.T) {
 	m, st := richDiag(t, "5180", nil)
 	m.sty = newTheme()
 	m.rows = 44
-	_, dData, _, _, _ := st.DiagView()
+	_, dData, _, _ := st.DiagView()
 	if dData.IsZero() {
 		t.Fatal("setup: expected a last-data stamp")
 	}
