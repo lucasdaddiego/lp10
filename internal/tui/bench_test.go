@@ -100,10 +100,17 @@ func BenchmarkVbar(b *testing.B) {
 	}
 }
 
-func BenchmarkHslHex(b *testing.B) {
+func BenchmarkHslRGB(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
-		sinkS = hslHex(210, 0.7, 0.5)
+		sinkU, _, _ = hslRGB(210, 0.7, 0.5)
+	}
+}
+
+func BenchmarkFastSin(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		sinkF = fastSin(float64(i) * 0.37)
 	}
 }
 
@@ -164,5 +171,7 @@ var (
 	sink     []string
 	sinkS    string
 	sinkI    int
+	sinkU    uint8
+	sinkF    float64
 	sinkSnap protocol.Snapshot
 )

@@ -42,8 +42,12 @@ func (m *model) viewContent() string {
 		return ""
 	}
 	s := m.st.Snap()
-	m.motifLive, m.sonarLive = false, false         // set true below iff the plasma / sonar is actually drawn
-	m.mzBtns, m.mzVol, m.mzEQ = nil, volZone{}, nil // cleared each frame; renderDashboard repopulates
+	m.motifLive, m.sonarLive = false, false // set true below iff the plasma / sonar is actually drawn
+	// Cleared each frame; renderDashboard repopulates. [:0] keeps the backing
+	// arrays (a dozen appends per frame otherwise) — safe because Update and
+	// View run sequentially on the program loop, so the zones a mouse event
+	// reads are never mid-overwrite.
+	m.mzBtns, m.mzVol, m.mzEQ = m.mzBtns[:0], volZone{}, m.mzEQ[:0]
 	if rows < MiniRows || cols < MiniCols {
 		m.diag = false
 		return m.renderMini(s)
@@ -311,11 +315,10 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 	var vol string
 	volW := 0
 	if full {
-		label := ps.dim.render("Vol")
+		vol = ps.volCell
 		if s.Muted {
-			label = ps.red.render("MUTED") // flag mute from the top, over the rail
+			vol = ps.mutedCell // flag mute from the top, over the rail
 		}
-		vol = ccell(label, volColW)
 		volW = volColW
 	}
 

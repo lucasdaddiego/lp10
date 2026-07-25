@@ -51,12 +51,22 @@ func translate(k tea.Key) keyEvent {
 	case tea.KeySpace:
 		return keyEvent{kind: kRune, r: ' '}
 	}
-	if k.Mod == 0 && k.Text != "" {
+	if isText(k) {
 		if rs := []rune(k.Text); len(rs) == 1 {
 			return keyEvent{kind: kRune, r: rs[0]}
 		}
 	}
 	return keyEvent{kind: kOther}
+}
+
+// isText reports whether a key press is printable input. Shift and CapsLock
+// must NOT disqualify it: under the Kitty keyboard protocol (Ghostty) a '?' or
+// '+' arrives as its base code PLUS ModShift with the shifted character in
+// Text — masking only the text-compatible modifiers here mirrors ultraviolet's
+// own Key.MatchString semantics, so '?', '+', '_' and 'Q' keep working when the
+// terminal upgrades the wire encoding. (Legacy encodings send Mod == 0.)
+func isText(k tea.Key) bool {
+	return k.Text != "" && k.Mod&^(tea.ModShift|tea.ModCapsLock) == 0
 }
 
 // translateAll expands one key message into the events to dispatch. A press
@@ -66,7 +76,7 @@ func translate(k tea.Key) keyEvent {
 // tea.PasteMsg — Update feeds its text through runeEvents for the same effect.
 func translateAll(msg tea.KeyPressMsg) []keyEvent {
 	k := tea.Key(msg)
-	if k.Mod == 0 && len(k.Text) > 1 {
+	if isText(k) && len(k.Text) > 1 {
 		return runeEvents(k.Text)
 	}
 	return []keyEvent{translate(k)}

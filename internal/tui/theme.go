@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"image/color"
 	"math"
 	"os"
@@ -125,19 +124,15 @@ func detectKittyGraphics() bool {
 // motif and the sonar, whose colour genuinely differs per cell, need the painter
 // below.
 
-// painter paints glyphs whose colour differs every cell, writing the 24-bit SGR
-// directly and resetting once per line instead of once per cell (the same shape
-// artwork.HalfBlock already ships). Under lipgloss/bubbletea v2 this is
-// universally correct: styles always emit the colour as specified and the
-// program's renderer downsamples for the actual terminal, so the v1
-// profile-gated lipgloss fallback is gone. TestPaintedBlockWidths pins the one
-// property the layout depends on: a line is still exactly w columns.
-type painter struct{}
-
-func newPainter() painter { return painter{} }
-
-// cell writes one glyph in the given colour.
-func (p painter) cell(b *strings.Builder, r, g, bl uint8, glyph string) {
+// paintCell / paintEndLine paint glyphs whose colour differs every cell,
+// writing the 24-bit SGR directly and resetting once per line instead of once
+// per cell (the same shape artwork.HalfBlock already ships). Under
+// lipgloss/bubbletea v2 this is universally correct: styles always emit the
+// colour as specified and the program's renderer downsamples for the actual
+// terminal (v1 needed a profile-gated lipgloss fallback here).
+// TestPaintedBlockWidths pins the one property the layout depends on: a line
+// is still exactly w columns.
+func paintCell(b *strings.Builder, r, g, bl uint8, glyph string) {
 	b.WriteString("\x1b[38;2;")
 	writeDec(b, r)
 	b.WriteByte(';')
@@ -148,9 +143,9 @@ func (p painter) cell(b *strings.Builder, r, g, bl uint8, glyph string) {
 	b.WriteString(glyph)
 }
 
-// endLine closes a painted line: the foreground stays set as the cells run, so
-// one reset ends the line (nothing painted — a zero-width block — needs none).
-func (p painter) endLine(b *strings.Builder) {
+// paintEndLine closes a painted line: the foreground stays set as the cells
+// run, so one reset ends the line (an empty line needs none).
+func paintEndLine(b *strings.Builder) {
 	if b.Len() > 0 {
 		b.WriteString("\x1b[0m")
 	}
@@ -221,6 +216,11 @@ type penSet struct {
 	mFill  []string // "━" per fill ramp entry (seek/volume meters)
 	mHead  string   // "●" meter head
 	mTrack string   // "─" empty meter cell
+
+	// the header's volume-rail label, centred in its column — one lipgloss
+	// Width/Align render per process instead of one per frame.
+	volCell   string // "Vol" (dim)
+	mutedCell string // "MUTED" (alarm red)
 }
 
 // pens returns the flattened styles, building them on first use.
@@ -254,6 +254,8 @@ func (t *theme) pens() *penSet {
 		for i := range t.fill {
 			ps.mFill[i] = t.fill[i].Render("━")
 		}
+		ps.volCell = ccell(ps.dim.render("Vol"), volColW)
+		ps.mutedCell = ccell(ps.red.render("MUTED"), volColW)
 		t.penCache = ps
 	}
 	return t.penCache
@@ -310,7 +312,9 @@ func (t *theme) tint(c color.RGBA) *ambientTint {
 	h, s, _ := artwork.RGBToHSL(c.R, c.G, c.B)
 	s = clampRange(s, 0.35, 0.85)
 	pen := func(h, s, l float64) lipgloss.Style {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color(hslHex(h, s, l)))
+		// lipgloss v2 takes a color.Color directly — no hex string round-trip.
+		pr, pg, pb := hslRGB(h, s, l)
+		return lipgloss.NewStyle().Foreground(color.RGBA{R: pr, G: pg, B: pb, A: 0xff})
 	}
 	at := &ambientTint{
 		head:  pen(h, math.Min(s+0.1, 1), 0.78),
@@ -351,7 +355,25 @@ func rampIdx(n, pos, span int) int {
 func (t *theme) motifBlock(w, h, frame int) []string {
 	ph := float64(frame) * 0.16
 	const warpAmp = 0.9
-	paint := newPainter()
+	// The warp field is SEPARABLE: each of wx/wy is a row term plus a column
+	// term, so precompute w+h sines instead of 2·w·h. The remaining five sines
+	// per cell go through fastSin — the motif rebuilds every animation frame,
+	// and trig was ~2/3 of its cost; TestMotifMatchesMathSin bounds the error
+	// at ≤1/255 per channel (in practice the bytes come out identical).
+	rowWX := make([]float64, h) // sin(fy·0.30 + ph·0.6)
+	rowWY := make([]float64, h) // 0.5·sin(fy·0.24 + ph·0.45)
+	colWX := make([]float64, w) // 0.5·sin(fx·0.22 − ph·0.35)
+	colWY := make([]float64, w) // sin(fx·0.27 − ph·0.5)
+	for y := range h {
+		fy := float64(y)
+		rowWX[y] = fastSin(fy*0.30 + ph*0.6)
+		rowWY[y] = 0.5 * fastSin(fy*0.24+ph*0.45)
+	}
+	for x := range w {
+		fx := float64(x)
+		colWX[x] = 0.5 * fastSin(fx*0.22-ph*0.35)
+		colWY[x] = fastSin(fx*0.27 - ph*0.5)
+	}
 	lines := make([]string, h)
 	var b strings.Builder
 	for y := range h {
@@ -362,25 +384,50 @@ func (t *theme) motifBlock(w, h, frame int) []string {
 			fx := float64(x)
 			// gentle low-frequency vector warp so the bands braid organically;
 			// small coeffs + amp keep ax,ay within ~1 cell of fx,fy (stays smooth)
-			wx := math.Sin(fy*0.30+ph*0.6) + 0.5*math.Sin(fx*0.22-ph*0.35)
-			wy := math.Sin(fx*0.27-ph*0.5) + 0.5*math.Sin(fy*0.24+ph*0.45)
-			ax, ay := fx+warpAmp*wx, fy+warpAmp*wy
+			ax := fx + warpAmp*(rowWX[y]+colWX[x])
+			ay := fy + warpAmp*(colWY[x]+rowWY[y])
 			// brightness plasma on the warped coords; v in [-3,3] -> n in [0,1]
-			v := math.Sin(ax*0.55+ph) + math.Sin(ay*0.75-ph*0.8) + math.Sin((ax+ay)*0.42+ph*1.3)
+			v := fastSin(ax*0.55+ph) + fastSin(ay*0.75-ph*0.8) + fastSin((ax+ay)*0.42+ph*1.3)
 			n := (v + 3) / 6
 			// hue: global spectrum rotation + a broad spatial gradient + a swirl,
 			// all continuous (no random term) so neighbours stay within a few °
 			hue := math.Mod(ph*57.29578+
-				74*math.Sin(ax*0.20+ay*0.16+ph*0.5)+
-				24*math.Sin((ax-ay)*0.17-ph*0.35)+360, 360)
+				74*fastSin(ax*0.20+ay*0.16+ph*0.5)+
+				24*fastSin((ax-ay)*0.17-ph*0.35)+360, 360)
 			r, g, bl := hslRGB(hue, 0.70+0.18*n, 0.20+0.40*n)
-			paint.cell(&b, r, g, bl, "█")
+			paintCell(&b, r, g, bl, "█")
 		}
-		paint.endLine(&b)
+		paintEndLine(&b)
 		lines[y] = b.String()
 	}
 	return lines
 }
+
+// fastSin approximates math.Sin with a linearly interpolated 4096-entry table.
+// Max error ≈ 2.9e-7 — three orders of magnitude below the 1/255 channel
+// quantization in hslRGB/to8, so the painted bytes are (near-)identical to the
+// math.Sin ones; TestMotifMatchesMathSin holds the line at ≤1/255 per channel.
+// Used only by the plasma motif, where 5 sines/cell × ~500 cells × 30fps made
+// trig the dominant cost of an animated frame.
+func fastSin(x float64) float64 {
+	t := x * (1 / (2 * math.Pi))
+	t -= math.Floor(t) // wrap into [0,1)
+	f := t * sinLUTSize
+	i := int(f)
+	return sinLUT[i] + (sinLUT[i+1]-sinLUT[i])*(f-float64(i))
+}
+
+const sinLUTSize = 4096
+
+// sinLUT spans one full period with a duplicated endpoint so the interpolation
+// never wraps its index.
+var sinLUT = func() [sinLUTSize + 1]float64 {
+	var l [sinLUTSize + 1]float64
+	for i := range l {
+		l[i] = math.Sin(float64(i) * (2 * math.Pi / sinLUTSize))
+	}
+	return l
+}()
 
 // Sizing hints for the painted-line buffers: "\x1b[38;2;R;G;Bm" plus a 3-byte
 // block glyph is at most 22 bytes, and the line's single trailing reset is 4.
@@ -415,7 +462,6 @@ func (t *theme) sonar(w, h, frame int) []string {
 		hubR   = 0.13 // fraction of fitR for the bright central hub
 		ringR  = 0.95 // fraction of fitR for the faint static scope ring
 	)
-	paint := newPainter()
 	lines := make([]string, h)
 	var b strings.Builder
 	for y := range h {
@@ -468,17 +514,16 @@ func (t *theme) sonar(w, h, frame int) []string {
 				glyph = "●" // a solid core for the beam head and the hub
 			}
 			cr, cg, cb := hslRGB(168, 0.40+0.30*inten, 0.20+0.55*inten) // r is the radius here
-			paint.cell(&b, cr, cg, cb, glyph)
+			paintCell(&b, cr, cg, cb, glyph)
 		}
-		paint.endLine(&b)
+		paintEndLine(&b)
 		lines[y] = b.String()
 	}
 	return lines
 }
 
-// hslRGB converts HSL (h in degrees, s and l in 0..1) to 8-bit RGB. The per-cell
-// painters take this directly; only the paths that must hand a colour to lipgloss
-// go on through hslHex.
+// hslRGB converts HSL (h in degrees, s and l in 0..1) to 8-bit RGB, feeding the
+// per-cell painters and the ambient tint (as a color.RGBA) directly.
 func hslRGB(h, s, l float64) (uint8, uint8, uint8) {
 	c := (1 - math.Abs(2*l-1)) * s
 	hp := math.Mod(h/60, 6)
@@ -504,12 +549,6 @@ func hslRGB(h, s, l float64) (uint8, uint8, uint8) {
 	m := l - c/2
 	return to8(r + m), to8(g + m), to8(bl + m)
 }
-
-// hslHex converts HSL (h in degrees, s and l in 0..1) to a "#rrggbb" string.
-func hslHex(h, s, l float64) string { return rgbHex(hslRGB(h, s, l)) }
-
-// rgbHex renders an 8-bit RGB triple as "#rrggbb".
-func rgbHex(r, g, b uint8) string { return fmt.Sprintf("#%02x%02x%02x", r, g, b) }
 
 // to8 maps a 0..1 channel to a clamped 0..255 byte.
 func to8(v float64) uint8 { return uint8(max(0, min(255, int(v*255+0.5)))) }

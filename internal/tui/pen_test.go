@@ -69,6 +69,13 @@ func TestPenMatchesStyleRender(t *testing.T) {
 			t.Errorf("mFill[%d] %q != %q", i, got, want)
 		}
 	}
+	// the header's pre-rendered volume labels match building them fresh
+	if got, want := ps.volCell, ccell(th.sDim.Render("Vol"), volColW); got != want {
+		t.Errorf("volCell %q != %q", got, want)
+	}
+	if got, want := ps.mutedCell, ccell(stRed.Render("MUTED"), volColW); got != want {
+		t.Errorf("mutedCell %q != %q", got, want)
+	}
 	// and the cache is stable: same set every call
 	if th.pens() != ps {
 		t.Error("pens() should return the cached set")

@@ -251,21 +251,26 @@ func TestCov_rampIdx(t *testing.T) {
 	chk(-10, 5, 0) // negative pos -> i<0 -> clamp to first
 }
 
-func TestCov_hslHexAllArms(t *testing.T) {
-	// every hue feeds a different switch arm (int(hp) 0..5)
+func TestCov_hslRGBAllArms(t *testing.T) {
+	// every hue feeds a different switch arm (int(hp) 0..5) and yields a
+	// distinct colour at fixed s/l
+	seen := map[[3]uint8]bool{}
 	for _, h := range []float64{30, 90, 150, 210, 270, 330} {
-		hex := hslHex(h, 0.7, 0.5)
-		if len(hex) != 7 || hex[0] != '#' {
-			t.Errorf("hslHex(%v) = %q, want #rrggbb", h, hex)
-		}
+		r, g, b := hslRGB(h, 0.7, 0.5)
+		seen[[3]uint8{r, g, b}] = true
+	}
+	if len(seen) != 6 {
+		t.Errorf("6 hues produced %d distinct colours, want 6", len(seen))
 	}
 	// a negative hue wraps (hp<0 correction) and equals its +360 equivalent
-	if hslHex(-30, 1, 0.5) != hslHex(330, 1, 0.5) {
-		t.Error("hslHex(-30) should equal hslHex(330)")
+	r1, g1, b1 := hslRGB(-30, 1, 0.5)
+	r2, g2, b2 := hslRGB(330, 1, 0.5)
+	if r1 != r2 || g1 != g2 || b1 != b2 {
+		t.Error("hslRGB(-30) should equal hslRGB(330)")
 	}
 	// anchor: pure red
-	if got := hslHex(0, 1, 0.5); got != "#ff0000" {
-		t.Errorf("hslHex(0,1,0.5) = %q, want #ff0000", got)
+	if r, g, b := hslRGB(0, 1, 0.5); r != 255 || g != 0 || b != 0 {
+		t.Errorf("hslRGB(0,1,0.5) = %d,%d,%d, want 255,0,0", r, g, b)
 	}
 }
 
@@ -370,6 +375,44 @@ func TestCov_translateEveryType(t *testing.T) {
 	// bracketed paste takes the same expansion via runeEvents
 	if evs := runeEvents("mn"); len(evs) != 2 || evs[0].r != 'm' || evs[1].r != 'n' {
 		t.Errorf("runeEvents = %+v", evs)
+	}
+}
+
+// Under the Kitty keyboard protocol a shifted printable arrives as its BASE
+// code + ModShift with the shifted character in Text ('?' = '/'+shift), and
+// CapsLock rides as a modifier bit on ordinary letters. Those are text input —
+// '?', '+', '_', 'Q' must keep working when the terminal upgrades the wire
+// encoding (ultraviolet's own MatchString masks exactly Shift|CapsLock).
+func TestCov_translateKittyShiftedPrintables(t *testing.T) {
+	cases := []struct {
+		key  tea.Key
+		want rune
+	}{
+		{tea.Key{Code: '/', Text: "?", Mod: tea.ModShift}, '?'},
+		{tea.Key{Code: '=', Text: "+", Mod: tea.ModShift}, '+'},
+		{tea.Key{Code: '-', Text: "_", Mod: tea.ModShift}, '_'},
+		{tea.Key{Code: 'q', Text: "Q", Mod: tea.ModShift}, 'Q'},
+		{tea.Key{Code: 'q', Text: "Q", Mod: tea.ModCapsLock}, 'Q'},
+		{tea.Key{Code: 'm', Text: "m"}, 'm'}, // plain, for symmetry
+	}
+	for _, c := range cases {
+		if ev := translate(c.key); ev.kind != kRune || ev.r != c.want {
+			t.Errorf("translate(%+v) = %+v, want rune %q", c.key, ev, c.want)
+		}
+	}
+	// ctrl/alt-modified printables stay unmapped (they are chords, not text)
+	for _, k := range []tea.Key{
+		{Code: 'q', Text: "q", Mod: tea.ModCtrl},
+		{Code: 'q', Text: "q", Mod: tea.ModAlt},
+		{Code: 'q', Text: "q", Mod: tea.ModShift | tea.ModCtrl},
+	} {
+		if ev := translate(k); ev.kind != kOther {
+			t.Errorf("translate(%+v) = %+v, want kOther", k, ev)
+		}
+	}
+	// shifted multi-rune text still expands via translateAll
+	if evs := translateAll(tea.KeyPressMsg{Code: '=', Text: "++", Mod: tea.ModShift}); len(evs) != 2 || evs[1].r != '+' {
+		t.Errorf("shifted multi-rune = %+v", evs)
 	}
 }
 
