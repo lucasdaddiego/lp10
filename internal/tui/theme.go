@@ -111,8 +111,8 @@ func detectKittyGraphics() bool {
 
 // ---- per-cell painting ---------------------------------------------------------
 //
-// The block-drawing primitives below (the plasma motif, the sonar sweep, the
-// meters and the EQ bars) paint one styled glyph per character cell, and the
+// The block-drawing primitives below (the plasma motif, the searching arcs,
+// the meters and the EQ bars) paint one styled glyph per character cell, and the
 // animated ones repaint every frame at ~30fps. Calling lipgloss.Style.Render per
 // cell costs roughly 25 allocations — a Style copy, a hex parse via go-colorful
 // (which uses fmt.Sscanf), a colour-profile conversion and an ANSI parse — which
@@ -121,8 +121,8 @@ func detectKittyGraphics() bool {
 //
 // Where a cell's style comes from a small fixed set (the meters, the EQ bars) the
 // fix is just to render each distinct glyph ONCE and index the results. Only the
-// motif and the sonar, whose colour genuinely differs per cell, need the painter
-// below.
+// motif — whose colour genuinely differs per cell — and the two-tone searching
+// arcs need the painter below.
 
 // paintCell / paintEndLine paint glyphs whose colour differs every cell,
 // writing the 24-bit SGR directly and resetting once per line instead of once
@@ -436,90 +436,81 @@ const (
 	resetBytes   = 4
 )
 
-// sonar renders a w×h animated radar sweep: a beam rotates from a bright central
-// hub, brightening toward the rim and dragging a fading comet-wedge behind it,
-// over a faint static rim ring (the "scope" boundary). Advanced by frame, in the
-// app's teal. Shown in the idle cover slot while (re)connecting, so the box reads
-// as "scanning for the device". Cells are ~2:1, so the vertical delta is doubled
-// to keep the sweep circular. Intensity is carried by colour brightness on dot
-// glyphs (no block-shade fill), so it reads as a clean glow rather than a raster.
-// Each line is exactly w display columns.
-func (t *theme) sonar(w, h, frame int) []string {
+// searchBox fills the idle cover slot while (re)connecting: a cast-style
+// "looking for the speaker" figure — a bright dot with three arc pairs that
+// light up outward one per tick over an always-dim track, so the pulse reads
+// as reaching out for the device — with a dim "searching for LP10…" label two
+// rows below (three when that balances the box — see the parity note in the
+// body). In the app's teal. The figure degrades with the box: spaced
+// arcs, then tight arcs, then the bare dot; the label drops when it can't fit
+// (narrow box or h<3). Arcs and label are ASCII (width-1 everywhere); only
+// the dot is East-Asian-Ambiguous, so it falls back under a CJK locale like
+// the GL glyphs do. Each line is exactly w display columns.
+func (t *theme) searchBox(w, h, frame int) []string {
 	if w <= 0 || h <= 0 {
 		return nil
 	}
-	cx, cy := float64(w-1)/2, float64(h-1)/2
-	fitR := math.Min(cx, cy*2) // the largest scope circle that fits the box (cells are ~2:1)
-	if fitR < 1 {
-		fitR = 1
+	arcs, sep := 3, " "
+	switch {
+	case w >= 13: // ( ( ( ● ) ) )
+	case w >= 7: // (((●)))
+		sep = ""
+	default: // just the beacon dot
+		arcs, sep = 0, ""
 	}
-	theta := float64(frame) * 0.13 // beam angle (radians); ~1 turn / 3.5s at the sonar fps
-	bx, by := math.Cos(theta), math.Sin(theta)
-	const (
-		beamHW = 2.0  // beam half-width (doubled-y units): a thin line, not a wedge
-		trail  = 1.6  // angular length of the fading comet-tail behind the beam (radians)
-		floor  = 0.12 // below this a cell is black — crisp gaps, no grain
-		hubR   = 0.13 // fraction of fitR for the bright central hub
-		ringR  = 0.95 // fraction of fitR for the faint static scope ring
-	)
-	lines := make([]string, h)
-	var b strings.Builder
-	for y := range h {
-		b.Reset()
-		b.Grow(w*cellSGRBytes + resetBytes)
-		for x := range w {
-			dx := float64(x) - cx
-			dy := (float64(y) - cy) * 2 // double dy so the scope is circular on ~2:1 cells
-			rr := math.Hypot(dx, dy)
-			r := rr / fitR // 0..1 inside the scope, >1 in the corners (left black)
-			inten := 0.0
-			if r <= 1 && rr > 0 {
-				// the beam: a thin radial line at angle theta, by perpendicular distance
-				// (so it stays one clean stroke at every radius, never a filled wedge).
-				if along := dx*bx + dy*by; along > 0 {
-					perp := -dx*by + dy*bx
-					if line := 1 - math.Abs(perp)/beamHW; line > 0 {
-						inten = line * (0.40 + 0.60*r) // a reaching stroke, brightest at the rim
-					}
-				}
-				// a faint comet-tail: an afterglow arc hugging the rim just behind the beam
-				// (gated to the outer radius so it trails as an arc, not a pie slice).
-				d := math.Mod(theta-math.Atan2(dy, dx), 2*math.Pi)
-				if d < 0 {
-					d += 2 * math.Pi
-				}
-				if d < trail && r > 0.6 {
-					tail := (1 - d/trail) * (r - 0.6) / 0.4 * 0.45
-					if tail > inten {
-						inten = tail
-					}
-				}
-			}
-			// faint static scope ring at the boundary
-			if ring := 0.22 * (1 - math.Abs(r-ringR)/0.05); ring > inten {
-				inten = ring
-			}
-			// bright central hub
-			if r < hubR {
-				if hub := 1 - r/hubR; hub > inten {
-					inten = hub
-				}
-			}
-			if inten < floor {
-				b.WriteByte(' ')
-				continue
-			}
-			glyph := "·"
-			if inten > 0.6 {
-				glyph = "●" // a solid core for the beam head and the hub
-			}
-			cr, cg, cb := hslRGB(168, 0.40+0.30*inten, 0.20+0.55*inten) // r is the radius here
-			paintCell(&b, cr, cg, cb, glyph)
+	figW := 1 + 2*arcs*(1+len(sep))
+	dot := "●"
+	if localeAmb == 2 {
+		dot = "*"
+	}
+	briR, briG, briB := hslRGB(168, 0.70, 0.75) // the lit arcs and the dot
+	dimR, dimG, dimB := hslRGB(168, 0.40, 0.30) // the waiting track
+	lit := frame % 4                            // 0 (dot only) → 3 (fully reached out), then rest
+	var fig strings.Builder
+	fig.Grow(figW*cellSGRBytes + resetBytes)
+	for ring := arcs; ring >= 1; ring-- {
+		if ring <= lit {
+			paintCell(&fig, briR, briG, briB, "(")
+		} else {
+			paintCell(&fig, dimR, dimG, dimB, "(")
 		}
-		paintEndLine(&b)
-		lines[y] = b.String()
+		fig.WriteString(sep)
 	}
-	return lines
+	paintCell(&fig, briR, briG, briB, dot)
+	for ring := 1; ring <= arcs; ring++ {
+		fig.WriteString(sep)
+		if ring <= lit {
+			paintCell(&fig, briR, briG, briB, ")")
+		} else {
+			paintCell(&fig, dimR, dimG, dimB, ")")
+		}
+	}
+	paintEndLine(&fig)
+
+	out := make([]string, h)
+	blank := spaces(w)
+	for i := range out {
+		out[i] = blank
+	}
+	col := (w - figW) / 2
+	figLine := spaces(col) + fig.String() + spaces(w-col-figW)
+	label := "searching for LP10" + GL["ell"]
+	if lw := DispW(label); h >= 3 && lw <= w {
+		// The arcs↔label gap stretches one extra row whenever that makes the
+		// block's height parity match the box's, so the space above the arcs
+		// always EQUALS the space below the label. (A fixed 3-row block in an
+		// even-height box sat half a row high, which — compounded with the
+		// unavoidable half-cell horizontal parity bias — read as drifting
+		// toward the top-left corner.)
+		e := (h - 3) % 2
+		top := (h - 3 - e) / 2
+		out[top] = figLine
+		lcol := (w - lw) / 2
+		out[top+2+e] = spaces(lcol) + t.pens().dim.render(label) + spaces(w-lcol-lw)
+	} else {
+		out[(h-1)/2] = figLine
+	}
+	return out
 }
 
 // hslRGB converts HSL (h in degrees, s and l in 0..1) to 8-bit RGB, feeding the

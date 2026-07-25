@@ -25,11 +25,11 @@ func BenchmarkMotifBlock(b *testing.B) {
 	}
 }
 
-func BenchmarkSonar(b *testing.B) {
+func BenchmarkSearchBox(b *testing.B) {
 	t := newTheme()
 	b.ReportAllocs()
 	for i := 0; b.Loop(); i++ {
-		sink = t.sonar(30, 16, i)
+		sink = t.searchBox(30, 16, i)
 	}
 }
 

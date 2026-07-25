@@ -533,15 +533,15 @@ func TestCov_UpdateMessages(t *testing.T) {
 		t.Error("logicMsg should advance scroll and reschedule")
 	}
 
-	// frameMsg with the sonar live while disconnected advances the frame
+	// frameMsg with the search figure live while disconnected advances the frame
 	d, _, _ := modelWith(protocol.NewState())
-	d.sonarLive = true
+	d.searchLive = true
 	f := d.frame
 	if _, cmd := d.Update(frameMsg{}); cmd == nil {
 		t.Error("frameMsg should reschedule")
 	}
 	if d.frame != f+1 {
-		t.Errorf("sonar frame %d -> %d, want +1", f, d.frame)
+		t.Errorf("search frame %d -> %d, want +1", f, d.frame)
 	}
 
 	// a mouse message is dispatched to handleMouse (no panic)
@@ -1142,12 +1142,12 @@ func TestCov_UpdateUnknownAndViewZero(t *testing.T) {
 
 func TestCov_themeDegenerate(t *testing.T) {
 	st := newTheme()
-	if st.sonar(0, 5, 0) != nil {
-		t.Error("sonar(w<=0) should be nil")
+	if st.searchBox(0, 5, 0) != nil {
+		t.Error("searchBox(w<=0) should be nil")
 	}
-	// a 1x1 box clamps the scope radius (fitR<1)
-	if got := st.sonar(1, 1, 0); len(got) != 1 {
-		t.Errorf("sonar(1,1) len = %d, want 1", len(got))
+	// a 1x1 box degrades to just the beacon dot
+	if got := st.searchBox(1, 1, 0); len(got) != 1 || lipgloss.Width(got[0]) != 1 {
+		t.Errorf("searchBox(1,1) = %q, want one 1-wide line", got)
 	}
 	// a meter with no cells is empty; frac 0 puts the head at cell 0
 	if lineMeterCells(0.5, 0, nil, "●", "─") != "" {

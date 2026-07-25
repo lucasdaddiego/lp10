@@ -48,7 +48,7 @@ func keyToAction(k mediakey.Key) (action string, ok bool) {
 const (
 	logicInterval = 100 * time.Millisecond
 	framePlaying  = 33 * time.Millisecond  // ~30fps while playing
-	frameSonar    = 70 * time.Millisecond  // ~14fps: calm expanding rings while connecting
+	frameSearch   = 350 * time.Millisecond // one searching-arc step per tick (~1.4s per pulse) while connecting
 	frameIdle     = 250 * time.Millisecond // frozen motif: just keep the clock alive
 )
 
@@ -160,18 +160,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case frameMsg:
 		// Advance the animation clock only when something on screen is animating:
 		// the plasma motif while playing (frozen when paused), or the connecting
-		// sonar in the idle cover slot. Otherwise (album art, ghost cover, paused)
-		// nothing moves, so idle the clock — the 100ms logic tick still drives slow
-		// updates. m.motifLive / m.sonarLive are set by the last render.
+		// search figure in the idle cover slot. Otherwise (album art, ghost cover,
+		// paused) nothing moves, so idle the clock — the 100ms logic tick still
+		// drives slow updates. m.motifLive / m.searchLive are set by the last render.
 		fs := m.st.Snap()
 		next := frameIdle
 		switch {
 		case m.motifLive && fs.Playing == 0:
 			m.frame++
 			next = framePlaying
-		case m.sonarLive && !fs.Connected:
+		case m.searchLive && !fs.Connected:
 			m.frame++
-			next = frameSonar
+			next = frameSearch
 		}
 		return m, frameTick(next)
 	case tea.MouseMsg: // click / release / motion / wheel all implement this

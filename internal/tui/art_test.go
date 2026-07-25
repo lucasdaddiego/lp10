@@ -145,23 +145,23 @@ func TestArtColumnKittyCachesAndInvalidates(t *testing.T) {
 	}
 }
 
-// The idle cover slot is state-aware: a sonar ping while disconnected, then the
-// calm note motif when connected-but-idle with nothing to recall. Never the
-// plasma motif or half-blocks.
+// The idle cover slot is state-aware: the searching arcs while disconnected,
+// then the calm note motif when connected-but-idle with nothing to recall.
+// Never the plasma motif or half-blocks.
 func TestArtColumnIdlePlaceholder(t *testing.T) {
 	m := artModel(t)
 	m.sty.trueColor = true
 
-	// disconnected -> the animated radar sweep (dot glyphs), and it keeps the clock live
-	sonar := strings.Join(m.artColumn(protocol.Snapshot{Track: nil, Connected: false}, 16, 8), "\n")
-	if !strings.ContainsAny(sonar, "·●") {
-		t.Error("disconnected idle should show the radar sweep")
+	// disconnected -> the pulsing searching arcs, and they keep the clock live
+	search := strings.Join(m.artColumn(protocol.Snapshot{Track: nil, Connected: false}, 16, 8), "\n")
+	if !strings.Contains(search, "(") || !strings.ContainsAny(search, "●*") {
+		t.Error("disconnected idle should show the searching arcs")
 	}
-	if !m.sonarLive {
-		t.Error("the sonar should keep the frame clock live")
+	if !m.searchLive {
+		t.Error("the search figure should keep the frame clock live")
 	}
-	if strings.Contains(sonar, "▀") {
-		t.Error("the sonar is not a half-block raster")
+	if strings.Contains(search, "▀") {
+		t.Error("the search figure is not a half-block raster")
 	}
 
 	// connected, nothing playing, no cover to recall -> the calm note motif

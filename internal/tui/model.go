@@ -64,7 +64,7 @@ type model struct {
 	eqFocus       int  // EQ-strip display position (index into eqOrder)
 	frame         int  // animation frame for the art motif (advances while playing)
 	motifLive     bool // the plasma motif was actually drawn last render (gates the fast frame tick)
-	sonarLive     bool // the connecting sonar was drawn last render (keeps the frame clock ticking while idle)
+	searchLive    bool // the connecting search figure was drawn last render (keeps the frame clock ticking while idle)
 	scroll        int  // tick counter driving the now-playing marquee (advances every tick)
 	diag          bool
 	showRemaining bool

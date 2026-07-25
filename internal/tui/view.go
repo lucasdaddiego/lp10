@@ -42,7 +42,7 @@ func (m *model) viewContent() string {
 		return ""
 	}
 	s := m.st.Snap()
-	m.motifLive, m.sonarLive = false, false // set true below iff the plasma / sonar is actually drawn
+	m.motifLive, m.searchLive = false, false // set true below iff the plasma / search figure is actually drawn
 	// Cleared each frame; renderDashboard repopulates. [:0] keeps the backing
 	// arrays (a dozen appends per frame otherwise) — safe because Update and
 	// View run sequentially on the program loop, so the zones a mouse event

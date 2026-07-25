@@ -84,7 +84,7 @@ func (m *model) artChoice() artRender {
 // transmit rides the first line, so it re-sends only when that line repaints.
 func (m *model) artColumn(s protocol.Snapshot, w, h int) []string {
 	if s.Track == nil {
-		return m.idleArt(s, w, h) // nothing playing: sonar while connecting, else the ghost cover
+		return m.idleArt(s, w, h) // nothing playing: searching arcs while connecting, else the ghost cover
 	}
 	if s.Art == nil {
 		return m.motif(w, h) // playing without a cover (radio): the plasma motif
@@ -141,13 +141,13 @@ func (m *model) refreshAmbient(s protocol.Snapshot) {
 }
 
 // idleArt fills the cover slot when nothing is playing, telling the connection
-// state at a glance: a live radar sweep while (re)connecting, then — once
-// connected and simply idle — a dimmed "ghost" of the last cover played (a calm
-// note motif when there's no cover to recall). boxArt adds the frame around it.
+// state at a glance: the pulsing searching arcs while (re)connecting, then —
+// once connected and simply idle — a dimmed "ghost" of the last cover played (a
+// calm note motif when there's no cover to recall). boxArt adds the frame around it.
 func (m *model) idleArt(s protocol.Snapshot, w, h int) []string {
 	if !s.Connected {
-		m.sonarLive = true // keep the frame clock ticking so the beam keeps sweeping
-		return m.sty.sonar(w, h, m.frame)
+		m.searchLive = true // keep the frame clock ticking so the arcs keep pulsing
+		return m.sty.searchBox(w, h, m.frame)
 	}
 	if g := m.ghostCover(s, w, h); g != nil {
 		return g
