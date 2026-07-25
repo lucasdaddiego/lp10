@@ -37,7 +37,7 @@ func TestEQPaneFocusAdjustToggle(t *testing.T) {
 	if v, _ := st.EQValue("EQS"); v != 1 {
 		t.Errorf("EQS=%d want 1", v)
 	}
-	if cmd := <-eqcmds; cmd.Code != "EQS" || cmd.Val != 1 {
+	if cmd := <-eqcmds; cmd.Code != "EQS" || cmd.Val != 1 || cmd.TS.IsZero() {
 		t.Errorf("queued cmd=%+v want {EQS 1}", cmd)
 	}
 

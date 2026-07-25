@@ -182,8 +182,11 @@ func openQuerySockets() []*net.UDPConn {
 			}
 			if c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip4, Port: 0}); err == nil {
 				conns = append(conns, c)
+				break // the first bindable IPv4 on this interface is enough
 			}
-			break // the interface's primary IPv4 is enough
+			// An interface can carry multiple IPv4 addresses. If the first is
+			// stale/unbindable, try the next instead of silently discarding the
+			// whole interface.
 		}
 	}
 	if len(conns) == 0 {
@@ -230,37 +233,49 @@ func hintMatches(d Device, hint string) bool {
 // ---- record collection ------------------------------------------------------
 
 type collector struct {
-	instances map[string]struct{}          // PTR targets under the service
-	srv       map[string]string            // instance -> SRV target host
-	txt       map[string]map[string]string // instance -> TXT key/value
-	a         map[string][]net.IP          // host (lowercased) -> A records
+	instances map[string]string            // canonical PTR target -> original spelling
+	srv       map[string]string            // canonical instance -> SRV target host
+	txt       map[string]map[string]string // canonical instance -> TXT key/value
+	a         map[string][]net.IP          // canonical host -> A records
 }
 
 func newCollector() *collector {
 	return &collector{
-		instances: map[string]struct{}{},
+		instances: map[string]string{},
 		srv:       map[string]string{},
 		txt:       map[string]map[string]string{},
 		a:         map[string][]net.IP{},
 	}
 }
 
+// dnsKey canonicalizes a DNS name for joins. DNS names are case-insensitive,
+// and responders are allowed to vary case (or a trailing root dot) between the
+// PTR target and the SRV/TXT owner. Treating the wire spellings as map keys
+// verbatim could leave a complete reply looking unresolved.
+func dnsKey(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
+}
+
 func (c *collector) add(recs []rr) {
 	for _, r := range recs {
 		switch r.typ {
 		case typePTR:
-			if strings.EqualFold(r.name, service) && r.target != "" {
-				c.instances[r.target] = struct{}{}
+			if strings.EqualFold(strings.TrimSuffix(r.name, "."), service) && r.target != "" {
+				key := dnsKey(r.target)
+				if _, exists := c.instances[key]; !exists {
+					c.instances[key] = r.target
+				}
 			}
 		case typeSRV:
 			if r.target != "" {
-				c.srv[r.name] = r.target
+				c.srv[dnsKey(r.name)] = r.target
 			}
 		case typeTXT:
-			m := c.txt[r.name]
+			key := dnsKey(r.name)
+			m := c.txt[key]
 			if m == nil {
 				m = map[string]string{}
-				c.txt[r.name] = m
+				c.txt[key] = m
 			}
 			for _, kv := range r.txt {
 				if k, v, ok := strings.Cut(kv, "="); ok {
@@ -268,27 +283,33 @@ func (c *collector) add(recs []rr) {
 				}
 			}
 		case typeA:
-			h := strings.ToLower(strings.TrimSuffix(r.name, "."))
-			c.a[h] = append(c.a[h], r.ip)
+			if ip := r.ip.To4(); ip != nil {
+				key := dnsKey(r.name)
+				c.a[key] = append(c.a[key], ip)
+			}
 		}
 	}
 }
 
 func (c *collector) devices() []Device {
 	var ds []Device
-	for inst := range c.instances {
-		label := strings.TrimSuffix(inst, "."+service) // "<MAC>@<name>"
+	for key, inst := range c.instances {
+		label := strings.TrimSuffix(inst, ".")
+		suffix := "." + service
+		if len(label) >= len(suffix) && strings.EqualFold(label[len(label)-len(suffix):], suffix) {
+			label = label[:len(label)-len(suffix)] // "<MAC>@<name>", preserving advertised case
+		}
 		mac, name := label, ""
 		if i := strings.LastIndex(label, "@"); i >= 0 {
 			mac, name = label[:i], label[i+1:]
 		}
 		d := Device{Name: name, MAC: mac}
-		if m, ok := c.txt[inst]; ok {
+		if m, ok := c.txt[key]; ok {
 			d.Model = m["am"]
 		}
-		if h, ok := c.srv[inst]; ok {
+		if h, ok := c.srv[key]; ok {
 			d.Host = h
-			if ips := c.a[strings.ToLower(strings.TrimSuffix(h, "."))]; len(ips) > 0 {
+			if ips := c.a[dnsKey(h)]; len(ips) > 0 {
 				d.IP = ips[0]
 			}
 		}
@@ -358,6 +379,11 @@ func parseName(msg []byte, off int) (string, int, bool) {
 				return "", 0, false
 			}
 			off = (l&0x3F)<<8 | int(msg[off+1])
+		case l&0xC0 != 0:
+			// 01xxxxxx and 10xxxxxx are reserved DNS label forms, not literal
+			// lengths. Reject them instead of interpreting 0x40..0xbf as a
+			// giant label and potentially accepting malformed packets.
+			return "", 0, false
 		default:
 			off++
 			if off+l > len(msg) {
@@ -419,10 +445,14 @@ func parsePacket(msg []byte) ([]rr, bool) {
 		r := rr{name: name, typ: typ}
 		switch typ {
 		case typePTR:
-			r.target, _, _ = parseName(msg, rdStart)
+			if target, end, ok := parseName(msg, rdStart); ok && end <= rdStart+rdlen {
+				r.target = target
+			}
 		case typeSRV:
 			if rdlen >= 7 { // priority(2) weight(2) port(2) target
-				r.target, _, _ = parseName(msg, rdStart+6)
+				if target, end, ok := parseName(msg, rdStart+6); ok && end <= rdStart+rdlen {
+					r.target = target
+				}
 			}
 		case typeTXT:
 			r.txt = parseTXT(msg[rdStart : rdStart+rdlen])

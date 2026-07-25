@@ -19,6 +19,11 @@ const (
 	tunnelSeedSpacing = 150 * time.Millisecond
 	tunnelPoll        = 250 * time.Millisecond // write-loop wake to re-check Stop
 	tunnelCarryMax    = 8192                   // bound a separator-free read
+	// EQCommandDeadline prevents a control change made while the tunnel is down
+	// from applying minutes later after a reconnect. It mirrors the player
+	// command deadline: brief Wi-Fi blips recover transparently; stale intent is
+	// dropped visibly.
+	EQCommandDeadline = 4 * time.Second
 	// TCP keepalive on the control socket. The device only broadcasts on change,
 	// so the tunnel is normally silent — a read deadline would false-fire. OS
 	// keepalive instead probes a half-open link (flaky-WiFi: device off the LAN,
@@ -30,11 +35,13 @@ const (
 	tunnelKeepCount = 3
 )
 
-// EQCommand is a queued control write for the :2018 tunnel: a wire code and a
-// value (the caller clamps via tunnel.Clamp).
+// EQCommand is a queued control write for the :2018 tunnel: a wire code, value,
+// and enqueue time. The worker validates the code, clamps the value, and drops
+// stale intent at the wire boundary.
 type EQCommand struct {
 	Code string
 	Val  int
+	TS   time.Time
 }
 
 // tunnelAddr resolves the control-tunnel address; LP10_TUNNEL_ADDR overrides it
@@ -87,28 +94,53 @@ func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, 
 	go tunnelReader(st, conn, done)
 
 	// Seed: query each control so the panel shows the device's current values.
+	dead := false
 	for _, q := range tunnel.SeedQueries() {
 		if st.Stop.IsSet() {
 			break
 		}
 		if _, werr := conn.Write([]byte(q)); werr != nil {
+			dead = true
 			break
 		}
 		st.Stop.Wait(tunnelSeedSpacing)
+	}
+	if !dead {
+		select {
+		case <-done:
+			dead = true // peer died while the seed writes were in flight
+		default:
+			// Completing the seed with a live reader proves this was more than
+			// an accept-and-immediately-reset endpoint, so it breaks the failure
+			// streak. Without this reset, later disconnects inherited an old
+			// MaxBackoff even after long healthy sessions.
+			backoff = InitialBackoff
+		}
 	}
 
 	// Write loop: drain queued commands until the connection dies or we stop. One
 	// ticker (not a fresh time.After each iteration) gives the periodic wake that
 	// lets us notice Stop with no commands in flight, without churning timers.
-	dead := false
 	poll := time.NewTicker(tunnelPoll)
 	defer poll.Stop()
 	for !st.Stop.IsSet() && !dead {
 		select {
 		case <-done:
 			dead = true
-		case cmd := <-eqcmds:
-			if _, werr := conn.Write([]byte(tunnel.Set(cmd.Code, cmd.Val))); werr != nil {
+		case cmd, ok := <-eqcmds:
+			if !ok {
+				eqcmds = nil // disable this select arm; a closed channel is always ready
+				continue
+			}
+			wire, stale := eqCommandWire(cmd, time.Now())
+			if stale {
+				st.Note("command not delivered")
+				continue
+			}
+			if wire == "" { // unknown code: never put an unallowlisted frame on the wire
+				continue
+			}
+			if _, werr := conn.Write([]byte(wire)); werr != nil {
 				dead = true
 			}
 		case <-poll.C:
@@ -123,6 +155,20 @@ func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, 
 		return backoff
 	}
 	return waitBackoff(st, backoff)
+}
+
+// eqCommandWire validates and ages one queued EQ command. A zero timestamp is
+// accepted for internal callers/tests; the TUI timestamps every real user
+// action. stale is distinct from an unknown code so only expired user intent
+// produces the visible "not delivered" note.
+func eqCommandWire(cmd EQCommand, now time.Time) (wire string, stale bool) {
+	if _, ok := tunnel.Lookup(cmd.Code); !ok {
+		return "", false
+	}
+	if !cmd.TS.IsZero() && now.Sub(cmd.TS) > EQCommandDeadline {
+		return "", true
+	}
+	return tunnel.Set(cmd.Code, cmd.Val), false
 }
 
 // tunnelReader parses the device's broadcast frames into State until the

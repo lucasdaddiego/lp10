@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -83,6 +84,15 @@ func TestCov_ApplyTOMLIntegralFloatVolStep(t *testing.T) {
 	applyTOML(&cfg, map[string]any{"vol_step": float64(9.0)})
 	if cfg.VolStep != 9 {
 		t.Errorf("integral float vol_step should apply as 9, got %d", cfg.VolStep)
+	}
+}
+
+func TestCov_ApplyTOMLRejectsFloatAtIntBoundary(t *testing.T) {
+	cfg := Config{VolStep: defVolStep}
+	limit := float64(uint64(1) << (strconv.IntSize - 1))
+	applyTOML(&cfg, map[string]any{"vol_step": limit})
+	if cfg.VolStep != defVolStep {
+		t.Errorf("float at first invalid int value should be ignored, got %d", cfg.VolStep)
 	}
 }
 

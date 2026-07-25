@@ -86,6 +86,17 @@ func TestHalfBlockColors(t *testing.T) {
 	}
 }
 
+func TestHalfBlockExactSGR(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 2))
+	img.SetRGBA(0, 0, color.RGBA{9, 10, 99, 255})
+	img.SetRGBA(0, 1, color.RGBA{100, 101, 255, 255})
+	got := HalfBlock(img, 1, 1)
+	const want = "\x1b[38;2;9;10;99;48;2;100;101;255m▀\x1b[0m"
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("HalfBlock exact bytes = %q, want [%q]", got, want)
+	}
+}
+
 func TestHalfBlockGuards(t *testing.T) {
 	if HalfBlock(nil, 4, 4) != nil {
 		t.Error("nil image should render nothing")

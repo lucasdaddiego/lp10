@@ -134,5 +134,5 @@ func parseFrame(frame string) (code string, val int, ok bool) {
 	if err != nil {
 		return "", 0, false
 	}
-	return code, n, true
+	return code, Clamp(code, n), true
 }

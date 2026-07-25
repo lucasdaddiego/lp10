@@ -248,6 +248,61 @@ func TestCov_TunnelStopDuringSeed(t *testing.T) {
 	}
 }
 
+func TestCov_TunnelSuccessResetsBackoff(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
+
+	st := protocol.NewState()
+	got := make(chan time.Duration, 1)
+	go func() {
+		got <- tunnelOnce(st, config.Config{Host: "unused"}, make(chan EQCommand), MaxBackoff)
+	}()
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st.Stop.Set() // exit the successful lifecycle without a reconnect wait
+
+	select {
+	case backoff := <-got:
+		if backoff != InitialBackoff {
+			t.Errorf("successful dial returned backoff %v, want reset %v", backoff, InitialBackoff)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("tunnelOnce did not stop")
+	}
+}
+
+func TestCov_EQCommandWireValidation(t *testing.T) {
+	now := time.Now()
+	if wire, stale := eqCommandWire(EQCommand{Code: "BAS", Val: 99, TS: now}, now); wire != "BAS:10;" || stale {
+		t.Errorf("fresh command = (%q, %v), want (BAS:10;, false)", wire, stale)
+	}
+	if wire, stale := eqCommandWire(EQCommand{
+		Code: "MXV", Val: 40, TS: now.Add(-EQCommandDeadline - time.Millisecond),
+	}, now); wire != "" || !stale {
+		t.Errorf("stale command = (%q, %v), want (empty, true)", wire, stale)
+	}
+	if wire, stale := eqCommandWire(EQCommand{Code: "NOPE", Val: 1, TS: now}, now); wire != "" || stale {
+		t.Errorf("unknown command = (%q, %v), want (empty, false)", wire, stale)
+	}
+}
+
+func TestCov_ApplyRecordSafeReportsData(t *testing.T) {
+	st := protocol.NewState()
+	if had, ok := applyRecordSafe(st, protocol.Record{"p": {}}); !ok || had {
+		t.Errorf("empty record = (had=%v, ok=%v), want (false, true)", had, ok)
+	}
+	if had, ok := applyRecordSafe(st, protocol.Record{"v": {"Data:44"}}); !ok || !had {
+		t.Errorf("volume record = (had=%v, ok=%v), want (true, true)", had, ok)
+	}
+}
+
 // ---- command worker ---------------------------------------------------------
 
 // TestCov_CommandFlushWithPending: an undeliverable command (no live proc)

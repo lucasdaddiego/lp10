@@ -48,6 +48,9 @@ func TestDecodeRejectsOversized(t *testing.T) {
 	if _, err := decode(tinyPNGHeader(60000, 60000)); !errors.Is(err, ErrUndecodable) {
 		t.Errorf("3.6-gigapixel header: err=%v, want ErrUndecodable", err)
 	}
+	if _, err := decode(tinyPNGHeader(^uint32(0), ^uint32(0))); !errors.Is(err, ErrUndecodable) {
+		t.Errorf("overflowing-dimensions header: err=%v, want ErrUndecodable", err)
+	}
 	// a normal small image still decodes
 	if _, err := decode(pngBytes(t, solid(8, 8, color.RGBA{1, 2, 3, 255}))); err != nil {
 		t.Errorf("small image rejected: %v", err)
@@ -61,6 +64,17 @@ func TestGetUndecodableBytesAreTyped(t *testing.T) {
 	defer srv.Close()
 	if _, err := Get(context.Background(), srv.URL, t.TempDir()); !errors.Is(err, ErrUndecodable) {
 		t.Errorf("non-image body: err=%v, want ErrUndecodable (so the worker won't retry it)", err)
+	}
+}
+
+func TestGetRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(maxArtBytes+1))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if _, err := Get(context.Background(), srv.URL, t.TempDir()); !errors.Is(err, ErrUndecodable) {
+		t.Errorf("oversized response: err=%v, want ErrUndecodable", err)
 	}
 }
 

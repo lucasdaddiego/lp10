@@ -147,11 +147,17 @@ func applyTOML(cfg *Config, data map[string]any) {
 	}
 	switch v := data["vol_step"].(type) {
 	case int64:
-		cfg.VolStep = int(v)
+		n := int(v)
+		if int64(n) == v {
+			cfg.VolStep = n
+		}
 	case float64:
 		// allow an integral float like 2.0, but reject values outside int range
 		// so the conversion can't overflow to a garbage/negative step
-		if v == math.Trunc(v) && v >= float64(math.MinInt) && v <= float64(math.MaxInt) {
+		// (float64(MaxInt) rounds UP to 2^63 on 64-bit systems, so comparing
+		// against it inclusively still admitted exactly the first invalid value).
+		limit := float64(uint64(1) << (strconv.IntSize - 1))
+		if v == math.Trunc(v) && v >= -limit && v < limit {
 			cfg.VolStep = int(v)
 		}
 	}

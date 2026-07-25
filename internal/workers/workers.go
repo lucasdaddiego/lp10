@@ -140,7 +140,8 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 			if st.Stop.IsSet() {
 				break
 			}
-			if !applyRecordSafe(st, rec) {
+			hadData, ok := applyRecordSafe(st, rec)
+			if !ok || !hadData {
 				continue
 			}
 			backoff = InitialBackoff
@@ -184,16 +185,17 @@ func clip160(s string) string {
 
 // applyRecordSafe applies one record, swallowing a panic as a noted error and
 // reporting false so the caller skips this record's bookkeeping (Python's
-// except ...: continue).
-func applyRecordSafe(st *protocol.State, rec protocol.Record) (ok bool) {
+// except ...: continue). hadData distinguishes a valid metadata-only/dataless
+// frame from the player data that may clear a fatal error and reset backoff.
+func applyRecordSafe(st *protocol.State, rec protocol.Record) (hadData, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			st.Note(fmt.Sprintf("stream: %v", r))
+			hadData = false
 			ok = false
 		}
 	}()
-	protocol.ApplyRecord(st, rec)
-	return true
+	return protocol.ApplyRecord(st, rec), true
 }
 
 // closeStdinLocked closes the child's stdin while holding WLock, so the close can't

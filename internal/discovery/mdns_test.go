@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bytes"
 	"net"
 	"strings"
 	"sync"
@@ -106,6 +107,13 @@ func TestParseNameCompression(t *testing.T) {
 	if _, _, ok := parseName(loop, 0); ok {
 		t.Error("self-referential pointer should fail")
 	}
+	// Reserved 01xxxxxx/10xxxxxx label forms must not be accepted as a
+	// 64/128-byte literal label.
+	reserved := append([]byte{0x40}, bytes.Repeat([]byte{'a'}, 64)...)
+	reserved = append(reserved, 0)
+	if _, _, ok := parseName(reserved, 0); ok {
+		t.Error("reserved DNS label form should fail")
+	}
 }
 
 func TestParsePacketAndDevices(t *testing.T) {
@@ -130,6 +138,41 @@ func TestParsePacketAndDevices(t *testing.T) {
 	if d.Name != "Living" || d.Model != "LP10" || d.MAC != "AABBCCDDEEFF" ||
 		d.Host != "Living.local" || d.Addr() != "192.168.1.40" {
 		t.Errorf("device = %+v", d)
+	}
+}
+
+func TestCollectorJoinsDNSNamesCaseInsensitively(t *testing.T) {
+	const inst = "AABBCCDDEEFF@Living._raop._tcp.local."
+	c := newCollector()
+	c.add([]rr{
+		{name: strings.ToUpper(service), typ: typePTR, target: inst},
+		{name: strings.ToLower(inst), typ: typeSRV, target: "Living.LOCAL."},
+		{name: strings.ToUpper(inst), typ: typeTXT, txt: []string{"am=LP10"}},
+		{name: "living.local", typ: typeA, ip: net.IPv4(192, 168, 1, 40)},
+	})
+	ds := c.devices()
+	if len(ds) != 1 {
+		t.Fatalf("devices = %+v, want one case-insensitively joined device", ds)
+	}
+	d := ds[0]
+	if d.Name != "Living" || d.Model != "LP10" || d.Host != "Living.LOCAL." || d.Addr() != "192.168.1.40" {
+		t.Errorf("device = %+v", d)
+	}
+}
+
+func TestCollectorIgnoresMalformedABeforeValidAddress(t *testing.T) {
+	const inst = "AABB@Living._raop._tcp.local"
+	c := newCollector()
+	c.add([]rr{
+		{name: service, typ: typePTR, target: inst},
+		{name: inst, typ: typeSRV, target: "Living.local"},
+		{name: inst, typ: typeTXT, txt: []string{"am=LP10"}},
+		{name: "Living.local", typ: typeA}, // malformed A must not poison the first slot
+		{name: "Living.local", typ: typeA, ip: net.IPv4(10, 0, 0, 9)},
+	})
+	ds := c.devices()
+	if len(ds) != 1 || ds[0].Addr() != "10.0.0.9" {
+		t.Errorf("devices = %+v, want valid A address after malformed record", ds)
 	}
 }
 

@@ -157,6 +157,9 @@ func fit(img image.Image, minPx, maxPx int) image.Image {
 // different math (a float scale factor vs integer edge targets), so the
 // decision stays at the site and only the kernel choice is shared.
 func resize(src image.Image, w, h int, enlarging bool) *image.RGBA {
+	if b := src.Bounds(); b.Dx() == w && b.Dy() == h {
+		return rgbaOf(src)
+	}
 	if enlarging {
 		return resample(src, w, h)
 	}
@@ -226,6 +229,8 @@ func bilerp8(c00, c10, c01, c11, tx, ty float64) uint8 {
 func kittyTransmit(id, cols, rows int, payload string) string {
 	const chunk = 4096
 	var b strings.Builder
+	chunks := (len(payload) + chunk - 1) / chunk
+	b.Grow(len(payload) + chunks*48)
 	first := true
 	for {
 		n := min(chunk, len(payload))
@@ -260,17 +265,16 @@ func kittyTransmit(id, cols, rows int, payload string) string {
 // the latter only addresses ids 0–255, and a cell's two diacritics already imply
 // a zero most-significant byte, so this correctly references any id < 2²⁴.
 func kittyPlaceholders(id, cols, rows int) []string {
-	ph := string(rune(KittyPlaceholder))
 	fg := fmt.Sprintf("\x1b[38;2;%d;%d;%dm", (id>>16)&0xff, (id>>8)&0xff, id&0xff)
 	lines := make([]string, rows)
 	for r := range rows {
 		var b strings.Builder
+		b.Grow(len(fg) + cols*12 + len("\x1b[39m"))
 		b.WriteString(fg)
-		rowDia := string(kittyDiacritics[r])
 		for c := range cols {
-			b.WriteString(ph)
-			b.WriteString(rowDia)
-			b.WriteString(string(kittyDiacritics[c]))
+			b.WriteRune(rune(KittyPlaceholder))
+			b.WriteRune(kittyDiacritics[r])
+			b.WriteRune(kittyDiacritics[c])
 		}
 		b.WriteString("\x1b[39m") // reset foreground so it doesn't bleed past the art
 		lines[r] = b.String()

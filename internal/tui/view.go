@@ -92,9 +92,21 @@ func (m *model) frameLines(lines []string, W int) string {
 	}
 	edge := strings.Repeat("━", contentW+4)
 	side := ps.border.render("┃")
+	top := ps.border.render("┏" + edge + "┓")
+	bottom := ps.border.render("┗" + edge + "┛")
+
+	// Grow to the exact byte size, not the visible-column size. Animated art
+	// carries one ANSI colour escape per cell, so a 150-column frame can contain
+	// several times as many bytes as display cells. Growing by columns made the
+	// builder repeatedly reallocate and copy the nearly-complete frame on every
+	// animation tick even though the final output is deterministic.
+	frameBytes := len(top) + len(bottom) + len(lines) + 1 // one newline per body row + before bottom
+	for i, ln := range lines {
+		frameBytes += 2*len(side) + 2 + len(ln) + contentW - widths[i] + 2
+	}
 	var b strings.Builder
-	b.Grow((contentW + 32) * (len(lines) + 2))
-	b.WriteString(ps.border.render("┏" + edge + "┓"))
+	b.Grow(frameBytes)
+	b.WriteString(top)
 	for i, ln := range lines {
 		b.WriteByte('\n')
 		b.WriteString(side)
@@ -104,7 +116,7 @@ func (m *model) frameLines(lines []string, W int) string {
 		b.WriteString(side)
 	}
 	b.WriteByte('\n')
-	b.WriteString(ps.border.render("┗" + edge + "┛"))
+	b.WriteString(bottom)
 	return b.String()
 }
 
@@ -147,7 +159,7 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	if full {
 		// EQ: one horizontal row per band (W-wide), pinned to the bottom under a
 		// divider. Build the tail first so the cover height is based on what's left.
-		tail := append([]string{m.dividerRow("equalizer", W)}, m.eqSliders(s, W)...)
+		tail := append([]string{m.dividerRow("equalizer", W)}, m.eqSliders(W)...)
 		tail = append(tail, m.footerRow(W))
 		if errLine != "" {
 			tail = append(tail, errLine)
@@ -238,7 +250,12 @@ func joinCols(art, mid, vol []string, midW int) []string {
 	n := min(len(art), len(mid), len(vol))
 	out := make([]string, n)
 	for i := range out {
-		out[i] = art[i] + gap + padVis(mid[i], midW) + gap + vol[i]
+		// Fold the middle-column padding into the final concatenation. Calling
+		// padVis first built and copied an intermediate string, then copied it
+		// again into this row. This produces the same bytes with one row-sized
+		// allocation instead of two.
+		pad := spaces(max(midW-visWidth(mid[i]), 0))
+		out[i] = art[i] + gap + mid[i] + pad + gap + vol[i]
 	}
 	return out
 }

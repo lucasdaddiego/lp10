@@ -5,6 +5,7 @@
 package protocol
 
 import (
+	"math"
 	"strconv"
 	"time"
 )
@@ -45,7 +46,7 @@ const pingRingMax = 30
 func (st *State) updateNet(si *SysInfo, now time.Time) {
 	rx, rxErr := strconv.ParseInt(si.RxBytes, 10, 64)
 	tx, txErr := strconv.ParseInt(si.TxBytes, 10, 64)
-	if rxErr == nil && txErr == nil {
+	if rxErr == nil && txErr == nil && rx >= 0 && tx >= 0 {
 		if !st.netPrevAt.IsZero() {
 			if dt := now.Sub(st.netPrevAt).Seconds(); dt > 0 && rx >= st.netPrevRx && tx >= st.netPrevTx {
 				st.netRxRate = float64(rx-st.netPrevRx) / dt
@@ -56,7 +57,7 @@ func (st *State) updateNet(si *SysInfo, now time.Time) {
 		st.netPrevRx, st.netPrevTx, st.netPrevAt = rx, tx, now
 	}
 	for i, s := range [3]string{si.PingClient, si.PingGw, si.PingNet} {
-		if v, err := strconv.ParseFloat(s, 64); err == nil {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v >= 0 && !math.IsInf(v, 0) && !math.IsNaN(v) {
 			st.pingRing[i] = append(st.pingRing[i], v)
 			if len(st.pingRing[i]) > pingRingMax {
 				st.pingRing[i] = st.pingRing[i][len(st.pingRing[i])-pingRingMax:]
@@ -83,6 +84,9 @@ func errCounters(si *SysInfo) (out [4]int64, ok bool) {
 	for i, s := range [4]string{si.RxErrs, si.TxErrs, si.RxDrop, si.TxDrop} {
 		v, err := strconv.ParseInt(s, 10, 64)
 		if err != nil {
+			return out, false
+		}
+		if v < 0 {
 			return out, false
 		}
 		out[i] = v

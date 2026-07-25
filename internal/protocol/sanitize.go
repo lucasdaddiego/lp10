@@ -7,6 +7,7 @@ package protocol
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -54,30 +55,27 @@ func Int(v any) (int, bool) {
 	case int:
 		return x, true
 	case int64:
-		return int(x), true
+		n := int(x)
+		if int64(n) != x {
+			return 0, false
+		}
+		return n, true
 	case float64:
-		if math.IsNaN(x) || math.IsInf(x, 0) {
-			return 0, false
-		}
-		return int(x), true
+		return floatInt(x)
 	case float32:
-		f := float64(x)
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return 0, false
-		}
-		return int(f), true
+		return floatInt(float64(x))
 	case json.Number: // from UseNumber decoding (int or float literal)
 		// Try an integer parse first so large integers keep full int64
 		// precision (Python's int is arbitrary precision); fall back to float
 		// for non-integer literals, dropping NaN/Inf (e.g. 1e999).
 		if i, err := strconv.ParseInt(string(x), 10, 64); err == nil {
-			return int(i), true
+			return Int(i)
 		}
 		f, err := strconv.ParseFloat(string(x), 64)
-		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		if err != nil {
 			return 0, false
 		}
-		return int(f), true
+		return floatInt(f)
 	case string:
 		n, err := strconv.Atoi(strings.TrimSpace(x))
 		if err != nil {
@@ -86,6 +84,19 @@ func Int(v any) (int, bool) {
 		return n, true
 	}
 	return 0, false
+}
+
+// floatInt truncates a finite float like Go/Python int conversion, but rejects
+// values outside the native int range before converting. A direct conversion
+// of an out-of-range float is implementation-specific and can wrap a huge
+// duration/volume into MinInt. The power-of-two bound is exact in float64 even
+// on 64-bit hosts (unlike float64(MaxInt), which rounds up to 2^63).
+func floatInt(f float64) (int, bool) {
+	limit := float64(uint64(1) << (strconv.IntSize - 1))
+	if math.IsNaN(f) || math.IsInf(f, 0) || f < -limit || f >= limit {
+		return 0, false
+	}
+	return int(f), true
 }
 
 // printable strips control/separator characters the way CPython's
@@ -167,6 +178,14 @@ func parseJSON(s string) any {
 	dec.UseNumber()
 	var v any
 	if dec.Decode(&v) != nil {
+		return nil
+	}
+	// json.Decoder accepts one valid value followed by another unless asked for
+	// EOF explicitly. Python's json.loads (the behavior this ports) rejects
+	// trailing non-whitespace, and accepting it here could turn a corrupt LUCI
+	// payload into a seemingly-valid track/details update.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
 		return nil
 	}
 	return v

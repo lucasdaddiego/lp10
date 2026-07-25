@@ -182,10 +182,11 @@ func parseRecord(rec Record) parsedRecord {
 	return p
 }
 
-// ApplyRecord applies one framed record under the State lock. last_rx stamps on
-// every framed record (link liveness for the watchdog); last_data/connected
-// only on records carrying data. Track updates only when a B section is present.
-func ApplyRecord(st *State, rec Record) {
+// ApplyRecord applies one framed record under the State lock and reports whether
+// it carried usable player data. last_rx stamps on every framed record (link
+// liveness for the watchdog); last_data/connected only on records carrying data.
+// Track updates only when a B section is present.
+func ApplyRecord(st *State, rec Record) bool {
 	p := parseRecord(rec) // lock-free: the critical section below is pure assignment
 	now := time.Now()
 
@@ -219,7 +220,7 @@ func ApplyRecord(st *State, rec Record) {
 		}
 	}
 	if p.posOK {
-		st.posMs, st.posAt = p.pos, now
+		st.posMs, st.posAt = max(0, p.pos), now
 	}
 	if p.playOK && !now.Before(st.playHold) {
 		if p.play == 0 && st.playing != 0 && !p.posOK {
@@ -228,7 +229,7 @@ func ApplyRecord(st *State, rec Record) {
 		st.playing = p.play
 	}
 	if p.volOK && !now.Before(st.volHold) {
-		st.vol = p.vol
+		st.vol = clamp100(p.vol)
 	}
 	if p.hadData {
 		st.lastData = now
@@ -238,6 +239,7 @@ func ApplyRecord(st *State, rec Record) {
 		st.connected = true
 		st.gotRecord = true
 	}
+	return p.hadData
 }
 
 // parseSysInfo parses the @@s positional stats line into a SysInfo (nil if the

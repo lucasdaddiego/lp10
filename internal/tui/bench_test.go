@@ -143,10 +143,9 @@ func BenchmarkSnap(b *testing.B) {
 
 func BenchmarkEqSliders(b *testing.B) {
 	m := benchModel(b, 44, 150)
-	s := m.st.Snap()
 	b.ReportAllocs()
 	for b.Loop() {
-		sink = m.eqSliders(s, 140)
+		sink = m.eqSliders(140)
 	}
 }
 

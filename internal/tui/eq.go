@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/tunnel"
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
@@ -65,12 +65,12 @@ func (m *model) eqToggleFocused() {
 // the tunnel write, never blocking the update loop (drop-oldest like send).
 func (m *model) sendEQ(code string, val int) {
 	m.st.SetEQLocal(code, val)
-	nbSend(m.eqcmds, workers.EQCommand{Code: code, Val: val})
+	nbSend(m.eqcmds, workers.EQCommand{Code: code, Val: val, TS: time.Now()})
 }
 
 // eqSliders renders one horizontal row per EQ band, all W columns wide, in
 // display order. The rows are pinned to the bottom tail of the full dashboard.
-func (m *model) eqSliders(s protocol.Snapshot, W int) []string {
+func (m *model) eqSliders(W int) []string {
 	_, vals := m.st.EQView()
 	rows := make([]string, len(eqOrder))
 	for d, idx := range eqOrder {

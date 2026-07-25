@@ -78,6 +78,12 @@ func TestCov_Int(t *testing.T) {
 	if _, ok := Int(json.Number("1e999")); ok {
 		t.Error("Int(json.Number 1e999) should be not-ok (overflows to Inf)")
 	}
+	if _, ok := Int(json.Number("9223372036854775808")); ok {
+		t.Error("Int(json.Number 2^63) should be not-ok (outside native int range)")
+	}
+	if _, ok := Int(1e30); ok {
+		t.Error("Int(float64 1e30) should be not-ok (outside native int range)")
+	}
 	if _, ok := Int(json.Number("abc")); ok {
 		t.Error("Int(json.Number abc) should be not-ok (unparseable)")
 	}
@@ -91,6 +97,20 @@ func TestCov_Int(t *testing.T) {
 	// default: an unknown type
 	if _, ok := Int([]string{"x"}); ok {
 		t.Error("Int([]string) should be not-ok (unknown type)")
+	}
+}
+
+func TestCov_ParseJSONRequiresOneCompleteValue(t *testing.T) {
+	if got := parseJSON("{\"ok\":true}\n\t"); got == nil {
+		t.Error("one JSON value plus trailing whitespace should parse")
+	}
+	for _, raw := range []string{
+		`{"ok":true}{"extra":true}`,
+		`{"ok":true} trailing`,
+	} {
+		if got := parseJSON(raw); got != nil {
+			t.Errorf("parseJSON(%q) = %#v, want nil for trailing data", raw, got)
+		}
 	}
 }
 
@@ -211,6 +231,48 @@ func TestCov_EQAccessors(t *testing.T) {
 	st.SetEQConnected(false)
 	if conn, _ := st.EQView(); conn {
 		t.Error("SetEQConnected(false) should clear the link state")
+	}
+}
+
+func TestCov_StateInputInvariants(t *testing.T) {
+	st := NewState()
+	st.Preload(nil, -500, 999)
+	if s := st.Snap(); s.Pos != 0 || s.Vol != 100 {
+		t.Errorf("Preload should clamp state, got pos=%d vol=%d", s.Pos, s.Vol)
+	}
+
+	// Extreme adjustments saturate without overflowing before the volume clamp.
+	if got := st.AdjustVol(math.MaxInt); got != 100 {
+		t.Errorf("AdjustVol(MaxInt) = %d, want 100", got)
+	}
+	if got := st.AdjustVol(math.MinInt); got != 0 {
+		t.Errorf("AdjustVol(MinInt) = %d, want 0", got)
+	}
+
+	deviceState := NewState()
+	hadData := ApplyRecord(deviceState, Record{
+		"p": {"MID-Read:49 Data:-20 Length:3"},
+		"v": {"MID-Read:64 Data:500 Length:3"},
+	})
+	if !hadData {
+		t.Error("valid position/volume sections should report usable data")
+	}
+	if s := deviceState.Snap(); s.Pos != 0 || s.Vol != 100 {
+		t.Errorf("device values should preserve state invariants, got pos=%d vol=%d", s.Pos, s.Vol)
+	}
+	if ApplyRecord(deviceState, Record{"p": {}}) {
+		t.Error("an empty framed section should not report usable player data")
+	}
+
+	deviceState.mu.Lock()
+	deviceState.track = Track{"TrackName": "overflow guard"}
+	deviceState.posMs = math.MaxInt
+	deviceState.posAt = time.Now().Add(-time.Second)
+	deviceState.playing = 0
+	deviceState.connected = true
+	deviceState.mu.Unlock()
+	if pos := deviceState.Snap().Pos; pos != math.MaxInt {
+		t.Errorf("extrapolated position overflowed to %d, want saturated MaxInt", pos)
 	}
 }
 

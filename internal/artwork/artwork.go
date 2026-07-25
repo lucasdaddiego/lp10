@@ -92,7 +92,9 @@ func decode(raw []byte) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUndecodable, err)
 	}
-	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width*cfg.Height > maxArtPixels {
+	// Compare by division so hostile dimensions cannot overflow int before the
+	// cap sees them (e.g. a 0xffffffff×0xffffffff PNG header on 64-bit hosts).
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxArtPixels/cfg.Height {
 		return nil, fmt.Errorf("%w: %dx%d", ErrUndecodable, cfg.Width, cfg.Height)
 	}
 	img, _, err := image.Decode(bytes.NewReader(raw))
@@ -115,7 +117,17 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("art: http %d for %s", resp.StatusCode, url)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxArtBytes))
+	if resp.ContentLength > maxArtBytes {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrUndecodable, maxArtBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxArtBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxArtBytes {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrUndecodable, maxArtBytes)
+	}
+	return raw, nil
 }
 
 // PruneCache keeps at most `keep` cover files in dir (the most-recently-modified),
@@ -213,15 +225,41 @@ func HalfBlock(img image.Image, wCells, hCells int) []string {
 	var b strings.Builder
 	for cy := range hCells {
 		b.Reset()
+		b.Grow(wCells*43 + 4) // worst-case six 3-digit channels + SGR + glyph
 		for cx := range wCells {
 			tr, tg, tb := rgbAt(px, cx, cy*2)
 			br, bg, bb := rgbAt(px, cx, cy*2+1)
-			fmt.Fprintf(&b, "\x1b[38;2;%d;%d;%d;48;2;%d;%d;%dm▀", tr, tg, tb, br, bg, bb)
+			b.WriteString("\x1b[38;2;")
+			writeByteDecimal(&b, tr)
+			b.WriteByte(';')
+			writeByteDecimal(&b, tg)
+			b.WriteByte(';')
+			writeByteDecimal(&b, tb)
+			b.WriteString(";48;2;")
+			writeByteDecimal(&b, br)
+			b.WriteByte(';')
+			writeByteDecimal(&b, bg)
+			b.WriteByte(';')
+			writeByteDecimal(&b, bb)
+			b.WriteString("m▀")
 		}
 		b.WriteString("\x1b[0m")
 		lines[cy] = b.String()
 	}
 	return lines
+}
+
+// writeByteDecimal appends v without a temporary strconv/fmt buffer. HalfBlock
+// calls it six times per terminal cell, so keeping it allocation-free removes
+// formatting overhead from the one-time cover rasterization path.
+func writeByteDecimal(b *strings.Builder, v uint8) {
+	if v >= 100 {
+		b.WriteByte('0' + v/100)
+	}
+	if v >= 10 {
+		b.WriteByte('0' + v/10%10)
+	}
+	b.WriteByte('0' + v%10)
 }
 
 func rgbAt(px *image.RGBA, x, y int) (uint8, uint8, uint8) {

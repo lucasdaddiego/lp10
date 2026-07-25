@@ -457,7 +457,10 @@ func TestPtvFoundAfterLeadingBlankLine(t *testing.T) {
 }
 
 func TestDatalessRecordStampsRxButNotConnected(t *testing.T) {
-	st := applyFixture("dataless_record.txt")
+	st := NewState()
+	if ApplyRecord(st, records("dataless_record.txt")[0]) {
+		t.Error("dataless record should report hadData=false")
+	}
 	if st.lastRx.IsZero() {
 		t.Error("last_rx should be stamped")
 	}
@@ -700,6 +703,15 @@ func TestNetThroughputAndLatency(t *testing.T) {
 	}
 	if g := n.Ping[1]; g.Peak != 20 {
 		t.Errorf("gateway peak = %v, want 20", g.Peak)
+	}
+	// Invalid/non-finite samples must not poison the rolling math.
+	st.updateNet(&SysInfo{RxBytes: "-1", TxBytes: "5", PingGw: "NaN", PingNet: "-3"}, t0.Add(3*time.Second))
+	n = st.NetView()
+	if g := n.Ping[1]; g.Avg != 17 || g.Peak != 20 {
+		t.Errorf("non-finite ping should be ignored, got %+v", g)
+	}
+	if n.Ping[2].OK {
+		t.Errorf("negative ping should be ignored, got %+v", n.Ping[2])
 	}
 	// a counter reset (reboot / interface flap) must not spike the rate
 	st.updateNet(&SysInfo{RxBytes: "10", TxBytes: "5"}, t0.Add(4*time.Second))

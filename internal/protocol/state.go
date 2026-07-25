@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"io"
 	"maps"
+	"math"
 	"os/exec"
 	"sync"
 	"time"
@@ -28,10 +29,12 @@ type Proc struct {
 
 // WaitTimeout reports whether the process has exited within d.
 func (p *Proc) WaitTimeout(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
 	select {
 	case <-p.Done:
 		return true
-	case <-time.After(d):
+	case <-t.C:
 		return false
 	}
 }
@@ -167,7 +170,13 @@ func (st *State) Snap() Snapshot {
 	pos := st.posMs
 	t := st.track
 	if st.playing == 0 && t != nil && st.connected {
-		pos += int(time.Since(st.posAt).Milliseconds())
+		if elapsed := time.Since(st.posAt).Milliseconds(); elapsed > 0 {
+			if elapsed > int64(math.MaxInt-pos) {
+				pos = math.MaxInt
+			} else {
+				pos += int(elapsed)
+			}
+		}
 	}
 	if total := t.GetInt("TotalTime"); total > 0 && pos > total {
 		pos = total
@@ -241,7 +250,18 @@ func (st *State) SetVol(v int) int {
 
 // AdjustVol changes the volume by delta, persisting a pre-mute level if muting.
 func (st *State) AdjustVol(delta int) int {
-	return st.applyVol(func(cur int) int { return cur + delta })
+	return st.applyVol(func(cur int) int {
+		// Preserve the 0..100 invariant without performing an addition that can
+		// overflow when a caller supplies an extreme delta.
+		switch {
+		case delta > 0 && delta >= 100-cur:
+			return 100
+		case delta < 0 && delta <= -cur:
+			return 0
+		default:
+			return cur + delta
+		}
+	})
 }
 
 // VolAndPremute reads the current volume and pre-mute level atomically (used by
@@ -443,9 +463,9 @@ func (st *State) Preload(track Track, pos, vol int) {
 	defer st.mu.Unlock()
 	st.track = track
 	st.trackAt = time.Time{}
-	st.posMs = pos
+	st.posMs = max(0, pos)
 	st.playing = 2
-	st.vol = vol
+	st.vol = clamp100(vol)
 }
 
 // ToggleOptimistic flips the local play state, arms the echo-suppression hold,

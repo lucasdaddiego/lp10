@@ -96,3 +96,11 @@ func TestParseFramesSkipsJunk(t *testing.T) {
 		t.Errorf("got=%v want %v", got, want)
 	}
 }
+
+func TestParseFramesClampsDeviceValues(t *testing.T) {
+	got, rest := ParseFrames("MXV:999;BAS:-99;VBS:8;")
+	want := []Update{{"MXV", 100}, {"BAS", -10}, {"VBS", 1}}
+	if !reflect.DeepEqual(got, want) || rest != "" {
+		t.Errorf("ParseFrames out-of-range = %v, %q; want %v, empty", got, rest, want)
+	}
+}
