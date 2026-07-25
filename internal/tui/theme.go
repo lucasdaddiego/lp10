@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/lucasdaddiego/lp10/internal/artwork"
 )
@@ -18,7 +18,7 @@ import (
 // (256-color or, on a monochrome terminal, attribute-only — emphasis then falls
 // back to the bold/reverse already baked into the prominent styles).
 type theme struct {
-	border lipgloss.Color
+	border color.Color
 
 	sAcc lipgloss.Style // accent (teal)
 	sBri lipgloss.Style // bright track title
@@ -30,8 +30,17 @@ type theme struct {
 	track lipgloss.Style   // empty meter/bar cell
 	head  lipgloss.Style   // meter position head
 
-	warm []lipgloss.Style // EQ boost ramp (tone > 0): amber -> gold
-	cool []lipgloss.Style // EQ cut ramp (tone < 0): indigo -> sky
+	warmKnob lipgloss.Style // EQ slider knob, tone boosted (> 0): gold
+	coolKnob lipgloss.Style // EQ slider knob, tone cut (< 0): sky
+
+	// sevs is the diagnostics severity palette — good / warn / bad — held as a
+	// field so the gauges don't rebuild the triple on every row.
+	sevs [3]lipgloss.Style
+
+	// sFocusBU is the eqSummary focused-band style (accent+bold+underline). It
+	// is deliberately NOT a pen: lipgloss renders underline styles rune-by-rune
+	// (UnderlineSpaces handling), which a flattened prefix/suffix cannot mimic.
+	sFocusBU lipgloss.Style
 
 	trueColor     bool // terminal advertises 24-bit color (gates the half-block album art)
 	kittyGraphics bool // terminal supports the Kitty graphics protocol (true-pixel album art)
@@ -40,6 +49,8 @@ type theme struct {
 	btnOff lipgloss.Style // unfocused button
 	segOn  lipgloss.Style // focused segmented (33%) transport button
 	segOff lipgloss.Style // unfocused segmented transport button
+
+	penCache *penSet // per-profile flattened styles; see pens()
 }
 
 func newTheme() *theme {
@@ -55,15 +66,15 @@ func newTheme() *theme {
 	}
 	t.track = fg("#3a4150") // empty meter/rail cells: a visible grey, not near-black
 	t.head = fg("#8af0d4")
-	// Tone ramps for the graphic-EQ slider knob: a boosted band reads warm, a cut
+	// Tone colours for the graphic-EQ slider knob: a boosted band reads warm, a cut
 	// band reads cool — so the sign of a tone control is legible at a glance.
-	for _, h := range []string{"#6e4a12", "#9c6a1d", "#c98a2b", "#e6a83e", "#ffc861"} {
-		t.warm = append(t.warm, fg(h))
-	}
-	for _, h := range []string{"#26408a", "#2f57b0", "#3f74d6", "#5f95ee", "#86b6ff"} {
-		t.cool = append(t.cool, fg(h))
-	}
-	t.trueColor = termenv.EnvColorProfile() == termenv.TrueColor
+	t.warmKnob, t.coolKnob = fg("#ffc861"), fg("#86b6ff")
+	t.sevs = [3]lipgloss.Style{t.sAcc, stWarn, stRed}
+	t.sFocusBU = t.sAcc.Bold(true).Underline(true)
+	// colorprofile replaces v1's termenv: same env-driven detection (COLORTERM /
+	// TERM / NO_COLOR), used only to gate the half-block album art — everything
+	// else renders 24-bit and lets the program's renderer downsample.
+	t.trueColor = colorprofile.Detect(os.Stdout, os.Environ()) == colorprofile.TrueColor
 	t.kittyGraphics = detectKittyGraphics()
 	t.btnOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true).Padding(0, 1)
 	t.btnOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#6b7480")).Padding(0, 1)
@@ -99,6 +110,167 @@ func detectKittyGraphics() bool {
 	return strings.Contains(term, "kitty") || strings.Contains(term, "ghostty")
 }
 
+// ---- per-cell painting ---------------------------------------------------------
+//
+// The block-drawing primitives below (the plasma motif, the sonar sweep, the
+// meters and the EQ bars) paint one styled glyph per character cell, and the
+// animated ones repaint every frame at ~30fps. Calling lipgloss.Style.Render per
+// cell costs roughly 25 allocations — a Style copy, a hex parse via go-colorful
+// (which uses fmt.Sscanf), a colour-profile conversion and an ANSI parse — which
+// made the motif alone 65% of the whole process's allocations and put the GC
+// (runtime.madvise) at ~68% of CPU.
+//
+// Where a cell's style comes from a small fixed set (the meters, the EQ bars) the
+// fix is just to render each distinct glyph ONCE and index the results. Only the
+// motif and the sonar, whose colour genuinely differs per cell, need the painter
+// below.
+
+// painter paints glyphs whose colour differs every cell, writing the 24-bit SGR
+// directly and resetting once per line instead of once per cell (the same shape
+// artwork.HalfBlock already ships). Under lipgloss/bubbletea v2 this is
+// universally correct: styles always emit the colour as specified and the
+// program's renderer downsamples for the actual terminal, so the v1
+// profile-gated lipgloss fallback is gone. TestPaintedBlockWidths pins the one
+// property the layout depends on: a line is still exactly w columns.
+type painter struct{}
+
+func newPainter() painter { return painter{} }
+
+// cell writes one glyph in the given colour.
+func (p painter) cell(b *strings.Builder, r, g, bl uint8, glyph string) {
+	b.WriteString("\x1b[38;2;")
+	writeDec(b, r)
+	b.WriteByte(';')
+	writeDec(b, g)
+	b.WriteByte(';')
+	writeDec(b, bl)
+	b.WriteByte('m')
+	b.WriteString(glyph)
+}
+
+// endLine closes a painted line: the foreground stays set as the cells run, so
+// one reset ends the line (nothing painted — a zero-width block — needs none).
+func (p painter) endLine(b *strings.Builder) {
+	if b.Len() > 0 {
+		b.WriteString("\x1b[0m")
+	}
+}
+
+// writeDec appends a byte in decimal without allocating (strconv would need a
+// scratch slice per call, and this runs once per colour channel per cell).
+func writeDec(b *strings.Builder, v uint8) {
+	if v >= 100 {
+		b.WriteByte('0' + v/100)
+	}
+	if v >= 10 {
+		b.WriteByte('0' + v/10%10)
+	}
+	b.WriteByte('0' + v%10)
+}
+
+// ---- flattened styles (pens) -----------------------------------------------------
+//
+// A lipgloss.Style.Render costs ~15 heap allocations even for a plain foreground
+// style: the style is copied, its hex colour is re-PARSED (go-colorful.Hex uses
+// fmt.Sscanf) and converted for the profile, and the output re-tokenised. The
+// dashboard makes ~200 such calls per frame at up to 30fps, which made this
+// chain the top allocation source once the per-cell loops were fixed.
+//
+// A pen is a style flattened to the escape pair it wraps a SINGLE-LINE string
+// in, derived by rendering a sentinel once. pen.render(s) is then two concats
+// and is byte-identical to Style.Render(s) for any single-line s. Two style
+// classes are NOT pen-safe and must stay on Style.Render: multi-line strings
+// (lipgloss styles each line separately) and Underline/Strikethrough styles
+// (lipgloss renders those rune-by-rune to keep the decoration off spaces — the
+// eqSummary focus style, sFocusBU, is the one such style here).
+// TestPenMatchesStyleRender pins the equivalence for every pen below.
+// lipgloss v2 renders profile-independently (the program's renderer does the
+// downsampling), so one flattening serves the whole process.
+
+// pen is a flattened style: the SGR prefix and reset suffix it wraps text in.
+type pen struct{ pre, post string }
+
+func (p pen) render(s string) string { return p.pre + s + p.post }
+
+// stylePen flattens a style by rendering a sentinel that cannot occur inside an
+// escape sequence. It costs one Render — do it once and cache, never per call.
+func stylePen(s lipgloss.Style) pen {
+	const sentinel = "\x00"
+	r := s.Render(sentinel)
+	before, after, ok := strings.Cut(r, sentinel)
+	if !ok {
+		return pen{} // sentinel swallowed (never observed): degrade to unstyled
+	}
+	return pen{before, after}
+}
+
+// penSet is every pen and pre-rendered meter cell the per-frame render path
+// needs. Built lazily, once, by theme.pens().
+type penSet struct {
+	acc, accB          pen // accent; accent bold
+	bri, txt, dim, dmr pen
+	warn, warnB, red   pen
+	segOn, segOff      pen
+	btnOn, btnOff      pen
+	warmKnob, coolKnob pen
+	border             pen
+
+	brand map[string]pen // per-source tints (sourceStyle), keyed by source name
+
+	// meter cells, pre-rendered: one styled glyph per ramp entry / rail part.
+	mFill  []string // "━" per fill ramp entry (seek/volume meters)
+	mHead  string   // "●" meter head
+	mTrack string   // "─" empty meter cell
+}
+
+// pens returns the flattened styles, building them on first use.
+func (t *theme) pens() *penSet {
+	if t.penCache == nil {
+		ps := &penSet{
+			acc:      stylePen(t.sAcc),
+			accB:     stylePen(t.sAcc.Bold(true)),
+			bri:      stylePen(t.sBri),
+			txt:      stylePen(t.sTxt),
+			dim:      stylePen(t.sDim),
+			dmr:      stylePen(t.sDmr),
+			warn:     stylePen(stWarn),
+			warnB:    stylePen(stWarn.Bold(true)),
+			red:      stylePen(stRed),
+			segOn:    stylePen(t.segOn),
+			segOff:   stylePen(t.segOff),
+			btnOn:    stylePen(t.btnOn),
+			btnOff:   stylePen(t.btnOff),
+			warmKnob: stylePen(t.warmKnob),
+			coolKnob: stylePen(t.coolKnob),
+			border:   stylePen(lipgloss.NewStyle().Foreground(t.border)),
+			mHead:    t.head.Render("●"),
+			mTrack:   t.track.Render("─"),
+		}
+		ps.brand = make(map[string]pen, len(brandNames))
+		for _, n := range brandNames {
+			ps.brand[n] = stylePen(sourceStyle(t, n))
+		}
+		ps.mFill = make([]string, len(t.fill))
+		for i := range t.fill {
+			ps.mFill[i] = t.fill[i].Render("━")
+		}
+		t.penCache = ps
+	}
+	return t.penCache
+}
+
+// brandNames are the source names sourceStyle tints; the penSet pre-flattens one
+// pen per name so the header/source line never rebuilds a style per frame.
+var brandNames = []string{"Spotify", "TIDAL", "AirPlay", "Bluetooth"}
+
+// brandPen is the flattened sourceStyle for a source name (accent for unknowns).
+func (ps *penSet) brandPen(name string) pen {
+	if p, ok := ps.brand[name]; ok {
+		return p
+	}
+	return ps.acc
+}
+
 // ambientTint is a per-album recolouring derived from the cover's dominant hue:
 // a fill gradient + head for the seek bar, plus a dim pen for the cover frame.
 // nil means "use the theme defaults" (no cover, a greyscale cover, or art
@@ -108,6 +280,25 @@ type ambientTint struct {
 	fill  []lipgloss.Style
 	head  lipgloss.Style
 	frame lipgloss.Style
+
+	// flattened forms for the per-frame paths (seek bar, cover frame), built
+	// once by ensure() — the ambient analogue of the theme's penSet.
+	mFill    []string
+	mHead    string
+	framePen pen
+}
+
+// ensure builds the tint's cached cells on first use.
+func (at *ambientTint) ensure() {
+	if at.mHead != "" {
+		return
+	}
+	at.mHead = at.head.Render("●")
+	at.framePen = stylePen(at.frame)
+	at.mFill = make([]string, len(at.fill))
+	for i := range at.fill {
+		at.mFill[i] = at.fill[i].Render("━")
+	}
 }
 
 // tint derives an ambientTint from a cover's representative colour c. Only the
@@ -133,18 +324,21 @@ func (t *theme) tint(c color.RGBA) *ambientTint {
 
 func clampRange(v, lo, hi float64) float64 { return max(lo, min(hi, v)) }
 
-func (t *theme) rampAt(styles []lipgloss.Style, pos, span int) lipgloss.Style {
+// rampIdx maps a position within span onto an index into an n-entry ramp, so
+// the meter loops index a pre-rendered ramp of cells rather than re-rendering a
+// ramp of styles per cell.
+func rampIdx(n, pos, span int) int {
 	r := 0.0
 	if span > 1 {
 		r = float64(pos) / float64(span-1)
 	}
-	i := int(r*float64(len(styles)-1) + 0.5)
+	i := int(r*float64(n-1) + 0.5)
 	if i < 0 {
 		i = 0
-	} else if i >= len(styles) {
-		i = len(styles) - 1
+	} else if i >= n {
+		i = n - 1
 	}
-	return styles[i]
+	return i
 }
 
 // motifBlock renders a w×h animated "plasma" of block cells. A gentle domain warp
@@ -157,10 +351,13 @@ func (t *theme) rampAt(styles []lipgloss.Style, pos, span int) lipgloss.Style {
 func (t *theme) motifBlock(w, h, frame int) []string {
 	ph := float64(frame) * 0.16
 	const warpAmp = 0.9
+	paint := newPainter()
 	lines := make([]string, h)
+	var b strings.Builder
 	for y := range h {
 		fy := float64(y)
-		var b strings.Builder
+		b.Reset() // Reset drops the buffer rather than reusing it, so the string handed out below stays valid
+		b.Grow(w*cellSGRBytes + resetBytes)
 		for x := range w {
 			fx := float64(x)
 			// gentle low-frequency vector warp so the bands braid organically;
@@ -176,13 +373,21 @@ func (t *theme) motifBlock(w, h, frame int) []string {
 			hue := math.Mod(ph*57.29578+
 				74*math.Sin(ax*0.20+ay*0.16+ph*0.5)+
 				24*math.Sin((ax-ay)*0.17-ph*0.35)+360, 360)
-			pen := lipgloss.NewStyle().Foreground(lipgloss.Color(hslHex(hue, 0.70+0.18*n, 0.20+0.40*n)))
-			b.WriteString(pen.Render("█"))
+			r, g, bl := hslRGB(hue, 0.70+0.18*n, 0.20+0.40*n)
+			paint.cell(&b, r, g, bl, "█")
 		}
+		paint.endLine(&b)
 		lines[y] = b.String()
 	}
 	return lines
 }
+
+// Sizing hints for the painted-line buffers: "\x1b[38;2;R;G;Bm" plus a 3-byte
+// block glyph is at most 22 bytes, and the line's single trailing reset is 4.
+const (
+	cellSGRBytes = 22
+	resetBytes   = 4
+)
 
 // sonar renders a w×h animated radar sweep: a beam rotates from a bright central
 // hub, brightening toward the rim and dragging a fading comet-wedge behind it,
@@ -210,9 +415,12 @@ func (t *theme) sonar(w, h, frame int) []string {
 		hubR   = 0.13 // fraction of fitR for the bright central hub
 		ringR  = 0.95 // fraction of fitR for the faint static scope ring
 	)
+	paint := newPainter()
 	lines := make([]string, h)
+	var b strings.Builder
 	for y := range h {
-		var b strings.Builder
+		b.Reset()
+		b.Grow(w*cellSGRBytes + resetBytes)
 		for x := range w {
 			dx := float64(x) - cx
 			dy := (float64(y) - cy) * 2 // double dy so the scope is circular on ~2:1 cells
@@ -259,16 +467,19 @@ func (t *theme) sonar(w, h, frame int) []string {
 			if inten > 0.6 {
 				glyph = "●" // a solid core for the beam head and the hub
 			}
-			b.WriteString(lipgloss.NewStyle().
-				Foreground(lipgloss.Color(hslHex(168, 0.40+0.30*inten, 0.20+0.55*inten))).Render(glyph))
+			cr, cg, cb := hslRGB(168, 0.40+0.30*inten, 0.20+0.55*inten) // r is the radius here
+			paint.cell(&b, cr, cg, cb, glyph)
 		}
+		paint.endLine(&b)
 		lines[y] = b.String()
 	}
 	return lines
 }
 
-// hslHex converts HSL (h in degrees, s and l in 0..1) to a "#rrggbb" string.
-func hslHex(h, s, l float64) string {
+// hslRGB converts HSL (h in degrees, s and l in 0..1) to 8-bit RGB. The per-cell
+// painters take this directly; only the paths that must hand a colour to lipgloss
+// go on through hslHex.
+func hslRGB(h, s, l float64) (uint8, uint8, uint8) {
 	c := (1 - math.Abs(2*l-1)) * s
 	hp := math.Mod(h/60, 6)
 	if hp < 0 {
@@ -291,38 +502,46 @@ func hslHex(h, s, l float64) string {
 		r, g, bl = c, 0, x
 	}
 	m := l - c/2
-	return fmt.Sprintf("#%02x%02x%02x", to8(r+m), to8(g+m), to8(bl+m))
+	return to8(r + m), to8(g + m), to8(bl + m)
 }
 
+// hslHex converts HSL (h in degrees, s and l in 0..1) to a "#rrggbb" string.
+func hslHex(h, s, l float64) string { return rgbHex(hslRGB(h, s, l)) }
+
+// rgbHex renders an 8-bit RGB triple as "#rrggbb".
+func rgbHex(r, g, b uint8) string { return fmt.Sprintf("#%02x%02x%02x", r, g, b) }
+
 // to8 maps a 0..1 channel to a clamped 0..255 byte.
-func to8(v float64) int { return max(0, min(255, int(v*255+0.5))) }
+func to8(v float64) uint8 { return uint8(max(0, min(255, int(v*255+0.5)))) }
 
 // lineMeter renders a horizontal meter cells wide: a gradient filled run, a
 // bright head, then a dim track — used for the seek and volume bars. The fill
 // ramps over the *played* length (not the whole bar), so it darkens at the start
 // and brightens up to the playhead regardless of progress.
 func (t *theme) lineMeter(frac float64, cells int) string {
-	return t.lineMeterPen(frac, cells, t.fill, t.head)
+	ps := t.pens()
+	return lineMeterCells(frac, cells, ps.mFill, ps.mHead, ps.mTrack)
 }
 
-// lineMeterPen is lineMeter with an explicit fill gradient and head colour, so
-// the seek bar can be recoloured to the album's ambient hue while the volume
-// meter keeps the default teal.
-func (t *theme) lineMeterPen(frac float64, cells int, fill []lipgloss.Style, head lipgloss.Style) string {
+// lineMeterCells is the meter core over pre-rendered cells: each position is one
+// of the fill ramp, the head, or the track, so a bar costs one Builder — no
+// styling work at all.
+func lineMeterCells(frac float64, cells int, fillCells []string, headCell, trackCell string) string {
 	if cells <= 0 {
 		return ""
 	}
 	frac = clampF(frac)
 	h := int(math.Round(frac * float64(cells)))
 	var b strings.Builder
+	b.Grow(cells * cellSGRBytes)
 	for i := range cells {
 		switch {
 		case i == h-1 || (h == 0 && i == 0):
-			b.WriteString(head.Render("●"))
+			b.WriteString(headCell)
 		case i < h-1:
-			b.WriteString(t.rampAt(fill, i, h).Render("━"))
+			b.WriteString(fillCells[rampIdx(len(fillCells), i, h)])
 		default:
-			b.WriteString(t.track.Render("─"))
+			b.WriteString(trackCell)
 		}
 	}
 	return b.String()
@@ -337,12 +556,14 @@ func (t *theme) lineMeterPen(frac float64, cells int, fill []lipgloss.Style, hea
 func (t *theme) gaugeBar(frac float64, cells int, fillPen lipgloss.Style) string {
 	frac = clampF(frac)
 	n := int(math.Round(frac * float64(cells)))
+	fillCell, trackCell := fillPen.Render(GL["fill"]), t.track.Render(GL["track"])
 	var b strings.Builder
+	b.Grow(cells * cellSGRBytes)
 	for i := range cells {
 		if i < n {
-			b.WriteString(fillPen.Render(GL["fill"]))
+			b.WriteString(fillCell)
 		} else {
-			b.WriteString(t.track.Render(GL["track"]))
+			b.WriteString(trackCell)
 		}
 	}
 	return b.String()
@@ -353,13 +574,21 @@ func (t *theme) gaugeBar(frac float64, cells int, fillPen lipgloss.Style) string
 func (t *theme) vbar(frac float64, h int) []string {
 	frac = clampF(frac)
 	filled := int(math.Round(frac * float64(h)))
+	trackCell := t.track.Render("▓") // a visible grey channel, not a faint ░
+	var fillCells []string
+	if filled > 0 {
+		fillCells = make([]string, len(t.fill))
+		for i := range t.fill {
+			fillCells[i] = t.fill[i].Render("█")
+		}
+	}
 	lines := make([]string, h)
 	for row := range h {
 		fromBottom := h - 1 - row
 		if fromBottom < filled {
-			lines[row] = t.rampAt(t.fill, fromBottom, h).Render("█")
+			lines[row] = fillCells[rampIdx(len(t.fill), fromBottom, h)]
 		} else {
-			lines[row] = t.track.Render("▓") // a visible grey channel, not a faint ░
+			lines[row] = trackCell
 		}
 	}
 	return lines

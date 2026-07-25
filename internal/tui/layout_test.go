@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
@@ -65,7 +65,7 @@ func TestLayoutInvariants(t *testing.T) {
 			rows, cols := sz[0], sz[1]
 			m := sc.model(t)
 			m.rows, m.cols = rows, cols
-			view := m.View()
+			view := m.viewContent()
 			// mini view (very small) is a single bare line, not a full-window frame
 			if rows >= MiniRows && cols >= MiniCols {
 				check(t, fmt.Sprintf("%s_%dx%d", sc.name, rows, cols), rows, cols, view)
@@ -73,7 +73,7 @@ func TestLayoutInvariants(t *testing.T) {
 			dump(fmt.Sprintf("%s_%02dx%03d", sc.name, rows, cols), view)
 			if sc.name == "play" { // also the diagnostics overlay
 				m.diag = true
-				dview := m.View()
+				dview := m.viewContent()
 				if rows >= MiniRows && cols >= MiniCols {
 					check(t, fmt.Sprintf("diag_%dx%d", rows, cols), rows, cols, dview)
 				}

@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/mediakey"
@@ -86,14 +86,10 @@ func Run(cfg config.Config) (int, error) {
 	go workers.ArtWorker(st, cfg)
 
 	m := newModel(st, cfg, cmds, eqcmds)
-	opts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithoutSignalHandler()}
-	if cfg.Mouse {
-		// Capture clicks/drag/scroll for the transport, volume rail, and EQ bands.
-		// CellMotion (not AllMotion) reports motion only while a button is held, so
-		// a left-drag scrubs a control while idle motion stays out of the input loop.
-		opts = append(opts, tea.WithMouseCellMotion())
-	}
-	p := tea.NewProgram(m, opts...)
+	// The alt screen, mouse capture, and window title all ride tea.View under
+	// bubbletea v2 (see model.View), so the only program-level option left is
+	// signal handling, which Run owns below.
+	p := tea.NewProgram(m, tea.WithoutSignalHandler())
 
 	// Media transport keys (macOS): drive the device from the keyboard's
 	// play/pause, next, and prev even when lp10 isn't focused. The tap only

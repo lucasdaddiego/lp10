@@ -52,13 +52,19 @@ func glyphs(amb int) map[string]string {
 	}
 }
 
-// FmtMs formats milliseconds as MM:SS.
+// FmtMs formats milliseconds as MM:SS. Hand-rolled (one alloc) because the seek
+// row formats two of these on every animated frame; the Sprintf fallback keeps
+// the identical %02d widening for a 100-minute-plus position.
 func FmtMs(ms int) string {
 	if ms < 0 {
 		ms = 0
 	}
 	s := ms / 1000
-	return fmt.Sprintf("%02d:%02d", s/60, s%60)
+	mm, ss := s/60, s%60
+	if mm > 99 {
+		return fmt.Sprintf("%02d:%02d", mm, ss)
+	}
+	return string([]byte{'0' + byte(mm/10), '0' + byte(mm%10), ':', '0' + byte(ss/10), '0' + byte(ss%10)})
 }
 
 // charW is the rendered width of one rune: W/F -> 2, everything else -> 1.
@@ -71,6 +77,14 @@ func FmtMs(ms int) string {
 // to a CJK locale via `localeAmb` / the GL ASCII fallbacks (defensive for terminals
 // configured to render ambiguous double-width); only measurement is fixed at 1.
 func charW(r rune) int {
+	// Fast path: the first East Asian Wide/Fullwidth block is Hangul Jamo at
+	// U+1100, so everything below it is width 1 without consulting the table.
+	// That covers every rune the UI itself draws and almost all track metadata;
+	// DispW runs dozens of times per rendered frame. TestCharWFastPath sweeps the
+	// boundary against the table to keep the two in agreement.
+	if r < 0x1100 {
+		return 1
+	}
 	switch width.LookupRune(r).Kind() {
 	case width.EastAsianWide, width.EastAsianFullwidth:
 		return 2
@@ -98,33 +112,25 @@ func Clip(s string, w int) string {
 		return s
 	}
 	ell := GL["ell"]
-	ew := DispW(ell)
-	if w <= ew {
+	budget := w - DispW(ell)
+	if budget <= 0 {
 		// no room for the ellipsis itself (e.g. the width-3 ASCII "..." on a
 		// CJK terminal at w<3): hard-truncate to width w, no ellipsis.
-		var b strings.Builder
-		used := 0
-		for _, ch := range s {
-			cw := charW(ch)
-			if used+cw > w {
-				break
-			}
-			b.WriteRune(ch)
-			used += cw
-		}
-		return b.String()
+		ell, budget = "", w
 	}
-	var b strings.Builder
-	used := 0
-	for _, ch := range s {
+	// Find the byte offset where the budget runs out and slice there, rather than
+	// rebuilding the prefix rune by rune — Clip runs on nearly every line of every
+	// frame, so this is one allocation instead of a Builder's several.
+	cut, used := len(s), 0
+	for i, ch := range s {
 		cw := charW(ch)
-		if used+cw > w-ew {
+		if used+cw > budget {
+			cut = i
 			break
 		}
-		b.WriteRune(ch)
 		used += cw
 	}
-	return b.String() + ell
+	return s[:cut] + ell
 }
 
 // dispWindow returns the run of s covering display columns [off, off+w),

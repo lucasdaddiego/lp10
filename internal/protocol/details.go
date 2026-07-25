@@ -6,7 +6,6 @@ package protocol
 
 import (
 	"regexp"
-	"strings"
 )
 
 // reMBData extracts the Data payload of any LUCI register read.
@@ -19,7 +18,7 @@ func regJSON(lines []string) any {
 	if len(lines) == 0 {
 		return nil
 	}
-	m := reMBData.FindStringSubmatch(strings.Join(lines, "\n"))
+	m := reMBData.FindStringSubmatch(joinLines(lines))
 	if m == nil {
 		return nil
 	}

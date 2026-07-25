@@ -527,9 +527,6 @@ func TestIdleBClearsImmediatelyEvenWithinDebounce(t *testing.T) {
 	if st.Snap().Track != nil {
 		t.Error("idle B should clear the track immediately")
 	}
-	if st.lastTrack == nil {
-		t.Error("last_track should survive idle for the idle screen")
-	}
 }
 
 func TestRealPlayingCaptureParses(t *testing.T) {

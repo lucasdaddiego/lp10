@@ -1,7 +1,7 @@
 package tui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/tunnel"
@@ -80,23 +80,29 @@ func vfrac(r rect, y int) float64 {
 // render. The frame the user clicked is the frame they see, so last-render zones
 // are the correct ones. Press fires discrete buttons; press-or-drag sets the
 // position controls (volume rail, ranged EQ bands); the wheel nudges the control
-// under the cursor, falling back to volume.
+// under the cursor, falling back to volume. Under bubbletea v2 the event kind is
+// the message TYPE (click / wheel / motion / release), and the coordinates ride
+// the shared Mouse struct.
 func (m *model) handleMouse(e tea.MouseMsg) {
+	mo := e.Mouse()
+	x, y := mo.X, mo.Y
+	_, isPress := e.(tea.MouseClickMsg)
+	_, isMotion := e.(tea.MouseMotionMsg)
+	_, isWheel := e.(tea.MouseWheelMsg)
+
 	// The diagnostics overlay swallows the mouse like it swallows keys: a left
 	// click dismisses it, everything else is ignored while it's up.
 	if m.diag {
-		if e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft {
+		if isPress && mo.Button == tea.MouseLeft {
 			m.diag = false
 		}
 		return
 	}
 
-	x, y := e.X, e.Y
-
 	// Wheel: adjust the EQ band under the cursor, else the volume.
-	if e.Button == tea.MouseButtonWheelUp || e.Button == tea.MouseButtonWheelDown {
+	if isWheel && (mo.Button == tea.MouseWheelUp || mo.Button == tea.MouseWheelDown) {
 		dir := 1
-		if e.Button == tea.MouseButtonWheelDown {
+		if mo.Button == tea.MouseWheelDown {
 			dir = -1
 		}
 		for _, z := range m.mzEQ {
@@ -114,8 +120,8 @@ func (m *model) handleMouse(e tea.MouseMsg) {
 		return
 	}
 
-	leftPress := e.Action == tea.MouseActionPress && e.Button == tea.MouseButtonLeft
-	leftDrag := e.Action == tea.MouseActionMotion && e.Button == tea.MouseButtonLeft
+	leftPress := isPress && mo.Button == tea.MouseLeft
+	leftDrag := isMotion && mo.Button == tea.MouseLeft // CellMotion reports motion only while a button is held
 	leftActive := leftPress || leftDrag
 	if !leftActive {
 		return

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	_ "image/gif"  // register decoders used by image.Decode
 	_ "image/jpeg" // ""
 	_ "image/png"  // ""
@@ -309,13 +310,44 @@ func RGBToHSL(r, g, b uint8) (h, s, l float64) {
 	return h, s, l
 }
 
+// rgbaOf returns img as a zero-based *image.RGBA, converting only when it isn't
+// one already. Every pixel loop in this package goes through it: reading a source
+// via image.Image.At boxes a color.Color per pixel, which cost ONE HEAP
+// ALLOCATION PER SOURCE PIXEL — ~410k for a 640² cover in downscale alone, and
+// ~820k in Ghost — and dominated the art worker's profile. One conversion (which
+// image/draw does with per-format fast paths, including the YCbCr that JPEG
+// covers decode to) replaces all of them.
+//
+// The 8-bit channels it exposes are alpha-premultiplied, exactly like the high
+// byte of what At().RGBA() returned, so the arithmetic below is unchanged: the
+// loops still work in the 16-bit domain by scaling a channel back up by 257.
+// Verified pixel-for-pixel against the old At()-based loops for RGBA, NRGBA,
+// Gray and non-zero-origin sources. A YCbCr source (what a JPEG cover decodes
+// to) can land 1/255 off on a channel, because image/draw converts with the
+// standard 8-bit color.YCbCrToRGB while color.YCbCr.RGBA() carried a 16-bit
+// path — invisible in a cover rasterised to a grid of terminal cells.
+func rgbaOf(img image.Image) *image.RGBA {
+	if r, ok := img.(*image.RGBA); ok && r.Rect.Min == (image.Point{}) {
+		return r
+	}
+	b := img.Bounds()
+	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	draw.Draw(dst, dst.Rect, img, b.Min, draw.Src)
+	return dst
+}
+
 // Ghost returns a dimmed, desaturated copy of img for the idle "last cover"
 // backdrop: each pixel is pulled most of the way toward its own grey (luma) and
 // then darkened, so the cover reads as a faint memory of what was last playing
 // rather than the active art. The alpha is forced opaque.
 func Ghost(img image.Image) image.Image {
 	b := img.Bounds()
-	dst := image.NewRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
+	w, h := b.Dx(), b.Dy()
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	if w <= 0 || h <= 0 {
+		return dst
+	}
+	src := rgbaOf(img)
 	const (
 		keep = 0.32 // fraction of original chroma retained (rest -> grey)
 		dim  = 0.42 // overall brightness after desaturation
@@ -330,12 +362,16 @@ func Ghost(img image.Image) image.Image {
 		}
 		return uint8(v)
 	}
-	for y := range b.Dy() {
-		for x := range b.Dx() {
-			r, g, bl, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA() // 16-bit
-			rf, gf, bf := float64(r>>8), float64(g>>8), float64(bl>>8)
+	for y := range h {
+		si, di := y*src.Stride, y*dst.Stride
+		for range w {
+			rf, gf, bf := float64(src.Pix[si]), float64(src.Pix[si+1]), float64(src.Pix[si+2])
 			luma := 0.299*rf + 0.587*gf + 0.114*bf
-			dst.Set(x, y, color.RGBA{mix(rf, luma), mix(gf, luma), mix(bf, luma), 0xff})
+			dst.Pix[di] = mix(rf, luma)
+			dst.Pix[di+1] = mix(gf, luma)
+			dst.Pix[di+2] = mix(bf, luma)
+			dst.Pix[di+3] = 0xff
+			si, di = si+4, di+4
 		}
 	}
 	return dst
@@ -352,37 +388,37 @@ func downscale(src image.Image, w, h int) *image.RGBA {
 	if w <= 0 || h <= 0 || sw <= 0 || sh <= 0 {
 		return dst
 	}
+	s := rgbaOf(src)
 	for dy := range h {
-		y0 := b.Min.Y + dy*sh/h
-		y1 := b.Min.Y + (dy+1)*sh/h
+		y0 := dy * sh / h
+		y1 := (dy + 1) * sh / h
 		if y1 <= y0 {
 			y1 = y0 + 1
 		}
 		for dx := range w {
-			x0 := b.Min.X + dx*sw/w
-			x1 := b.Min.X + (dx+1)*sw/w
+			x0 := dx * sw / w
+			x1 := (dx + 1) * sw / w
 			if x1 <= x0 {
 				x1 = x0 + 1
 			}
 			var rs, gs, bs, n uint64
 			for yy := y0; yy < y1; yy++ {
-				for xx := x0; xx < x1; xx++ {
-					r, g, bl, _ := src.At(xx, yy).RGBA() // 16-bit per channel
-					rs += uint64(r)
-					gs += uint64(g)
-					bs += uint64(bl)
+				row := s.Pix[yy*s.Stride+x0*4 : yy*s.Stride+x1*4]
+				for i := 0; i < len(row); i += 4 {
+					rs += uint64(row[i]) * 257 // *257 == the 16-bit value At().RGBA() yielded
+					gs += uint64(row[i+1]) * 257
+					bs += uint64(row[i+2]) * 257
 					n++
 				}
 			}
 			if n == 0 {
 				n = 1
 			}
-			dst.Set(dx, dy, color.RGBA{
-				R: uint8((rs / n) >> 8),
-				G: uint8((gs / n) >> 8),
-				B: uint8((bs / n) >> 8),
-				A: 0xff,
-			})
+			o := dst.PixOffset(dx, dy)
+			dst.Pix[o] = uint8((rs / n) >> 8)
+			dst.Pix[o+1] = uint8((gs / n) >> 8)
+			dst.Pix[o+2] = uint8((bs / n) >> 8)
+			dst.Pix[o+3] = 0xff
 		}
 	}
 	return dst

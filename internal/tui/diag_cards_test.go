@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
@@ -17,9 +16,6 @@ import (
 // width (lipgloss.Width), not byte width (DispW), or the borders scatter (the bug
 // that only showed on a truecolor terminal, never in the default Ascii test profile).
 func TestDiagCardsLayoutWide(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
 
 	st := protocol.NewState()
 	applyFixtureRecords(st, "device_record.txt")  // @@i: eth link + dns
@@ -28,7 +24,7 @@ func TestDiagCardsLayoutWide(t *testing.T) {
 	m.rows, m.cols = 40, 120
 	m.diag = true
 
-	view := m.View()
+	view := m.viewContent()
 	flat := clean(view)
 	for _, want := range []string{
 		"diagnostics",
@@ -61,7 +57,7 @@ func TestDiagCardsLayoutWide(t *testing.T) {
 
 	// A narrow terminal falls back to the single-column stacked read-out.
 	m.cols = 90
-	if hasRow(clean(m.View()), "─ audio", "─ latency") {
+	if hasRow(clean(m.viewContent()), "─ audio", "─ latency") {
 		t.Error("narrow diag should stack the sections, not place them side by side")
 	}
 }

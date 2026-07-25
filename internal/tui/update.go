@@ -4,12 +4,13 @@
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/mediakey"
@@ -139,6 +140,9 @@ func (m *model) do(action string) {
 	}
 }
 
+// Update is the Bubble Tea message loop. KeyReleaseMsg is deliberately not
+// handled: releases arrive only when keyboard enhancements are requested, and
+// this UI acts on presses alone.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -146,15 +150,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cellW, m.cellH = cellPixelSize() // window px changed; refresh the cover's pixel footprint
 		return m, nil
 	case logicMsg:
-		cmds := []tea.Cmd{logicTick()}
 		m.scroll++       // advance the now-playing marquee (independent of play state)
 		s := m.st.Snap() // one snapshot per tick, reused below
 		m.syncStats()    // device emits @@s only while the diag overlay is open
-		if title := m.computeTitle(s); title != m.curTitle {
-			m.curTitle = title
-			cmds = append(cmds, tea.SetWindowTitle(title))
-		}
-		return m, tea.Batch(cmds...)
+		// The window title rides View (tea.View.WindowTitle under bubbletea v2),
+		// so the tick only has to keep the cached string current.
+		m.curTitle = m.computeTitle(s)
+		return m, logicTick()
 	case frameMsg:
 		// Advance the animation clock only when something on screen is animating:
 		// the plasma motif while playing (frozen when paused), or the connecting
@@ -172,18 +174,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next = frameSonar
 		}
 		return m, frameTick(next)
-	case tea.MouseMsg:
+	case tea.MouseMsg: // click / release / motion / wheel all implement this
 		m.handleMouse(msg)
 		return m, nil
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyCtrlC {
+	case tea.KeyPressMsg:
+		if k := tea.Key(msg); k.Mod&tea.ModCtrl != 0 && k.Code == 'c' {
 			m.interrupted = true
 			return m, tea.Quit
 		}
-		for _, ev := range translateAll(msg) {
-			if m.key(ev) == "quit" {
-				return m, tea.Quit
-			}
+		if slices.ContainsFunc(translateAll(msg), m.key) {
+			return m, tea.Quit
+		}
+		return m, nil
+	case tea.PasteMsg:
+		// Bracketed paste: drive the hotkeys with the pasted text, exactly like
+		// the same characters typed (see runeEvents).
+		if slices.ContainsFunc(runeEvents(msg.Content), m.key) {
+			return m, tea.Quit
 		}
 		return m, nil
 	case mediaKeyMsg:

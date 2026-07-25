@@ -13,6 +13,16 @@ import (
 
 var reNum = regexp.MustCompile(`Data:(-?\d+)`)
 
+// joinLines is strings.Join with the single-line case — which is what a per-tick
+// register read (@@p / @@t / @@v) always is — returning the line as-is instead of
+// allocating a copy of it.
+func joinLines(lines []string) string {
+	if len(lines) == 1 {
+		return lines[0]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // SysInfo holds the device stats from the @@s section (all kept as raw strings;
 // the TUI parses them lazily for health coloring). The trailing fields are
 // optional extras appended by newer device loops; "" when the loop didn't send
@@ -137,7 +147,7 @@ type parsedRecord struct {
 // (the `Data:` field of a LUCI_local read).
 func regInt(rec Record, tag string) (int, bool) {
 	if lines := rec[tag]; len(lines) > 0 {
-		if mm := reNum.FindStringSubmatch(strings.Join(lines, "\n")); mm != nil {
+		if mm := reNum.FindStringSubmatch(joinLines(lines)); mm != nil {
 			// drop an out-of-int64-range token rather than saturate to MaxInt
 			if n, err := strconv.Atoi(mm[1]); err == nil {
 				return n, true
@@ -202,7 +212,6 @@ func ApplyRecord(st *State, rec Record) {
 		switch {
 		case p.track != nil:
 			st.track, st.trackAt = p.track, now
-			st.lastTrack = p.track
 		case p.idle:
 			st.track = nil // definitive idle: clear now
 		case st.track == nil || now.Sub(st.trackAt) > DebounceWindow:

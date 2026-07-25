@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // Under a CJK locale (localeAmb==2), the East-Asian-Ambiguous UI glyphs lp10 draws

@@ -87,35 +87,36 @@ func (m *model) eqSliders(s protocol.Snapshot, W int) []string {
 // The label column is sliderLabelW wide; the value column is sliderValW wide
 // (right-aligned); the slider track fills the rest.
 func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W int) string {
+	ps := m.sty.pens()
 	trackW := max(W-sliderLabelW-sliderValW, 1)
-	sp := tunnel.Specs[specIdx]
-	v, known := vals[sp.Code]
+	spec := tunnel.Specs[specIdx]
+	v, known := vals[spec.Code]
 
 	// Label column: accent+bold when focused, dim otherwise.
-	labelPen := m.sty.sDim
+	labelPen := ps.dim
 	if focused {
-		labelPen = m.sty.sAcc.Bold(true)
+		labelPen = ps.accB
 	}
-	raw := Clip(eqShort[sp.Code], sliderLabelW-1)
-	labelCell := labelPen.Render(raw) + strings.Repeat(" ", sliderLabelW-DispW(raw))
+	raw := Clip(eqShort[spec.Code], sliderLabelW-1)
+	labelCell := labelPen.render(raw) + spaces(sliderLabelW-DispW(raw))
 
-	if sp.Kind == tunnel.Toggle {
+	if spec.Kind == tunnel.Toggle {
 		knob, state := "○", "off"
-		knobPen, statePen := m.sty.sDmr, m.sty.sDmr
+		knobPen, statePen := ps.dmr, ps.dmr
 		if known && v != 0 {
 			knob, state = "●", "on"
-			knobPen, statePen = m.sty.sAcc, m.sty.sAcc
+			knobPen, statePen = ps.acc, ps.acc
 		}
-		content := knobPen.Render(knob) + " " + statePen.Render(state)
+		content := knobPen.render(knob) + " " + statePen.render(state)
 		// pad content out to fill trackW + sliderValW (the right portion of the row)
 		pad := max(trackW+sliderValW-1-1-DispW(state), 0)
-		return labelCell + content + strings.Repeat(" ", pad)
+		return labelCell + content + spaces(pad)
 	}
 
 	// Ranged: a horizontal slider ────●────
 	frac := 0.0
-	if known && sp.Max > sp.Min {
-		frac = float64(v-sp.Min) / float64(sp.Max-sp.Min)
+	if known && spec.Max > spec.Min {
+		frac = float64(v-spec.Min) / float64(spec.Max-spec.Min)
 	}
 	knobPos := max(int(frac*float64(trackW-1)+0.5), 0)
 	if knobPos >= trackW {
@@ -123,39 +124,34 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	}
 
 	// Knob colour: warm for a positive tone boost, cool for a cut, accent otherwise.
-	knobPen := m.sty.sDim
+	knobPen := ps.dim
 	if focused {
 		switch {
-		case sp.Min < 0 && known && v > 0:
-			knobPen = m.sty.warm[len(m.sty.warm)-1]
-		case sp.Min < 0 && known && v < 0:
-			knobPen = m.sty.cool[len(m.sty.cool)-1]
+		case spec.Min < 0 && known && v > 0:
+			knobPen = ps.warmKnob
+		case spec.Min < 0 && known && v < 0:
+			knobPen = ps.coolKnob
 		default:
-			knobPen = m.sty.sAcc
+			knobPen = ps.acc
 		}
 	}
-	left := strings.Repeat("─", knobPos)
-	right := strings.Repeat("─", trackW-1-knobPos)
-	track := m.sty.sDmr.Render(left) + knobPen.Render("●") + m.sty.sDmr.Render(right)
+	track := ps.dmr.render(dashes(knobPos)) + knobPen.render("●") + ps.dmr.render(dashes(trackW-1-knobPos))
 
 	// Value column: right-aligned within sliderValW cells.
 	valStr := "—"
 	if known {
-		if sp.Min < 0 {
+		if spec.Min < 0 {
 			valStr = toneStr(v)
 		} else {
 			valStr = strconv.Itoa(v)
 		}
 	}
-	valPen := m.sty.sDim
+	valPen := ps.dim
 	if focused {
-		valPen = m.sty.sBri
+		valPen = ps.bri
 	}
 	vraw := Clip(valStr, sliderValW)
-	vpad := sliderValW - DispW(vraw)
-	valCell := strings.Repeat(" ", vpad) + valPen.Render(vraw)
-
-	return labelCell + track + valCell
+	return labelCell + track + spaces(sliderValW-DispW(vraw)) + valPen.render(vraw)
 }
 
 // eqSummary is the compact dashboard's one-line EQ readout. It runs in eqOrder so
@@ -183,8 +179,8 @@ func (m *model) eqSummary(W int) string {
 		}
 		return fmt.Sprintf("%s %d", eqShort[code], v)
 	}
-	focusPen := m.sty.sAcc.Bold(true).Underline(true)
-	sep := m.sty.sDmr.Render(" · ")
+	ps := m.sty.pens()
+	sep := ps.dmr.render(" · ")
 	var b strings.Builder
 	used := 0
 	for d, idx := range eqOrder {
@@ -199,11 +195,13 @@ func (m *model) eqSummary(W int) string {
 		if d > 0 {
 			b.WriteString(sep)
 		}
-		pen := m.sty.sDim
 		if m.pane == paneEQ && m.eqFocus == d {
-			pen = focusPen
+			// accent+bold+underline focus cue: a real Style.Render — underline
+			// styles are not pen-safe (see sFocusBU) — on one short segment.
+			b.WriteString(m.sty.sFocusBU.Render(txt))
+		} else {
+			b.WriteString(ps.dim.render(txt))
 		}
-		b.WriteString(pen.Render(txt))
 		used += segW
 	}
 	return b.String()

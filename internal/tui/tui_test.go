@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/fixtures"
@@ -87,7 +87,7 @@ func last(c []protocol.Command) protocol.Command {
 
 func TestQuitAndFocusKeys(t *testing.T) {
 	m, _, _ := makeModel(t)
-	if m.key(kr('q')) != "quit" {
+	if !m.key(kr('q')) {
 		t.Error("q should quit")
 	}
 	if m.focus != 1 {
@@ -154,16 +154,19 @@ func TestMuteWithNoHistoryUsesDefault(t *testing.T) {
 	}
 }
 
-func TestBareEscRequestsDrainAndDiagClosesOnAnyKey(t *testing.T) {
+func TestBareEscIsInertAndDiagClosesOnAnyKey(t *testing.T) {
 	m, _, _ := makeModel(t)
-	if m.key(ke(kEsc)) != "drain" {
-		t.Error("bare esc should request drain")
+	if m.key(ke(kEsc)) {
+		t.Error("bare esc should not quit")
+	}
+	if m.pane != paneNow {
+		t.Error("bare esc on the player should leave the pane alone")
 	}
 	m.key(kr('?'))
 	if !m.diag {
 		t.Error("? should open diag")
 	}
-	if m.key(kr('q')) != "" {
+	if m.key(kr('q')) {
 		t.Error("any key closes diag (no quit)")
 	}
 	if m.diag {
@@ -226,7 +229,8 @@ func TestControllerDoActions(t *testing.T) {
 // ---- display helpers --------------------------------------------------------
 
 func TestFmtMs(t *testing.T) {
-	cases := map[int]string{0: "00:00", 211000: "03:31", -500: "00:00", 1000: "00:01", 60000: "01:00", 3661000: "61:01"}
+	cases := map[int]string{0: "00:00", 211000: "03:31", -500: "00:00", 1000: "00:01", 60000: "01:00", 3661000: "61:01",
+		6000000: "100:00"} // >99 min widens via the Sprintf fallback, like %02d always did
 	for in, want := range cases {
 		if got := FmtMs(in); got != want {
 			t.Errorf("FmtMs(%d) = %q, want %q", in, got, want)
@@ -324,9 +328,6 @@ func TestPreloadSnapshotIsPausedAndSanitized(t *testing.T) {
 	if _, ok := s.Track["Junk"]; ok {
 		t.Error("unknown field should be dropped")
 	}
-	if lt, _ := st.LastTrackAndRx(); lt == nil {
-		t.Error("last_track should be seeded")
-	}
 	if s.Pos != 5000 || s.Vol != 30 {
 		t.Errorf("pos=%d vol=%d, want 5000/30", s.Pos, s.Vol)
 	}
@@ -397,29 +398,37 @@ func TestPreloadSnapshotBasic(t *testing.T) {
 // ---- input: coalesced multi-rune key batches --------------------------------
 
 func TestTranslateAllExpandsMultiRune(t *testing.T) {
-	evs := translateAll(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+', '+', 'q'}})
+	evs := translateAll(tea.KeyPressMsg{Code: '+', Text: "++q"})
 	if len(evs) != 3 || evs[0].r != '+' || evs[1].r != '+' || evs[2].r != 'q' {
 		t.Errorf("multi-rune batch should expand 1:1, got %+v", evs)
 	}
-	one := translateAll(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	one := translateAll(tea.KeyPressMsg{Code: 'm', Text: "m"})
 	if len(one) != 1 || one[0].kind != kRune || one[0].r != 'm' {
 		t.Errorf("single rune should pass through translate(), got %+v", one)
 	}
 }
 
-// A coalesced "++" (one KeyRunes carrying two runes, as Bubble Tea delivers a
-// paste or fast typing) must raise the volume twice, not be dropped.
+// A coalesced "++" (one key press whose Text carries two runes, as legacy input
+// paths deliver fast typing) must raise the volume twice, not be dropped — and
+// the same batch arriving as a bracketed paste behaves identically.
 func TestCoalescedRunesAreNotDropped(t *testing.T) {
 	m, st, collect := makeModel(t)
 	st.SetVol(50)
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'+', '+'}})
+	m.Update(tea.KeyPressMsg{Code: '+', Text: "++"})
 	got := collect()
 	if len(got) == 0 || last(got).Mid != 64 || last(got).Data != "54" {
 		t.Errorf("++ should step volume twice 50->52->54, got %+v", got)
 	}
 	// a batch containing 'q' still quits
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x', 'q'}}); cmd == nil {
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: 'x', Text: "xq"}); cmd == nil {
 		t.Error("a batch containing q should still quit")
+	}
+	// pasted input drives the same dispatch
+	m2, st2, collect2 := makeModel(t)
+	st2.SetVol(50)
+	m2.Update(tea.PasteMsg{Content: "++"})
+	if got := collect2(); len(got) == 0 || last(got).Data != "54" {
+		t.Errorf("pasted ++ should step volume twice, got %+v", got)
 	}
 }
 
@@ -477,7 +486,7 @@ func TestDiagShowsExpandedFields(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 100
 	m.diag = true
-	out := m.View()
+	out := m.viewContent()
 	for _, want := range []string{
 		"diagnostics", "link", "ethernet", "100 Mbit/s", "full duplex",
 		"address", "latency", "you", "±", "storage", "any key returns",
@@ -494,7 +503,7 @@ func TestDashboardDoesNotOverflowShortTerminal(t *testing.T) {
 	m, _, _ := makeModel(t)
 	m.cols = 80
 	m.rows = 12 // compact range (9..25); the body would otherwise exceed the frame
-	out := m.View()
+	out := m.viewContent()
 	if n := len(strings.Split(out, "\n")); n > m.rows {
 		t.Errorf("rendered %d lines into a %d-row terminal — frame overflowed", n, m.rows)
 	}
@@ -654,7 +663,7 @@ func TestDiagLatencyBlockFullRender(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 100
 	m.diag = true
-	full := stripANSI(m.View())
+	full := stripANSI(m.viewContent())
 	// the gateway row's peak-hold must have caught the 48ms spike
 	if !strings.Contains(full, "max 48") {
 		t.Error("gateway peak-hold should show the 48ms spike (max 48)")
@@ -678,7 +687,7 @@ func TestDiagTagsDiscoveredHost(t *testing.T) {
 	m := newModel(st, cfg, make(chan *protocol.Command, 8), nil)
 	m.rows, m.cols = 44, 100
 	m.diag = true
-	if !strings.Contains(stripANSI(m.View()), "mDNS") {
+	if !strings.Contains(stripANSI(m.viewContent()), "mDNS") {
 		t.Error("a discovered host should be tagged · mDNS on the diag host line")
 	}
 }
@@ -695,12 +704,12 @@ func TestDiagSilentToleratesIdleCadence(t *testing.T) {
 		t.Fatal("setup: expected connected with a last_data stamp")
 	}
 	// a ~3s idle low-poll gap must still read healthy, not flash "LUCI silent"
-	idle := stripANSI(m.renderDiag(snap, dData.Add(3500*time.Millisecond), 96))
+	idle := stripANSI(strings.Join(m.renderDiag(snap, dData.Add(3500*time.Millisecond), 96), "\n"))
 	if strings.Contains(idle, "LUCI silent") {
 		t.Errorf("3.5s idle-cadence gap should read connected, got header: %q", firstLine(idle))
 	}
 	// a gap beyond the watchdog's own SilentAfter should flag silence
-	stale := stripANSI(m.renderDiag(snap, dData.Add(workers.SilentAfter+time.Second), 96))
+	stale := stripANSI(strings.Join(m.renderDiag(snap, dData.Add(workers.SilentAfter+time.Second), 96), "\n"))
 	if !strings.Contains(stale, "LUCI silent") {
 		t.Errorf("gap past SilentAfter should flag LUCI silent, got header: %q", firstLine(stale))
 	}

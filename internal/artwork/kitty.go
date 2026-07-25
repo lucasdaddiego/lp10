@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
 	"math"
 	"strings"
@@ -174,6 +173,7 @@ func resample(src image.Image, w, h int) *image.RGBA {
 	if w <= 0 || h <= 0 || sw <= 0 || sh <= 0 {
 		return dst
 	}
+	s := rgbaOf(src) // see rgbaOf: At() per corner sample would allocate 4× per dest pixel
 	clamp := func(v, hi int) int {
 		if v < 0 {
 			return 0
@@ -182,6 +182,11 @@ func resample(src image.Image, w, h int) *image.RGBA {
 			return hi
 		}
 		return v
+	}
+	// rgb16 reads a pixel's channels back in the 16-bit domain the blend expects.
+	rgb16 := func(x, y int) (float64, float64, float64) {
+		i := y*s.Stride + x*4
+		return float64(s.Pix[i]) * 257, float64(s.Pix[i+1]) * 257, float64(s.Pix[i+2]) * 257
 	}
 	for dy := range h {
 		fy := (float64(dy)+0.5)*float64(sh)/float64(h) - 0.5 // sample at the dest pixel centre
@@ -193,25 +198,18 @@ func resample(src image.Image, w, h int) *image.RGBA {
 			x0 := int(math.Floor(fx))
 			tx := fx - float64(x0)
 			x0c, x1c := clamp(x0, sw-1), clamp(x0+1, sw-1)
-			r00, g00, b00 := rgb16(src, b.Min.X+x0c, b.Min.Y+y0c)
-			r10, g10, b10 := rgb16(src, b.Min.X+x1c, b.Min.Y+y0c)
-			r01, g01, b01 := rgb16(src, b.Min.X+x0c, b.Min.Y+y1c)
-			r11, g11, b11 := rgb16(src, b.Min.X+x1c, b.Min.Y+y1c)
-			dst.Set(dx, dy, color.RGBA{
-				R: bilerp8(r00, r10, r01, r11, tx, ty),
-				G: bilerp8(g00, g10, g01, g11, tx, ty),
-				B: bilerp8(b00, b10, b01, b11, tx, ty),
-				A: 0xff,
-			})
+			r00, g00, b00 := rgb16(x0c, y0c)
+			r10, g10, b10 := rgb16(x1c, y0c)
+			r01, g01, b01 := rgb16(x0c, y1c)
+			r11, g11, b11 := rgb16(x1c, y1c)
+			o := dst.PixOffset(dx, dy)
+			dst.Pix[o] = bilerp8(r00, r10, r01, r11, tx, ty)
+			dst.Pix[o+1] = bilerp8(g00, g10, g01, g11, tx, ty)
+			dst.Pix[o+2] = bilerp8(b00, b10, b01, b11, tx, ty)
+			dst.Pix[o+3] = 0xff
 		}
 	}
 	return dst
-}
-
-// rgb16 returns a pixel's 16-bit colour channels as floats (alpha dropped).
-func rgb16(img image.Image, x, y int) (float64, float64, float64) {
-	r, g, b, _ := img.At(x, y).RGBA()
-	return float64(r), float64(g), float64(b)
 }
 
 // bilerp8 bilinearly blends four 16-bit corner samples by (tx, ty) and returns an

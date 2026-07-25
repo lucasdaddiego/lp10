@@ -5,9 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
-
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
@@ -68,13 +65,13 @@ func TestMutedHeaderAndRail(t *testing.T) {
 	st.SetVol(50)
 	m.rows, m.cols = 40, 120
 
-	live := clean(m.View())
+	live := clean(m.viewContent())
 	if !strings.Contains(live, "Vol") {
 		t.Error("live full header should label the rail \"Vol\"")
 	}
 
 	m.do("mute")
-	muted := clean(m.View())
+	muted := clean(m.viewContent())
 	if !strings.Contains(muted, "MUTED") {
 		t.Error("muted full layout should flag MUTED (header + rail badge)")
 	}
@@ -115,9 +112,6 @@ func TestEQSummaryOrderWidthAndFocus(t *testing.T) {
 	// (the default test profile is Ascii and strips everything), then prove the
 	// focused render differs from the unfocused one — i.e. the selected band is
 	// visibly marked. The plain text is identical, so any difference is the cue.
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	defer lipgloss.SetColorProfile(old)
 
 	m.pane, m.eqFocus = paneNow, 3
 	unfocused := m.eqSummary(80)

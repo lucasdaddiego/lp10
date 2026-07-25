@@ -4,26 +4,26 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-// ---- synthetic mouse events --------------------------------------------------
+// ---- synthetic mouse events (bubbletea v2: the kind is the message type) ------
 
 func mPress(x, y int) tea.MouseMsg {
-	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	return tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft}
 }
 func mDrag(x, y int) tea.MouseMsg {
-	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft}
+	return tea.MouseMotionMsg{X: x, Y: y, Button: tea.MouseLeft}
 }
 func mWheel(x, y int, up bool) tea.MouseMsg {
-	b := tea.MouseButtonWheelDown
+	b := tea.MouseWheelDown
 	if up {
-		b = tea.MouseButtonWheelUp
+		b = tea.MouseWheelUp
 	}
-	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: b}
+	return tea.MouseWheelMsg{X: x, Y: y, Button: b}
 }
 
 func center(r rect) (int, int) { return r.x + r.w/2, r.y + r.h/2 }
@@ -47,7 +47,7 @@ func eqZoneFor(m *model, code string) (eqZone, bool) {
 }
 
 // render sizes the model and paints once, populating the hit-zones.
-func render(m *model, rows, cols int) { m.rows, m.cols = rows, cols; m.View() }
+func render(m *model, rows, cols int) { m.rows, m.cols = rows, cols; m.viewContent() }
 
 // ---- transport: clicking the buttons fires the action ------------------------
 
@@ -282,7 +282,7 @@ func TestMouseClickClosesDiag(t *testing.T) {
 // ---- helpers ----------------------------------------------------------------
 
 // View2 renders at a given size and returns the view, leaving zones populated.
-func (m *model) View2(rows, cols int) string { m.rows, m.cols = rows, cols; return m.View() }
+func (m *model) View2(rows, cols int) string { m.rows, m.cols = rows, cols; return m.viewContent() }
 
 func lastData(c []protocol.Command) string {
 	if len(c) == 0 {

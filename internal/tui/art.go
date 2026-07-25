@@ -191,8 +191,9 @@ func (m *model) ghostCover(s protocol.Snapshot, w, h int) []string {
 // when there's no cover to ghost — falling back to a single ♪ in a box too small
 // for the motif (or under a CJK locale).
 func (m *model) noteBox(w, h int) []string {
+	ps := m.sty.pens()
 	out := make([]string, h)
-	blank := strings.Repeat(" ", w)
+	blank := spaces(w)
 	for i := range out {
 		out[i] = blank
 	}
@@ -200,14 +201,14 @@ func (m *model) noteBox(w, h int) []string {
 	if localeAmb == 2 || w < nw || h < len(noteMotif) {
 		if g := GL["note"]; h > 0 && w >= DispW(g) {
 			col := (w - DispW(g)) / 2
-			out[h/2] = strings.Repeat(" ", col) + m.sty.sDim.Render(g) + strings.Repeat(" ", w-col-DispW(g))
+			out[h/2] = spaces(col) + ps.dim.render(g) + spaces(w-col-DispW(g))
 		}
 		return out
 	}
 	top := (h - len(noteMotif)) / 2
 	col := (w - nw) / 2
 	for i, ln := range noteMotif {
-		out[top+i] = strings.Repeat(" ", col) + m.sty.sDmr.Render(ln) + strings.Repeat(" ", w-col-nw)
+		out[top+i] = spaces(col) + ps.dmr.render(ln) + spaces(w-col-nw)
 	}
 	return out
 }
@@ -219,17 +220,19 @@ func (m *model) noteBox(w, h int) []string {
 // the top-left. The lit edge takes the album's ambient hue when one is active.
 // The result is contentW+2 wide and len(art)+2 tall.
 func (m *model) boxArt(art []string, contentW int) []string {
-	lit := m.sty.sDim
+	ps := m.sty.pens()
+	lit := ps.dim
 	if m.amb != nil {
-		lit = m.amb.frame
+		m.amb.ensure()
+		lit = m.amb.framePen
 	}
-	shadow := m.sty.sDmr
+	shadow := ps.dmr
 	h := strings.Repeat(GL["h"], contentW)
-	leftBar, rightBar := lit.Render(GL["v"]), shadow.Render(GL["v"])
+	leftBar, rightBar := lit.render(GL["v"]), shadow.render(GL["v"])
 	out := make([]string, 0, len(art)+2)
-	out = append(out, lit.Render(GL["tl"]+h+GL["tr"]))
+	out = append(out, lit.render(GL["tl"]+h+GL["tr"]))
 	for _, line := range art {
 		out = append(out, leftBar+line+rightBar)
 	}
-	return append(out, shadow.Render(GL["bl"]+h+GL["br"]))
+	return append(out, shadow.render(GL["bl"]+h+GL["br"]))
 }

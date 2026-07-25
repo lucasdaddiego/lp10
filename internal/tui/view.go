@@ -11,12 +11,29 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-func (m *model) View() string {
+// View satisfies bubbletea v2's Model: the frame content plus the per-view
+// terminal state that v1 carried as program options (alt screen, mouse mode)
+// or commands (the window title).
+func (m *model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	v.WindowTitle = m.curTitle
+	if m.cfg.Mouse {
+		// CellMotion (not AllMotion) reports motion only while a button is held,
+		// so a left-drag scrubs a control while idle motion stays out of the loop.
+		v.MouseMode = tea.MouseModeCellMotion
+	}
+	return v
+}
+
+// viewContent renders the whole frame as a styled string (the v1 View body).
+func (m *model) viewContent() string {
 	if m.sty == nil {
 		m.sty = newTheme()
 	}
@@ -38,7 +55,7 @@ func (m *model) View() string {
 	W := cols - 6
 	now := time.Now()
 
-	var body string
+	var body []string
 	switch {
 	case m.diag:
 		body = m.renderDiag(s, now, W)
@@ -46,20 +63,53 @@ func (m *model) View() string {
 		full := rows >= FullRows && cols >= FullCols
 		body = m.renderDashboard(s, now, W, full)
 	}
+	return m.frameLines(body, W)
+}
 
-	framed := lipgloss.NewStyle().
-		Border(lipgloss.ThickBorder()).
-		BorderForeground(m.sty.border).
-		Padding(0, 2, 0, 2). // symmetric: content flush to the top and bottom borders, breathing room on the sides
-		Render(body)
-	return lipgloss.Place(cols, rows, lipgloss.Center, lipgloss.Center, framed)
+// frameLines wraps the body lines in the full-window thick border with the
+// side padding, in one builder pass. It replaces the old
+// Border(ThickBorder)+Padding(0,2)+Render+lipgloss.Place pipeline, which split,
+// ANSI-measured and re-joined the same lines several times per frame; the
+// bytes are identical (TestFrameMatchesLipgloss pins that, including the Place
+// step: the framed block is already exactly cols×rows, so Place was a no-op).
+func (m *model) frameLines(lines []string, W int) string {
+	ps := m.sty.pens()
+	// content width = the widest line, floored at W (at least one line — the
+	// header/masthead — is built to exactly W, so this is W in practice; the
+	// max() mirrors how lipgloss sizes the box if a line ever overflowed).
+	widths := make([]int, len(lines))
+	contentW := W
+	for i, ln := range lines {
+		if ln == "" {
+			continue // stack/frameBody pad with "" — skip the ANSI parse
+		}
+		widths[i] = visWidth(ln)
+		contentW = max(contentW, widths[i])
+	}
+	edge := strings.Repeat("━", contentW+4)
+	side := ps.border.render("┃")
+	var b strings.Builder
+	b.Grow((contentW + 32) * (len(lines) + 2))
+	b.WriteString(ps.border.render("┏" + edge + "┓"))
+	for i, ln := range lines {
+		b.WriteByte('\n')
+		b.WriteString(side)
+		b.WriteString("  ")
+		b.WriteString(ln)
+		b.WriteString(spaces(contentW - widths[i] + 2))
+		b.WriteString(side)
+	}
+	b.WriteByte('\n')
+	b.WriteString(ps.border.render("┗" + edge + "┛"))
+	return b.String()
 }
 
 func (m *model) renderMini(s protocol.Snapshot) string {
+	ps := m.sty.pens()
 	t, cols := s.Track, m.cols
 	switch {
 	case s.Error != "" && (s.Fatal || time.Since(s.ErrorAt) < ErrorDisplayDuration):
-		return stRed.Render(Clip(GL["warn"]+" "+friendlyError(s.Error), cols-1))
+		return ps.red.render(Clip(GL["warn"]+" "+friendlyError(s.Error), cols-1))
 	case t != nil:
 		glyph := GL["play"]
 		if s.Playing != 0 {
@@ -67,17 +117,17 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 		}
 		line := fmt.Sprintf("%s %s — %s  %s/%s  %d%%", glyph, t.Str("TrackName"), t.Str("Artist"),
 			FmtMs(s.Pos), m.fmtRight(t.GetInt("TotalTime"), s.Pos), s.Vol)
-		return m.sty.sTxt.Render(Clip(line, cols-1))
+		return ps.txt.render(Clip(line, cols-1))
 	default:
 		msg := "connecting to LP10…"
 		if s.Connected {
 			msg = "nothing playing"
 		}
-		return m.sty.sDim.Render(Clip(GL["note"]+" "+msg, cols-1))
+		return ps.dim.render(Clip(GL["note"]+" "+msg, cols-1))
 	}
 }
 
-func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full bool) string {
+func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full bool) []string {
 	m.refreshAmbient(s) // recolour the meter/frame/dot to the cover (must precede headerRow)
 	header := m.headerRow(s, now, W, full)
 	// The bold-red error line is only for a fatal stop or a hiccup *while
@@ -149,15 +199,11 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		midLen := len(mid)
 		mid = frameBody(mid, nil, blockH, true) // centre the cohesive block in the column
 		art := m.boxArt(m.artColumn(s, coverW, coverH), coverW)
-		colGap := strings.Repeat(" ", artGap)
-		block := strings.Split(lipgloss.JoinHorizontal(lipgloss.Top,
-			strings.Join(art, "\n"), colGap,
-			strings.Join(mid, "\n"), colGap,
-			strings.Join(m.volRail(s, blockH-1), "\n")), "\n")
+		block := joinCols(art, mid, m.volRail(s, blockH-1), midW)
 
 		m.recordFullZones(coverW, midW, blockH, midLen, len(tail), inner, W)
 		// header pinned top, EQ + footer pinned bottom, the cover block centred between
-		return strings.Join(stack([]string{header, ""}, block, tail, inner), "\n")
+		return stack([]string{header, ""}, block, tail, inner)
 	}
 
 	// Compact: no art / vertical sliders — top-pinned metadata + seek + controls,
@@ -170,7 +216,27 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		tail = append(tail, errLine)
 	}
 	m.recordCompactZones(s, len(meta), len(tail), inner, W)
-	return strings.Join(frameBody(content, tail, inner, false), "\n")
+	return frameBody(content, tail, inner, false)
+}
+
+// joinCols composes the full layout's three player columns — the framed cover,
+// the now-playing middle, and the volume rail — row by row with the artGap
+// between them. It replaces JoinHorizontal(Join(…),…) + re-Split, which ANSI-
+// measured every line of every column per frame. The art and vol columns are
+// uniform-width by construction (boxArt frames, ccell cells); mid lines vary,
+// so each is padded to midW — exactly what JoinHorizontal did, since mid always
+// contains a full-width line (the seek row), making midW its widest.
+// TestJoinColsMatchesJoinHorizontal pins the byte equivalence. All three
+// columns are blockH tall by construction; the min() guards a future mismatch
+// from panicking (the columns would visibly misalign, caught by tests).
+func joinCols(art, mid, vol []string, midW int) []string {
+	gap := spaces(artGap)
+	n := min(len(art), len(mid), len(vol))
+	out := make([]string, n)
+	for i := range out {
+		out[i] = art[i] + gap + padVis(mid[i], midW) + gap + vol[i]
+	}
+	return out
 }
 
 // stack composes exactly h lines: top pinned to the top, bottom pinned to the
@@ -219,6 +285,7 @@ func frameBody(content, tail []string, h int, center bool) []string {
 }
 
 func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) string {
+	ps := m.sty.pens()
 	clock := now.Format("15:04")
 	note := GL["note"]
 
@@ -229,13 +296,13 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 	// The connected dot stays the theme's green — a status light, not an accent: an
 	// album-tinted dot (e.g. orange for a sepia cover) reads as a warning. The
 	// ambient hue still colours the seek bar and cover frame, just not this light.
-	statStyled := m.sty.sAcc.Render("●") + m.sty.sDim.Render(" "+clock)
+	statStyled := ps.acc.render("●") + ps.dim.render(" "+clock)
 	if !s.Connected {
 		statTxt = "● connecting…"
 		if s.Attempts > 1 {
 			statTxt = fmt.Sprintf("● reconnecting (%d)…", s.Attempts)
 		}
-		statStyled = stWarn.Render(statTxt)
+		statStyled = ps.warn.render(statTxt)
 	}
 
 	prefixW := DispW(note) + 1 // "♪ "
@@ -244,9 +311,9 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 	var vol string
 	volW := 0
 	if full {
-		label := m.sty.sDim.Render("Vol")
+		label := ps.dim.render("Vol")
 		if s.Muted {
-			label = stRed.Render("MUTED") // flag mute from the top, over the rail
+			label = ps.red.render("MUTED") // flag mute from the top, over the rail
 		}
 		vol = ccell(label, volColW)
 		volW = volColW
@@ -256,7 +323,7 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 	// don't let a short name sprawl across a wide header.
 	nameMax := max(min(W-prefixW-2-statW-volW-4, 24), 4)
 	name := Clip(m.cfg.Name, nameMax)
-	left := m.sty.sAcc.Render(note) + " " + m.sty.sAcc.Render(name) + "  " + statStyled
+	left := ps.acc.render(note) + " " + ps.acc.render(name) + "  " + statStyled
 	leftW := prefixW + DispW(name) + 2 + statW
 
 	// source/format fills the gap before Vol when a track is playing and there's
@@ -272,11 +339,11 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 			var qW int
 			if name := SourceName(s.Track); DispW(q) <= room && name != "" && strings.HasPrefix(q, name) {
 				// fits fully: tint the source name in its brand colour, dim the format
-				qStyled = sourceStyle(m.sty, name).Render(name) + m.sty.sDmr.Render(strings.TrimPrefix(q, name))
+				qStyled = ps.brandPen(name).render(name) + ps.dmr.render(strings.TrimPrefix(q, name))
 				qW = DispW(q)
 			} else {
 				c := Clip(q, room)
-				qStyled, qW = m.sty.sDmr.Render(c), DispW(c)
+				qStyled, qW = ps.dmr.render(c), DispW(c)
 			}
 			if full {
 				right, rightW = qStyled+"  "+vol, qW+2+volW
@@ -320,19 +387,20 @@ func (m *model) marquee(s string, w int) string {
 // technical format line (or a connecting/idle message). The track lines scroll
 // as a marquee when they overflow w; the idle messages are clipped.
 func (m *model) metaLines(s protocol.Snapshot, w int) []string {
+	ps := m.sty.pens()
 	t := s.Track
 	if t == nil {
 		msg := "connecting to LP10…"
 		if s.Connected {
 			msg = "nothing playing"
 		}
-		out := []string{m.sty.sDim.Render(Clip(msg, w))}
+		out := []string{ps.dim.render(Clip(msg, w))}
 		switch {
 		case s.Connected:
-			out = append(out, m.sty.sDmr.Render(Clip("start something on Spotify / AirPlay / BT", w)))
+			out = append(out, ps.dmr.render(Clip("start something on Spotify / AirPlay / BT", w)))
 		case s.Error != "":
 			// disconnected: a calm reason under "connecting…", not a red bottom line
-			out = append(out, m.sty.sDmr.Render(Clip(friendlyError(s.Error), w)))
+			out = append(out, ps.dmr.render(Clip(friendlyError(s.Error), w)))
 		}
 		return out
 	}
@@ -355,8 +423,8 @@ func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 	trackLink := spotifySearch(strings.TrimSpace(name + " " + artist))
 	secondLink := cmp.Or(spotifySearch(artist), spotifySearch(t.Str("Album")))
 	return []string{
-		osc8(trackLink, m.sty.sBri.Render(m.marquee(name, w))),
-		osc8(secondLink, m.sty.sDim.Render(m.marquee(second, w))),
+		osc8(trackLink, ps.bri.render(m.marquee(name, w))),
+		osc8(secondLink, ps.dim.render(m.marquee(second, w))),
 	}
 }
 
@@ -419,32 +487,34 @@ func spotifySearch(query string) string {
 }
 
 // transportSegments renders prev / play-pause / next as three equal-width (~33%)
-// filled segments spanning width w, each with its label centred. Falls back to
-// the volume-entry prompt while it's active.
+// filled segments spanning width w, each with its label centred.
 func (m *model) transportSegments(s protocol.Snapshot, now time.Time, w int) string {
+	ps := m.sty.pens()
 	segs := []struct{ action, label string }{
 		{"prev", GL["rew"]}, {"toggle", toggleVerb(s)}, {"next", GL["ff"]},
 	}
 	pad, widths, gap := transportLayout(w)
 	var b strings.Builder
+	b.WriteString(spaces(pad))
 	cluster := 0
 	for i, sg := range segs {
 		if i > 0 {
-			b.WriteString(strings.Repeat(" ", gap)) // horizontal gap between buttons
+			b.WriteString(spaces(gap)) // horizontal gap between buttons
 			cluster += gap
 		}
-		st := m.sty.segOff
+		st := ps.segOff
 		if (m.pane == paneNow && sg.action == actions[m.focus]) || m.flash[sg.action].After(now) {
-			st = m.sty.segOn
+			st = ps.segOn
 		}
 		cw := widths[i]
 		lab := Clip(sg.label, cw)
 		lw := DispW(lab)
 		lp := (cw - lw) / 2
-		b.WriteString(st.Render(strings.Repeat(" ", lp) + lab + strings.Repeat(" ", cw-lw-lp)))
+		b.WriteString(st.render(spaces(lp) + lab + spaces(cw-lw-lp)))
 		cluster += cw
 	}
-	return strings.Repeat(" ", pad) + b.String() + strings.Repeat(" ", w-cluster-pad)
+	b.WriteString(spaces(w - cluster - pad))
+	return b.String()
 }
 
 // transportLayout returns the leading pad, the three segment widths, and the gap
@@ -482,15 +552,16 @@ func (m *model) fullMeta(s protocol.Snapshot, w int) []string {
 	if t == nil {
 		return m.metaLines(s, w)
 	}
+	ps := m.sty.pens()
 	name := cmp.Or(t.Str("TrackName"), "—")
 	artist := t.Str("Artist")
 	out := []string{osc8(spotifySearch(strings.TrimSpace(name+" "+artist)),
-		m.sty.sBri.Render(m.marquee(name, w)))}
+		ps.bri.render(m.marquee(name, w)))}
 	if artist != "" {
-		out = append(out, osc8(spotifySearch(artist), m.sty.sDim.Render(m.marquee(artist, w))))
+		out = append(out, osc8(spotifySearch(artist), ps.dim.render(m.marquee(artist, w))))
 	}
 	if album := t.Str("Album"); album != "" {
-		out = append(out, osc8(spotifySearch(album), m.sty.sDmr.Render(m.marquee(album, w))))
+		out = append(out, osc8(spotifySearch(album), ps.dmr.render(m.marquee(album, w))))
 	}
 	return out
 }
@@ -508,25 +579,45 @@ func (m *model) fullSourceLine(s protocol.Snapshot, w int) string {
 	if q == "" {
 		return ""
 	}
+	ps := m.sty.pens()
 	if ch := t.GetInt("ChannelCount"); ch > 0 {
 		q += fmt.Sprintf(" · %d ch", ch)
 	}
 	plain := "● " + q
 	if DispW(plain) > w { // too narrow: a plain dim clip keeps the width contract
-		return m.sty.sDmr.Render(Clip(plain, w))
+		return ps.dmr.render(Clip(plain, w))
 	}
-	pen := sourceStyle(m.sty, SourceName(t))
-	body := m.sty.sDmr.Render(q)
+	bp := ps.brandPen(SourceName(t))
+	body := ps.dmr.render(q)
 	if name := SourceName(t); name != "" && strings.HasPrefix(q, name) {
-		body = pen.Render(name) + m.sty.sDmr.Render(strings.TrimPrefix(q, name))
+		body = bp.render(name) + ps.dmr.render(strings.TrimPrefix(q, name))
 	}
-	return pen.Render("●") + " " + body
+	return bp.render("●") + " " + body
+}
+
+// volRailKey identifies a cached volume-rail block: everything the rail's
+// pixels depend on. (lipgloss v2 renders profile-independently — downsampling
+// happens in the program's renderer — so no profile rides in the key.)
+type volRailKey struct {
+	vol   int
+	muted bool
+	barH  int
 }
 
 // volRail renders the volume like an EQ band: a vertical bar barH squares tall
 // with the value (percentage, or "muted") centred on the row below it. "Vol"
 // labels it from the header; the m key toggles mute. Returns barH+1 lines.
+// The block is cached on the model: it changes only when the volume does, so a
+// steady volume costs a key compare per frame instead of barH ccell renders.
 func (m *model) volRail(s protocol.Snapshot, barH int) []string {
+	key := volRailKey{vol: s.Vol, muted: s.Muted, barH: barH}
+	if m.volBlk == nil || m.volKey != key {
+		m.volBlk, m.volKey = m.buildVolRail(s, barH), key
+	}
+	return m.volBlk
+}
+
+func (m *model) buildVolRail(s protocol.Snapshot, barH int) []string {
 	rows := make([]string, 0, barH+1)
 	if s.Muted {
 		// Impossible to miss: a SOLID red column (not a faint hollow one that reads
@@ -553,15 +644,16 @@ func (m *model) seekRow(s protocol.Snapshot, W int) string {
 	// icon-free verb (play/pause), so the state indicator and the action label never
 	// duel. Padded to a fixed width so the meter's start column doesn't jump on a
 	// state change.
+	ps := m.sty.pens()
 	const statusW = 9 // DispW("▶ Playing")
 	var status string
 	switch {
 	case playing:
-		status = m.sty.sAcc.Bold(true).Render(padDisp(GL["play"]+" Playing", statusW))
+		status = ps.accB.render(padDisp(GL["play"]+" Playing", statusW))
 	case t != nil:
-		status = stWarn.Bold(true).Render(padDisp(GL["pause"]+" Paused", statusW))
+		status = ps.warnB.render(padDisp(GL["pause"]+" Paused", statusW))
 	default:
-		status = m.sty.sDmr.Render(padDisp(GL["pause"], statusW)) // idle: a quiet marker
+		status = ps.dmr.render(padDisp(GL["pause"], statusW)) // idle: a quiet marker
 	}
 
 	total, pos := 0, s.Pos
@@ -577,21 +669,23 @@ func (m *model) seekRow(s protocol.Snapshot, W int) string {
 	if total > 0 {
 		frac = float64(pos) / float64(total)
 	}
-	fill, head := m.sty.fill, m.sty.head
+	fillCells, headCell := ps.mFill, ps.mHead
 	if m.amb != nil {
-		fill, head = m.amb.fill, m.amb.head // the seek bar wears the album's colour
+		m.amb.ensure() // the seek bar wears the album's colour
+		fillCells, headCell = m.amb.mFill, m.amb.mHead
 	}
-	return status + " " + m.sty.sDim.Render(cur) + " " +
-		m.sty.lineMeterPen(frac, cells, fill, head) + " " + m.sty.sDim.Render(rem)
+	return status + " " + ps.dim.render(cur) + " " +
+		lineMeterCells(frac, cells, fillCells, headCell, ps.mTrack) + " " + ps.dim.render(rem)
 }
 
 func (m *model) controlsRow(s protocol.Snapshot, now time.Time, W int, withVol bool) string {
+	ps := m.sty.pens()
 	btn := func(action, label string) (string, int) {
-		st := m.sty.btnOff
+		st := ps.btnOff
 		if (m.pane == paneNow && action == actions[m.focus]) || m.flash[action].After(now) {
-			st = m.sty.btnOn
+			st = ps.btnOn
 		}
-		return st.Render(label), DispW(label) + 2
+		return st.render(label), DispW(label) + 2
 	}
 	pv, pvW := btn("prev", GL["rew"])
 	tg, tgW := btn("toggle", toggleVerb(s))
@@ -608,13 +702,13 @@ func (m *model) controlsRow(s protocol.Snapshot, now time.Time, W int, withVol b
 	}
 	volCells := 10
 	volVal := fmt.Sprintf("%d%%", s.Vol)
-	volPen, volLabel := m.sty.sBri, m.sty.sDmr
+	volPen, volLabel := ps.bri, ps.dmr
 	if s.Muted {
-		volVal, volPen = "MUTED", stRed
+		volVal, volPen = "MUTED", ps.red
 	}
 	mt, mtW := btn("mute", muteLbl)
-	right := volLabel.Render("vol") + " " + m.sty.lineMeter(float64(s.Vol)/100, volCells) + " " +
-		volPen.Render(volVal) + "  " + mt
+	right := volLabel.render("vol") + " " + m.sty.lineMeter(float64(s.Vol)/100, volCells) + " " +
+		volPen.render(volVal) + "  " + mt
 	rightW := 3 + 1 + volCells + 1 + DispW(volVal) + 2 + mtW
 
 	return between(left, leftW, right, rightW, W)
@@ -623,10 +717,11 @@ func (m *model) controlsRow(s protocol.Snapshot, now time.Time, W int, withVol b
 // dividerRow is a section separator: the label centred between two dim rules,
 // "──── label ────", W cells wide, so the title reads as a heading.
 func (m *model) dividerRow(label string, W int) string {
+	ps := m.sty.pens()
 	rule := max(W-DispW(label)-2, 0) // a space flanks the label on each side
 	left := rule / 2
-	bar := func(n int) string { return m.sty.sDmr.Render(strings.Repeat(GL["track"], n)) }
-	return bar(left) + " " + m.sty.sDim.Render(label) + " " + bar(rule-left)
+	bar := func(n int) string { return ps.dmr.render(strings.Repeat(GL["track"], n)) }
+	return bar(left) + " " + ps.dim.render(label) + " " + bar(rule-left)
 }
 
 func (m *model) footerRow(W int) string {
@@ -641,8 +736,11 @@ func (m *model) footerRow(W int) string {
 	default:
 		hint = "space play · ↑↓ vol · m mute · e/tab EQ · ? diag · q quit"
 	}
-	return lipgloss.NewStyle().Width(W).Align(lipgloss.Right).
-		Render(m.sty.sDmr.Render(Clip(hint, W)))
+	// Manual right-align. Safe from ccell's wrapping trap ONLY because Clip
+	// bounds the content to ≤ W first — with that guarantee this is
+	// byte-identical to lipgloss's Width(W).Align(Right) (probe-verified).
+	clipped := Clip(hint, W)
+	return spaces(W-DispW(clipped)) + m.sty.pens().dmr.render(clipped)
 }
 
 // toggleVerb is the transport toggle's icon-free action label: "pause" while

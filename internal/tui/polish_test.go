@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
@@ -64,7 +64,9 @@ func TestAmbientTintRecolorsMeter(t *testing.T) {
 	if !differs {
 		t.Error("a red tint should differ from the default teal fill")
 	}
-	if a, b := m.sty.lineMeterPen(0.5, 20, at.fill, at.head), m.sty.lineMeter(0.5, 20); lipgloss.Width(a) != lipgloss.Width(b) {
+	at.ensure()
+	a := lineMeterCells(0.5, 20, at.mFill, at.mHead, m.sty.pens().mTrack)
+	if b := m.sty.lineMeter(0.5, 20); lipgloss.Width(a) != lipgloss.Width(b) {
 		t.Errorf("tinted meter width %d != default %d", lipgloss.Width(a), lipgloss.Width(b))
 	}
 }
@@ -89,13 +91,13 @@ func TestVolRailMuted(t *testing.T) {
 	}
 }
 
-// The warm (boost) and cool (cut) EQ ramps — the slider-knob colours that signal
-// a tone band's sign (eqSliderRow) — are distinct, asserted at the style level so
-// it's independent of the test terminal's colour profile.
-func TestToneRampsDistinct(t *testing.T) {
+// The warm (boost) and cool (cut) EQ knob colours — which signal a tone band's
+// sign (eqSliderRow) — are distinct, asserted at the style level so it's
+// independent of the test terminal's colour profile.
+func TestToneKnobsDistinct(t *testing.T) {
 	m := artModel(t)
-	if m.sty.warm[2].GetForeground() == m.sty.cool[2].GetForeground() {
-		t.Error("the warm (boost) and cool (cut) ramps should be different colours")
+	if m.sty.warmKnob.GetForeground() == m.sty.coolKnob.GetForeground() {
+		t.Error("the warm (boost) and cool (cut) knobs should be different colours")
 	}
 }
 
@@ -135,7 +137,7 @@ func TestDisconnectedErrorIsFriendly(t *testing.T) {
 	st.Note("ssh: Could not resolve hostname lp10.local: nodename nor servname provided, or not known")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 32, 100
-	view := clean(m.View())
+	view := clean(m.viewContent())
 	if !strings.Contains(view, "can't find the device") {
 		t.Error("disconnected idle should show the friendly reason")
 	}
@@ -150,7 +152,7 @@ func TestFatalErrorStillShown(t *testing.T) {
 	st.SetFatal("Permission denied (publickey).")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 32, 100
-	view := clean(m.View())
+	view := clean(m.viewContent())
 	if !strings.Contains(view, "ssh authentication failed") {
 		t.Error("a fatal error should show a friendly bottom line")
 	}
@@ -164,7 +166,7 @@ func TestDiagErrorIsFriendly(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 32, 100
 	m.diag = true
-	view := clean(m.View())
+	view := clean(m.viewContent())
 	if strings.Contains(view, "Could not resolve hostname") {
 		t.Error("the diag overlay must not show the raw ssh error")
 	}

@@ -413,7 +413,7 @@ internal/e2e/           end-to-end tests (argv contract, pty smoke)
 
 ## Dependencies
 
-- [`bubbletea`](https://github.com/charmbracelet/bubbletea) / [`lipgloss`](https://github.com/charmbracelet/lipgloss) / [`x/ansi`](https://github.com/charmbracelet/x) / [`termenv`](https://github.com/muesli/termenv) — terminal UI (x/ansi: style-preserving clipping)
+- [`bubbletea/v2`](https://github.com/charmbracelet/bubbletea) / [`lipgloss/v2`](https://github.com/charmbracelet/lipgloss) / [`x/ansi`](https://github.com/charmbracelet/x) / [`colorprofile`](https://github.com/charmbracelet/colorprofile) — terminal UI (x/ansi: style-preserving clipping; colorprofile: truecolor detection for the album-art gate)
 - [`BurntSushi/toml`](https://github.com/BurntSushi/toml) — config
 - [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — East-Asian display width
 - [`creack/pty`](https://github.com/creack/pty) — pty smoke test only

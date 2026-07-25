@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/artwork"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
@@ -37,7 +37,7 @@ func TestCoverAspectNotStretched(t *testing.T) {
 		m.sty.trueColor = true
 		m.cfg.Art, m.cfg.ArtMode = true, "halfblock"
 		m.rows, m.cols, m.cellW, m.cellH = 34, 120, 10, 20 // measured 2:1 cells
-		for ln := range strings.SplitSeq(m.renderDashboard(st.Snap(), time.Time{}, 114, true), "\n") {
+		for _, ln := range m.renderDashboard(st.Snap(), time.Time{}, 114, true) {
 			if c := strings.Count(stripANSI(ln), "▀"); c > 0 {
 				h++
 				if c > w {

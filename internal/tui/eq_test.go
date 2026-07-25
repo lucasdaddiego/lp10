@@ -55,7 +55,7 @@ func TestEQPaneFocusAdjustToggle(t *testing.T) {
 	}
 
 	// esc steps back to the player rather than quitting.
-	if m.key(ke(kEsc)) != "" {
+	if m.key(ke(kEsc)) {
 		t.Error("esc in EQ pane should not drain/quit")
 	}
 	if m.pane != paneNow {
@@ -105,7 +105,7 @@ func TestEQDisplayOrder(t *testing.T) {
 func TestDashboardRenders(t *testing.T) {
 	m, _, _ := eqModel(t)
 	protocol.ApplyRecord(m.st, playingRecord())
-	out := m.View()
+	out := m.viewContent()
 	for _, want := range []string{"equalizer", "Max", "Treble", "Mid", "Bass"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dashboard render missing %q", want)

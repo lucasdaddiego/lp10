@@ -48,7 +48,6 @@ type State struct {
 	connected bool
 	track     Track
 	trackAt   time.Time
-	lastTrack Track // survives idle, feeds the idle screen
 	sysinfo   *SysInfo
 	devinfo   *DevInfo    // static device/network info (@@i, once per connection)
 	confinfo  *ConfInfo   // streaming-capability state (@@c, once per connection)
@@ -390,13 +389,6 @@ func (st *State) WriterTarget(now time.Time, liveTimeout time.Duration) (*Proc, 
 	return st.sproc, live
 }
 
-// LastTrackAndRx returns the last-seen track (survives idle) and last-rx time.
-func (st *State) LastTrackAndRx() (Track, time.Time) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.lastTrack, st.lastRx
-}
-
 // ---- diagnostics views ----
 
 // DiagView snapshots the fields the diagnostics overlay reads in one lock. The
@@ -450,7 +442,6 @@ func (st *State) Preload(track Track, pos, vol int) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.track = track
-	st.lastTrack = track
 	st.trackAt = time.Time{}
 	st.posMs = pos
 	st.playing = 2

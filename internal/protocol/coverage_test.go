@@ -278,10 +278,6 @@ func TestCov_ProcAndWatchdogAccessors(t *testing.T) {
 		t.Error("WriterTarget should report not-live long after spawn with no data")
 	}
 
-	if lt, rx := st.LastTrackAndRx(); lt != nil || !rx.IsZero() {
-		t.Errorf("LastTrackAndRx = (%v, %v), want (nil, zero)", lt, rx)
-	}
-
 	st.Reap()
 	if st.Sproc() != nil {
 		t.Error("Reap should drop the proc handle")

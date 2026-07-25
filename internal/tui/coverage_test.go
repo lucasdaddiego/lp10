@@ -7,9 +7,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/workers"
@@ -239,13 +238,11 @@ func TestCov_clampFClampRangeTo8(t *testing.T) {
 	}
 }
 
-func TestCov_rampAt(t *testing.T) {
-	st := newTheme()
-	fill := st.fill // len 5
+func TestCov_rampIdx(t *testing.T) {
+	const n = 5 // the fill ramp's length
 	chk := func(pos, span, want int) {
-		got := st.rampAt(fill, pos, span)
-		if got.GetForeground() != fill[want].GetForeground() {
-			t.Errorf("rampAt(pos=%d span=%d) -> %v, want fill[%d]", pos, span, got.GetForeground(), want)
+		if got := rampIdx(n, pos, span); got != want {
+			t.Errorf("rampIdx(pos=%d span=%d) = %d, want %d", pos, span, got, want)
 		}
 	}
 	chk(0, 1, 0)   // span<=1 -> ratio 0
@@ -333,35 +330,46 @@ func TestCov_friendlyErrorAllCases(t *testing.T) {
 }
 
 // ============================================================================
-// translate / translateAll — every key Type
+// translate / translateAll — every key class
 // ============================================================================
 
 func TestCov_translateEveryType(t *testing.T) {
 	cases := []struct {
-		typ  tea.KeyType
+		key  tea.Key
 		want keyKind
 	}{
-		{tea.KeyEnter, kEnter}, {tea.KeyEsc, kEsc}, {tea.KeyBackspace, kBackspace},
-		{tea.KeyLeft, kLeft}, {tea.KeyRight, kRight}, {tea.KeyUp, kUp}, {tea.KeyDown, kDown},
-		{tea.KeyTab, kTab}, {tea.KeyShiftTab, kShiftTab}, {tea.KeySpace, kRune},
-		{tea.KeyCtrlA, kOther}, // unmapped
+		{tea.Key{Code: tea.KeyEnter}, kEnter},
+		{tea.Key{Code: tea.KeyEscape}, kEsc},
+		{tea.Key{Code: tea.KeyBackspace}, kOther}, // unmapped: no UI action bound
+		{tea.Key{Code: tea.KeyLeft}, kLeft},
+		{tea.Key{Code: tea.KeyRight}, kRight},
+		{tea.Key{Code: tea.KeyUp}, kUp},
+		{tea.Key{Code: tea.KeyDown}, kDown},
+		{tea.Key{Code: tea.KeyTab}, kTab},
+		{tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}, kShiftTab}, // v2: shift+tab is KeyTab + ModShift
+		{tea.Key{Code: tea.KeySpace, Text: " "}, kRune},
+		{tea.Key{Code: 'a', Mod: tea.ModCtrl}, kOther}, // modified rune: unmapped
 	}
 	for _, c := range cases {
-		if got := translate(tea.KeyMsg{Type: c.typ}); got.kind != c.want {
-			t.Errorf("translate(%v).kind = %d, want %d", c.typ, got.kind, c.want)
+		if got := translate(c.key); got.kind != c.want {
+			t.Errorf("translate(%v).kind = %d, want %d", c.key, got.kind, c.want)
 		}
 	}
-	if ev := translate(tea.KeyMsg{Type: tea.KeySpace}); ev.r != ' ' {
+	if ev := translate(tea.Key{Code: tea.KeySpace, Text: " "}); ev.r != ' ' {
 		t.Errorf("space rune = %q, want space", ev.r)
 	}
-	// single-rune KeyRunes
-	if ev := translate(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}}); ev.kind != kRune || ev.r != 'm' {
+	// a printable key carries its rune in Text
+	if ev := translate(tea.Key{Code: 'm', Text: "m"}); ev.kind != kRune || ev.r != 'm' {
 		t.Errorf("single rune = %+v", ev)
 	}
-	// multi-rune expands 1:1 via translateAll
-	evs := translateAll(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a', 'b', 'c'}})
+	// multi-rune Text expands 1:1 via translateAll (legacy coalesced input)
+	evs := translateAll(tea.KeyPressMsg{Code: 'a', Text: "abc"})
 	if len(evs) != 3 || evs[2].r != 'c' {
 		t.Errorf("translateAll multi-rune = %+v", evs)
+	}
+	// bracketed paste takes the same expansion via runeEvents
+	if evs := runeEvents("mn"); len(evs) != 2 || evs[0].r != 'm' || evs[1].r != 'n' {
+		t.Errorf("runeEvents = %+v", evs)
 	}
 }
 
@@ -411,11 +419,11 @@ func TestCov_KeyRunes(t *testing.T) {
 		t.Error("e should focus EQ pane")
 	}
 	// an unmapped rune is a no-op
-	if got := m.key(kr('z')); got != "" {
-		t.Errorf("unmapped rune -> %q, want \"\"", got)
+	if m.key(kr('z')) {
+		t.Error("an unmapped rune should not quit")
 	}
 	// Q quits too
-	if m.key(kr('Q')) != "quit" {
+	if !m.key(kr('Q')) {
 		t.Error("Q should quit")
 	}
 }
@@ -493,13 +501,19 @@ func TestCov_UpdateMessages(t *testing.T) {
 		t.Errorf("sonar frame %d -> %d, want +1", f, d.frame)
 	}
 
-	// MouseMsg is dispatched to handleMouse (no panic)
-	if _, cmd := m.Update(tea.MouseMsg{X: 1, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); cmd != nil {
-		t.Error("MouseMsg returns no command")
+	// a mouse message is dispatched to handleMouse (no panic)
+	if _, cmd := m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft}); cmd != nil {
+		t.Error("mouse click returns no command")
+	}
+
+	// a bracketed paste drives the hotkeys ('t' flips the remaining-time toggle)
+	rem := m.showRemaining
+	if _, _ = m.Update(tea.PasteMsg{Content: "t"}); m.showRemaining == rem {
+		t.Error("PasteMsg should dispatch its runes as keys")
 	}
 
 	// Ctrl-C marks interrupted and quits
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil || !m.interrupted {
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil || !m.interrupted {
 		t.Error("ctrl-c should set interrupted and quit")
 	}
 }
@@ -871,9 +885,6 @@ func TestCov_eqSliderRow(t *testing.T) {
 	}
 
 	// the warm (boost) and cool (cut) focused knobs emit different styling
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.ANSI256)
-	defer lipgloss.SetColorProfile(old)
 	warm := m.eqSliderRow(2, map[string]int{"BAS": 5}, true, w)
 	cool := m.eqSliderRow(2, map[string]int{"BAS": -5}, true, w)
 	if warm == cool {
@@ -908,7 +919,7 @@ func TestCov_renderDashboardCompactAndErrors(t *testing.T) {
 	// compact layout: cols between MiniCols and FullCols
 	m, _, _ := makeModel(t)
 	m.rows, m.cols = 20, 64
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	if !strings.Contains(out, "equalizer") {
 		t.Errorf("compact dashboard should still show the EQ summary header")
 	}
@@ -917,7 +928,7 @@ func TestCov_renderDashboardCompactAndErrors(t *testing.T) {
 	me, st, _ := makeModel(t)
 	st.Note("Connection refused")
 	me.rows, me.cols = 20, 64
-	if !strings.Contains(clean(me.View()), "the device refused the connection") {
+	if !strings.Contains(clean(me.viewContent()), "the device refused the connection") {
 		t.Error("compact errLine should show the friendly reason")
 	}
 
@@ -925,7 +936,7 @@ func TestCov_renderDashboardCompactAndErrors(t *testing.T) {
 	mf, st2, _ := makeModel(t)
 	st2.Note("Connection refused")
 	mf.rows, mf.cols = 40, 120
-	if !strings.Contains(clean(mf.View()), "the device refused the connection") {
+	if !strings.Contains(clean(mf.viewContent()), "the device refused the connection") {
 		t.Error("full errLine should show the friendly reason")
 	}
 }
@@ -1021,7 +1032,7 @@ func TestCov_renderDiagWifiStacked(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 99 // W = 93 < diagCardsMinW -> stacked
 	m.diag = true
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	for _, want := range []string{"wi-fi", "HomeNet", "ch 36", "5 GHz", "signal", "latency", "you", "gw"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wifi stacked diag missing %q", want)
@@ -1037,7 +1048,7 @@ func TestCov_renderDiagWifiCards(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120 // W = 114 >= diagCardsMinW -> cards
 	m.diag = true
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	for _, want := range []string{"─ network", "wi-fi", "ch 6", "2.4 GHz", "snr", "dns", "rate", "433 Mbit/s"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("wifi cards diag missing %q", want)
@@ -1053,7 +1064,7 @@ func TestCov_renderDiagStackedShortPane(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 18, 99 // too short: the read-out must be trimmed with a hint
 	m.diag = true
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	if !strings.Contains(out, "resize for more") {
 		t.Errorf("a short diag pane should trim with a 'resize for more' hint:\n%s", out)
 	}
@@ -1081,7 +1092,7 @@ func TestCov_UpdateUnknownAndViewZero(t *testing.T) {
 	}
 	// a 0-sized window renders nothing
 	m.rows, m.cols = 0, 80
-	if m.View() != "" {
+	if m.viewContent() != "" {
 		t.Error("View at 0 rows should be empty")
 	}
 }
@@ -1095,9 +1106,9 @@ func TestCov_themeDegenerate(t *testing.T) {
 	if got := st.sonar(1, 1, 0); len(got) != 1 {
 		t.Errorf("sonar(1,1) len = %d, want 1", len(got))
 	}
-	// lineMeterPen with no cells is empty; frac 0 puts the head at cell 0
-	if st.lineMeterPen(0.5, 0, st.fill, st.head) != "" {
-		t.Error("lineMeterPen(cells<=0) should be empty")
+	// a meter with no cells is empty; frac 0 puts the head at cell 0
+	if lineMeterCells(0.5, 0, nil, "●", "─") != "" {
+		t.Error("lineMeterCells(cells<=0) should be empty")
 	}
 	if got := stripANSI(st.lineMeter(0, 10)); !strings.Contains(got, "●") {
 		t.Errorf("lineMeter(frac 0) should still draw the head: %q", got)
@@ -1108,7 +1119,7 @@ func TestCov_handleMouseReleaseNoop(t *testing.T) {
 	m, _, collect := makeModel(t)
 	render(m, 40, 120)
 	// a release (neither press, drag, nor wheel) is ignored
-	m.handleMouse(tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionRelease, Button: tea.MouseButtonLeft})
+	m.handleMouse(tea.MouseReleaseMsg{X: 10, Y: 10, Button: tea.MouseLeft})
 	if c := collect(); len(c) != 0 {
 		t.Errorf("a mouse release should be a no-op, got %+v", c)
 	}
@@ -1303,7 +1314,7 @@ func TestCov_diagRichCards(t *testing.T) {
 	m, _ := richDiag(t, "5180", nil) // 5 GHz, buffer warn (fill ~0.3), SNR via noise
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	for _, want := range []string{"5 GHz", "ch 36", "snr", "2 ch", "mDNS", "live", "─ latency", "─ connection"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rich cards diag missing %q", want)
@@ -1315,7 +1326,7 @@ func TestCov_diagRichStacked(t *testing.T) {
 	m, _ := richDiag(t, "5180", nil)
 	m.rows, m.cols = 44, 99
 	m.diag = true
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	for _, want := range []string{"5 GHz", "link 50/70", "mDNS"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("rich stacked diag missing %q", want)
@@ -1329,7 +1340,7 @@ func TestCov_diagCardsBufferRedAndLinkQ(t *testing.T) {
 	m, _ := richDiag(t, "5180", map[int]string{18: "30000", 25: "-", 6: "0"})
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	if out := clean(m.View()); !strings.Contains(out, "link 50/70") {
+	if out := clean(m.viewContent()); !strings.Contains(out, "link 50/70") {
 		t.Errorf("buffer-red cards should fall back to link quality: missing in\n%s", out)
 	}
 }
@@ -1343,7 +1354,7 @@ func TestCov_diagCardsSilentHeader(t *testing.T) {
 		t.Fatal("setup: expected a last-data stamp")
 	}
 	// a now well past the watchdog's SilentAfter flags "LUCI silent" in the header
-	out := stripANSI(m.renderDiagCards(st.Snap(), dData.Add(workers.SilentAfter+time.Second), 114))
+	out := stripANSI(strings.Join(m.renderDiagCards(st.Snap(), dData.Add(workers.SilentAfter+time.Second), 114), "\n"))
 	if !strings.Contains(out, "LUCI silent") {
 		t.Errorf("stale cards header should read LUCI silent: %q", firstLine(out))
 	}
@@ -1364,7 +1375,7 @@ func TestCov_renderDashboardGeometry(t *testing.T) {
 	m.cellW, m.cellH = 8, 16 // a real measured cell aspect (the m.cellW>0 branch)
 	m.rows = 18              // short inner region -> coverH floors to 6
 	out := m.renderDashboard(m.st.Snap(), time.Now(), 40, true)
-	if out == "" {
+	if len(out) == 0 {
 		t.Error("renderDashboard should produce a body")
 	}
 }
@@ -1386,7 +1397,7 @@ func TestCov_diagStackedNcpuZero(t *testing.T) {
 	m, _ := richDiag(t, "5180", map[int]string{6: "0"})
 	m.rows, m.cols = 44, 99
 	m.diag = true
-	if clean(m.View()) == "" {
+	if clean(m.viewContent()) == "" {
 		t.Error("stacked diag with ncpu 0 should still render")
 	}
 }
@@ -1396,7 +1407,7 @@ func TestCov_diagCardsBufferWarn(t *testing.T) {
 	m, _ := richDiag(t, "5180", map[int]string{18: "15435"})
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	if !strings.Contains(clean(m.View()), "buffer") {
+	if !strings.Contains(clean(m.viewContent()), "buffer") {
 		t.Error("buffer-warn cards should still draw the buffer gauge")
 	}
 }
@@ -1411,7 +1422,7 @@ func TestCov_diagCardsMissingPing(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	out := clean(m.View())
+	out := clean(m.viewContent())
 	if !strings.Contains(out, "─ latency") || !strings.Contains(out, "you") {
 		t.Errorf("latency card should still show the 'you' row: %q", out)
 	}
@@ -1422,7 +1433,7 @@ func TestCov_diagCardsDeviceError(t *testing.T) {
 	st.Note("Connection refused") // a device error pins to the card tail (derr != "")
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	if !strings.Contains(clean(m.View()), "the device refused the connection") {
+	if !strings.Contains(clean(m.viewContent()), "the device refused the connection") {
 		t.Error("a device error should show its friendly reason in the cards tail")
 	}
 }
@@ -1496,7 +1507,7 @@ func TestCov_diagCardsNarrowStillRenders(t *testing.T) {
 	m, st := richDiag(t, "5180", nil)
 	m.sty = newTheme()
 	m.rows = 44
-	if stripANSI(m.renderDiagCards(st.Snap(), time.Now(), 50)) == "" {
+	if stripANSI(strings.Join(m.renderDiagCards(st.Snap(), time.Now(), 50), "\n")) == "" {
 		t.Error("narrow cards should still render")
 	}
 }

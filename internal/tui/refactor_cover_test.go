@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
@@ -53,7 +52,7 @@ func TestDiagPlayingBufferReadsFull(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	if !strings.Contains(flat, "% full") {
 		t.Errorf("playing buffer row should read \"NN%% full\":\n%s", flat)
 	}
@@ -64,9 +63,6 @@ func TestDiagPlayingBufferReadsFull(t *testing.T) {
 // the moment a larger font cost the column a couple of cells. Needs a real
 // colour profile so the styles emit SGR at all.
 func TestClipStyledKeepsColours(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
 	sty := newTheme()
 	row := sty.sAcc.Render("●") + " " + sty.sTxt.Render("Spotify and more text")
 	got := clipStyled(row, 12)
@@ -122,7 +118,7 @@ func TestDiagIdentityExtrasAndMultiroom(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	for _, want := range []string{
 		"Living",               // name row (FriendlyName, works without mDNS)
 		"RKARYLLP100000000000", // serial
@@ -146,11 +142,11 @@ func TestDiagMultiroomLinked(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	if flat := clean(m.View()); !hasRow(flat, "multiroom", "linked · 2 devices") {
+	if flat := clean(m.viewContent()); !hasRow(flat, "multiroom", "linked · 2 devices") {
 		t.Errorf("linked group should read a device count")
 	}
 	applyRaw(st, "@@g\nMID-Read:39 Data:{\"devices\":[{\"n\":\"a\"}]} Length:23\n@@E\n")
-	if flat := clean(m.View()); !hasRow(flat, "multiroom", "linked · 1 device") {
+	if flat := clean(m.viewContent()); !hasRow(flat, "multiroom", "linked · 1 device") {
 		t.Errorf("a single linked device should read singular")
 	}
 }
@@ -166,11 +162,11 @@ func TestDiagErrorsRowSessionDelta(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	if flat := clean(m.View()); !hasRow(flat, "errors", "drop 0", "session") {
+	if flat := clean(m.viewContent()); !hasRow(flat, "errors", "drop 0", "session") {
 		t.Error("the first sample should baseline: boot-lifetime drops read as 0")
 	}
 	applyRaw(st, base+"0 0 259 0\n@@E\n")
-	if flat := clean(m.View()); !hasRow(flat, "errors", "drop 3") {
+	if flat := clean(m.viewContent()); !hasRow(flat, "errors", "drop 3") {
 		t.Error("counter growth should read as a session delta of 3")
 	}
 }
@@ -188,7 +184,7 @@ func TestDiagTaxonomy(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 60, 90 // narrow -> stacked, tall enough that nothing trims
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	if strings.Contains(flat, "volume") || hasRow(flat, "eq        ") {
 		t.Error("volume/eq are settings, not diagnostics — they must not render here")
 	}
@@ -216,7 +212,7 @@ func TestDiagTaxonomy(t *testing.T) {
 	inSection("uptime", "resources", "services")
 	// the wide layout drops the settings rows too
 	m.cols = 120
-	if flat := clean(m.View()); strings.Contains(flat, "volume") {
+	if flat := clean(m.viewContent()); strings.Contains(flat, "volume") {
 		t.Error("the cards layout must not carry a volume row either")
 	}
 }
@@ -236,7 +232,7 @@ func TestDiagConnectionPreData(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	if !hasRow(flat, "ssh", "no data yet") {
 		t.Error("the ssh row should read \"no data yet\" before the first record")
 	}

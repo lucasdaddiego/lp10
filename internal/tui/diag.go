@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
@@ -50,10 +50,10 @@ func sev(v float64, thr [2]float64) int {
 }
 
 // sevPens maps a severity to its pen: good (accent) · warn (amber) · bad (red).
-func (m *model) sevPens() [3]lipgloss.Style { return [3]lipgloss.Style{m.sty.sAcc, stWarn, stRed} }
+func (m *model) sevPens() [3]lipgloss.Style { return m.sty.sevs }
 
 // sevPen picks the pen for a value against its threshold pair.
-func (m *model) sevPen(v float64, thr [2]float64) lipgloss.Style { return m.sevPens()[sev(v, thr)] }
+func (m *model) sevPen(v float64, thr [2]float64) lipgloss.Style { return m.sty.sevs[sev(v, thr)] }
 
 // ---- shared collectors (both layouts read the same derived state) --------------
 
@@ -444,14 +444,14 @@ func (m *model) latencyTargets(netv protocol.NetStat) []latTarget {
 // renderDiag picks the diagnostics layout by width: a two-column card grid on a
 // wide terminal (filling the space and surfacing the audio-chain metrics), the
 // stacked single-column read-out when narrow.
-func (m *model) renderDiag(s protocol.Snapshot, now time.Time, W int) string {
+func (m *model) renderDiag(s protocol.Snapshot, now time.Time, W int) []string {
 	if W >= diagCardsMinW {
 		return m.renderDiagCards(s, now, W)
 	}
 	return m.renderDiagStacked(s, now, W)
 }
 
-func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) string {
+func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) []string {
 	t := m.sty
 	lastRx, dData, att, si := m.st.DiagView()
 	dev := m.st.DevInfoView()
@@ -620,7 +620,7 @@ func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) str
 		L = L[:room]
 		L[room-1] = t.sDmr.Render("… resize for more")
 	}
-	return strings.Join(frameBody(L, tail, m.rows-2, false), "\n") // top-aligned: read-out hugs the top, footer stays pinned below
+	return frameBody(L, tail, m.rows-2, false) // top-aligned: read-out hugs the top, footer stays pinned below
 }
 
 // renderDiagCards is the wide diagnostics layout: a minimal masthead — the
@@ -631,7 +631,7 @@ func (m *model) renderDiagStacked(s protocol.Snapshot, now time.Time, W int) str
 // No card boxes — the section rule + a left gutter of aligned labels carry the
 // structure, so it reads faster and sits a couple lines shorter than the old
 // 7-card grid.
-func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) string {
+func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) []string {
 	t := m.sty
 	lastRx, dData, att, si := m.st.DiagView()
 	dev := m.st.DevInfoView()
@@ -940,7 +940,7 @@ func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) strin
 		tail = append(tail, line, "")
 	}
 	tail = append(tail, between(t.sDmr.Render(diagFooter), DispW(diagFooter), legend, DispW("● good   ● warn   ● fault"), W))
-	return strings.Join(frameBody(content, tail, m.rows-2, false), "\n")
+	return frameBody(content, tail, m.rows-2, false)
 }
 
 // ---- device capabilities + hardware (shown in the diagnostics overlay) -------

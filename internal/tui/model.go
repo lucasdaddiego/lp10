@@ -97,6 +97,11 @@ type model struct {
 	ghostBlk []string
 	ghostKey artKey
 
+	// volume-rail cache: the rail repaints only when the volume/mute/height
+	// change (see volRail), not on every animated frame.
+	volBlk []string
+	volKey volRailKey
+
 	// ambient tint: the seek bar / cover frame / status dot recoloured to the
 	// current cover's dominant hue. amb is nil for the theme default (no cover,
 	// greyscale art, or art disabled); ambKey is the CoverURL it was computed for
@@ -125,6 +130,10 @@ func newModel(st *protocol.State, cfg config.Config, cmds chan *protocol.Command
 		flash:         map[string]time.Time{},
 	}
 	m.cellW, m.cellH = cellPixelSize() // refreshed on every resize; sizes the Kitty cover
+	// The window title rides every tea.View, so seed it before the first frame —
+	// otherwise the opening frames would carry an empty title until the first
+	// logic tick recomputes it.
+	m.curTitle = m.computeTitle(st.Snap())
 	return m
 }
 

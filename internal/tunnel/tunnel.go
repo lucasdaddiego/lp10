@@ -28,13 +28,14 @@ const (
 	Toggle
 )
 
-// Spec describes one control: its wire code, UI label, kind, and value bounds.
-// Bounds are the UI's working range; the device clamps authoritatively and
-// echoes the applied value back, so a slightly-off Max here only limits the
-// slider, it can't push an invalid value (the readback corrects the display).
+// Spec describes one control: its wire code, kind, and value bounds. Bounds are
+// the UI's working range; the device clamps authoritatively and echoes the
+// applied value back, so a slightly-off Max here only limits the slider, it
+// can't push an invalid value (the readback corrects the display). The display
+// label is NOT here: the equalizer's column is narrow, so the UI owns its own
+// short labels (tui.eqShort) and this stays a pure wire description.
 type Spec struct {
 	Code     string
-	Label    string
 	Kind     Kind
 	Min, Max int
 	Step     int
@@ -44,13 +45,13 @@ type Spec struct {
 // MXV max-volume cap, EQS named-EQ on/off, BAS/MID/TRE tone, VBS deep-bass
 // switch, VBI deep-bass intensity. Tone bounds are conservative (device clamps).
 var Specs = []Spec{
-	{Code: "MXV", Label: "Max Volume", Kind: Ranged, Min: 0, Max: 100, Step: 5},
-	{Code: "EQS", Label: "EQ", Kind: Toggle, Min: 0, Max: 1, Step: 1},
-	{Code: "BAS", Label: "Bass", Kind: Ranged, Min: -10, Max: 10, Step: 1},
-	{Code: "MID", Label: "Mid", Kind: Ranged, Min: -10, Max: 10, Step: 1},
-	{Code: "TRE", Label: "Treble", Kind: Ranged, Min: -10, Max: 10, Step: 1},
-	{Code: "VBS", Label: "Deep Bass", Kind: Toggle, Min: 0, Max: 1, Step: 1},
-	{Code: "VBI", Label: "Deep Bass Lvl", Kind: Ranged, Min: 0, Max: 100, Step: 5},
+	{Code: "MXV", Kind: Ranged, Min: 0, Max: 100, Step: 5},
+	{Code: "EQS", Kind: Toggle, Min: 0, Max: 1, Step: 1},
+	{Code: "BAS", Kind: Ranged, Min: -10, Max: 10, Step: 1},
+	{Code: "MID", Kind: Ranged, Min: -10, Max: 10, Step: 1},
+	{Code: "TRE", Kind: Ranged, Min: -10, Max: 10, Step: 1},
+	{Code: "VBS", Kind: Toggle, Min: 0, Max: 1, Step: 1},
+	{Code: "VBI", Kind: Ranged, Min: 0, Max: 100, Step: 5},
 }
 
 var specByCode = func() map[string]Spec {

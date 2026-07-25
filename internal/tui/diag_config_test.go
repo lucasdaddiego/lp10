@@ -4,8 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
@@ -32,9 +31,6 @@ func hasRow(flat string, subs ...string) bool {
 // alongside the live metrics. Runs under a real colour profile so the boxless
 // section padding is measured by visible width; every framed line stays cols wide.
 func TestDiagShowsServicesAndHardware(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
 
 	st := protocol.NewState()
 	applyFixtureRecords(st, "device_record.txt")  // @@i: eth link, platform
@@ -44,7 +40,7 @@ func TestDiagShowsServicesAndHardware(t *testing.T) {
 	m.rows, m.cols = 44, 120
 	m.diag = true
 
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	for _, want := range []string{
 		"─ services", "─ hardware",
 		"Spotify", "Bluetooth", "Google Cast", "USB playback",
@@ -68,7 +64,7 @@ func TestDiagShowsServicesAndHardware(t *testing.T) {
 	if !hasRow(flat, "Google Cast", "USB playback") {
 		t.Error("disabled services should share one dense off-row")
 	}
-	for i, ln := range strings.Split(m.View(), "\n") {
+	for i, ln := range strings.Split(m.viewContent(), "\n") {
 		if w := lipgloss.Width(ln); w != m.cols {
 			t.Errorf("diag line %d width %d, want %d: %q", i, w, m.cols, clean(ln))
 		}
@@ -85,7 +81,7 @@ func TestDiagMastheadVerdictOnly(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	// masthead verdict next to the title
 	if !hasRow(flat, "diagnostics", "healthy") {
 		t.Error("masthead should carry a health verdict beside the title")
@@ -116,7 +112,7 @@ func TestDiagVerdictWarnAndFault(t *testing.T) {
 		m, _, _ := modelWith(st)
 		m.rows, m.cols = 44, 120
 		m.diag = true
-		return clean(m.View())
+		return clean(m.viewContent())
 	}
 	if !hasRow(mk("70000"), "diagnostics", "warn") {
 		t.Error("a hot SoC (70 °C) should roll up to a warn verdict")
@@ -139,7 +135,7 @@ func TestDiagIdleBufferNotFault(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	if hasRow(flat, "diagnostics", "fault") {
 		t.Error("an idle empty buffer must not roll up to a fault verdict")
 	}
@@ -157,9 +153,6 @@ func TestDiagIdleBufferNotFault(t *testing.T) {
 // a bordered frame wider than the terminal. (cols 58-59 with the full capability
 // matrix used to overflow the frame — serviceStrip ignored its width budget.)
 func TestDiagStackedServicesDoNotOverflowNarrow(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
 
 	st := protocol.NewState()
 	applyFixtureRecords(st, "device_record.txt")
@@ -169,7 +162,7 @@ func TestDiagStackedServicesDoNotOverflowNarrow(t *testing.T) {
 	m.diag = true
 	for _, cols := range []int{58, 59, 60, 64, 72} { // W < diagCardsMinW -> stacked
 		m.rows, m.cols = 44, cols
-		for i, ln := range strings.Split(m.View(), "\n") {
+		for i, ln := range strings.Split(m.viewContent(), "\n") {
 			if w := lipgloss.Width(ln); w != m.cols {
 				t.Errorf("cols=%d: diag line %d width %d, want %d: %q", cols, i, w, m.cols, clean(ln))
 			}
@@ -187,7 +180,7 @@ func TestDiagStackedShowsServicesAndHardware(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 60, 90 // narrow -> stacked, tall enough for every section
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	for _, want := range []string{"services", "hardware", "Spotify", "Bluetooth", "Amlogic A113L"} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("stacked diag missing %q", want)
@@ -207,7 +200,7 @@ func TestDiagServicesUnknownBeforeData(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.diag = true
-	flat := clean(m.View())
+	flat := clean(m.viewContent())
 	if !strings.Contains(flat, "reading from device…") {
 		t.Error("services should show the reading note before @@c arrives")
 	}
