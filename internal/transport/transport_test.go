@@ -49,7 +49,7 @@ func TestKeychainPasswordOSErrorIsMarkedNotRaisedRaw(t *testing.T) {
 		t.Fatalf("err = %v, want %s", err, MarkerBroken)
 	}
 	terr := ClassifyStderr(err.Error())
-	if terr == nil || !terr.Fatal || terr.Cadence != 60*time.Second {
+	if terr == nil || terr.Cadence != 60*time.Second {
 		t.Fatalf("classify = %v, want fatal w/ 60s cadence", terr)
 	}
 }
@@ -72,14 +72,14 @@ func TestAskpassFailureRoundtripsToFatalClass(t *testing.T) {
 	// must map them to a fatal class.
 	for _, marker := range []string{MarkerNoItem, MarkerLocked, MarkerBroken} {
 		terr := ClassifyStderr(marker)
-		if terr == nil || !terr.Fatal {
+		if terr == nil {
 			t.Errorf("classify(%q) = %v, want fatal", marker, terr)
 		}
 	}
 }
 
 func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
-	body := RemoteLoop("", "spotify.com")
+	body := RemoteLoop("spotify.com")
 	if r := exec.Command("sh", "-n", "-c", body).Run(); r != nil {
 		t.Fatalf("remote loop is not valid shell: %v", r)
 	}
@@ -113,22 +113,28 @@ func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 	}
 }
 
-func TestRemoteLoopCustomMidsAreInterpolated(t *testing.T) {
-	if !strings.Contains(RemoteLoop("40", ""), `case "$mid" in 40)`) {
-		t.Error("custom mids should be interpolated")
+func TestRemoteLoopSplicesMidWhitelist(t *testing.T) {
+	// The __MIDS__ placeholder must be replaced by the fixed transport+volume
+	// whitelist — a surviving placeholder would break the device-side case arm.
+	body := RemoteLoop("")
+	if strings.Contains(body, "__MIDS__") {
+		t.Error("__MIDS__ placeholder not spliced")
+	}
+	if !strings.Contains(body, `case "$mid" in 40|64)`) {
+		t.Error("mid whitelist should be spliced into the case arm")
 	}
 }
 
 func TestRemoteLoopInjectsSanitizedPingHost(t *testing.T) {
-	if !strings.Contains(RemoteLoop("", "open.spotify.com"), `ph='open.spotify.com';`) {
+	if !strings.Contains(RemoteLoop("open.spotify.com"), `ph='open.spotify.com';`) {
 		t.Error("ping host should be injected as ph")
 	}
 	// metacharacters must not escape the single-quoted assignment
-	if got := RemoteLoop("", "evil';reboot;'"); !strings.Contains(got, `ph='evilreboot';`) {
+	if got := RemoteLoop("evil';reboot;'"); !strings.Contains(got, `ph='evilreboot';`) {
 		t.Errorf("ping host not sanitized: missing clean ph in %q", got[:40])
 	}
 	// an empty / fully-stripped host falls back to the default target
-	if !strings.Contains(RemoteLoop("", ""), `ph='spotify.com';`) {
+	if !strings.Contains(RemoteLoop(""), `ph='spotify.com';`) {
 		t.Error("empty ping host should fall back to spotify.com")
 	}
 }
@@ -150,7 +156,7 @@ func TestSanitizeHost(t *testing.T) {
 // fwVersion samples, so a future edit that breaks the shell parameter-expansion
 // parsing fails here rather than silently on the device (which CI can't run).
 func TestRemoteLoopParsesDeviceOutput(t *testing.T) {
-	body := RemoteLoop("", "spotify.com")
+	body := RemoteLoop("spotify.com")
 	// extractCase returns the marker's case block, balancing nested case/esac (the
 	// gateway block nests a "dev" case) so the snippet is self-contained shell.
 	extractCase := func(marker string) string {
@@ -216,7 +222,7 @@ func TestRemoteLoopParsesDeviceOutput(t *testing.T) {
 // diag-gated stat block, the MID-90 toggle, the playback-only side-effects, and
 // the early-break stat scans.
 func TestRemoteLoopStructuralContract(t *testing.T) {
-	body := RemoteLoop("", "spotify.com")
+	body := RemoteLoop("spotify.com")
 	for _, want := range []string{
 		// the positional @@s line (new fields are appended at the END so older
 		// parsers and fixtures stay compatible; order is also cross-checked by
@@ -264,7 +270,7 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 // probe of the AR241CE: status has `avail` but no `xruns` line.
 func TestRemoteLoopAudioChainParses(t *testing.T) {
 	const snip = `as=-; ab=-; ar=-; af=-; ac=-; bs=-; for ad in /proc/asound/card*/pcm*p/sub*; do while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in state) as=$av;; avail) ab=$av;; esac; done < "$ad/status" 2>/dev/null; while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac; done < "$ad/hw_params" 2>/dev/null; done`
-	if !strings.Contains(RemoteLoop("", "spotify.com"), snip) {
+	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
 		t.Fatal("audio-chain gather snippet not found verbatim in the loop")
 	}
 	// realStatus/realHW mirror the probed AR241CE: aligned colons, avail/avail_max,
@@ -322,7 +328,7 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 // "key=value" directly — one exec per service, no capturing subshell.
 func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
 	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pr() { if pidof "$2" >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi; }; echo @@c; pr spotify newspotifyhifi; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; gv cast GoogleCast; gv tidal TidalEnabled; gv qobuz QobuzConnectEnabled; gv usb USBEnable; echo @@E`
-	if !strings.Contains(RemoteLoop("", "spotify.com"), snip) {
+	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
 		t.Fatal("capability-probe snippet not found verbatim in the loop")
 	}
 	// Stub the device binaries: spotify + bluetooth daemons running; getenv reports
@@ -374,15 +380,15 @@ func TestSSHArgvContract(t *testing.T) {
 
 func TestClassifyStderr(t *testing.T) {
 	err := ClassifyStderr("root@x: Permission denied (publickey,password).")
-	if err == nil || !err.Fatal || err.Cadence != 10*time.Second {
+	if err == nil || err.Cadence != 10*time.Second {
 		t.Errorf("permission-denied: %v", err)
 	}
 	err = ClassifyStderr("lp10-askpass: keychain-locked\nroot@x: Permission denied.")
-	if err == nil || !err.Fatal || err.Cadence != 60*time.Second {
+	if err == nil || err.Cadence != 60*time.Second {
 		t.Errorf("locked: %v", err)
 	}
 	err = ClassifyStderr("lp10-askpass: no-item\nroot@x: Permission denied.")
-	if err == nil || !err.Fatal || !strings.Contains(err.Error(), StoreHint) {
+	if err == nil || !strings.Contains(err.Error(), StoreHint) {
 		t.Errorf("no-item: %v", err)
 	}
 	if ClassifyStderr("ssh: connect to host x: Operation timed out") != nil {

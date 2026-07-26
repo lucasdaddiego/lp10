@@ -275,42 +275,6 @@ func TestCov_hslRGBAllArms(t *testing.T) {
 }
 
 // ============================================================================
-// mouse.go fraction mappers
-// ============================================================================
-
-func TestCov_fracMappers(t *testing.T) {
-	if fracToVol(-0.5) != 0 || fracToVol(0.5) != 50 || fracToVol(1.5) != 100 {
-		t.Errorf("fracToVol wrong: %d %d %d", fracToVol(-0.5), fracToVol(0.5), fracToVol(1.5))
-	}
-	// hfrac: den<1 clamp, and value clamps
-	if got := hfrac(rect{x: 0, w: 1}, 0); got != 0 {
-		t.Errorf("hfrac den<1 = %v, want 0", got)
-	}
-	if got := hfrac(rect{x: 0, w: 11}, 5); got != 0.5 {
-		t.Errorf("hfrac mid = %v, want 0.5", got)
-	}
-	if got := hfrac(rect{x: 5, w: 11}, 0); got != 0 {
-		t.Errorf("hfrac below = %v, want 0", got)
-	}
-	if got := hfrac(rect{x: 0, w: 11}, 20); got != 1 {
-		t.Errorf("hfrac above = %v, want 1", got)
-	}
-	// vfrac: top=1, bottom=0, den<1 clamp (a single row is the top -> full), value clamps
-	if got := vfrac(rect{y: 0, h: 1}, 0); got != 1 {
-		t.Errorf("vfrac den<1 = %v, want 1", got)
-	}
-	if got := vfrac(rect{y: 0, h: 11}, 0); got != 1 {
-		t.Errorf("vfrac top = %v, want 1", got)
-	}
-	if got := vfrac(rect{y: 0, h: 11}, -5); got != 1 {
-		t.Errorf("vfrac above = %v, want 1", got)
-	}
-	if got := vfrac(rect{y: 0, h: 11}, 20); got != 0 {
-		t.Errorf("vfrac below = %v, want 0", got)
-	}
-}
-
-// ============================================================================
 // friendlyError — every mapped case
 // ============================================================================
 
@@ -542,11 +506,6 @@ func TestCov_UpdateMessages(t *testing.T) {
 	}
 	if d.frame != f+1 {
 		t.Errorf("search frame %d -> %d, want +1", f, d.frame)
-	}
-
-	// a mouse message is dispatched to handleMouse (no panic)
-	if _, cmd := m.Update(tea.MouseClickMsg{X: 1, Y: 1, Button: tea.MouseLeft}); cmd != nil {
-		t.Error("mouse click returns no command")
 	}
 
 	// a bracketed paste drives the hotkeys ('t' flips the remaining-time toggle)
@@ -1017,8 +976,8 @@ func TestCov_ghostCoverKitty(t *testing.T) {
 	if len(lines) != 8 {
 		t.Fatalf("kitty ghost should be 8 lines, got %d", len(lines))
 	}
-	if !strings.Contains(lines[0], "\x1b_G") {
-		t.Error("kitty ghost first line should carry the transmit escape")
+	if !strings.Contains(m.kittyTx, "\x1b_G") {
+		t.Error("kitty ghost should stash the transmit escape for the out-of-band flush")
 	}
 	// no remembered cover -> nil (caller falls back to the note motif)
 	if g := m.ghostCover(protocol.Snapshot{Connected: true}, 16, 8); g != nil {
@@ -1155,16 +1114,6 @@ func TestCov_themeDegenerate(t *testing.T) {
 	}
 	if got := stripANSI(st.lineMeter(0, 10)); !strings.Contains(got, "●") {
 		t.Errorf("lineMeter(frac 0) should still draw the head: %q", got)
-	}
-}
-
-func TestCov_handleMouseReleaseNoop(t *testing.T) {
-	m, _, collect := makeModel(t)
-	render(m, 40, 120)
-	// a release (neither press, drag, nor wheel) is ignored
-	m.handleMouse(tea.MouseReleaseMsg{X: 10, Y: 10, Button: tea.MouseLeft})
-	if c := collect(); len(c) != 0 {
-		t.Errorf("a mouse release should be a no-op, got %+v", c)
 	}
 }
 
@@ -1404,8 +1353,7 @@ func TestCov_diagCardsSilentHeader(t *testing.T) {
 }
 
 // ============================================================================
-// Final pass: full-layout geometry clamps, degenerate hit-zones, and the last
-// few diagnostics arms.
+// Final pass: full-layout geometry clamps and the last few diagnostics arms.
 // ============================================================================
 
 // TestCov_renderDashboardGeometry forces the full player's cover-sizing clamps by
@@ -1420,18 +1368,6 @@ func TestCov_renderDashboardGeometry(t *testing.T) {
 	out := m.renderDashboard(m.st.Snap(), time.Now(), 40, true)
 	if len(out) == 0 {
 		t.Error("renderDashboard should produce a body")
-	}
-}
-
-// TestCov_recordFullZonesDegenerate drives the hit-zone math past its guards: a
-// tail taller than the region (region<0, middleLen clamp), a volume bar taller
-// than the visible region, and a track width below 1.
-func TestCov_recordFullZonesDegenerate(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.recordFullZones(10, 5, 20, 5, 100, 10, 10)
-	// it records EQ zones even in the degenerate case (trackW clamped to 1)
-	if len(m.mzEQ) != len(eqOrder) {
-		t.Errorf("recorded %d EQ zones, want %d", len(m.mzEQ), len(eqOrder))
 	}
 }
 

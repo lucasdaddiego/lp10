@@ -90,8 +90,10 @@ func TestArtChoiceResolution(t *testing.T) {
 	}
 }
 
-// On a Kitty-capable terminal the art column is a placeholder grid carrying the
-// transmit escape, and each line still measures exactly the box width.
+// On a Kitty-capable terminal the art column is a pure placeholder grid, each
+// line exactly the box width, with the transmit escape stashed on the model
+// for Update to flush out-of-band (never embedded in the lines — the cell
+// renderer would strip it).
 func TestArtColumnKitty(t *testing.T) {
 	m := artModel(t)
 	m.cfg.ArtMode = "auto"
@@ -102,22 +104,25 @@ func TestArtColumnKitty(t *testing.T) {
 		t.Fatalf("got %d lines, want 6", len(lines))
 	}
 	ph := string(rune(artwork.KittyPlaceholder))
-	if !strings.Contains(lines[0], "\x1b_G") {
-		t.Error("first line should carry the Kitty transmit escape")
+	if !strings.HasPrefix(m.kittyTx, "\x1b_G") {
+		t.Error("the transmit escape should be stashed on the model for the out-of-band flush")
 	}
 	for i, ln := range lines {
+		if strings.Contains(ln, "\x1b_G") {
+			t.Errorf("line %d embeds the transmit escape (the cell renderer would strip it)", i)
+		}
 		if !strings.Contains(ln, ph) {
 			t.Errorf("line %d has no placeholder cells", i)
 		}
 		if w := lipgloss.Width(ln); w != 12 {
-			t.Errorf("line %d width %d, want 12 (transmit/placeholders must be width-correct)", i, w)
+			t.Errorf("line %d width %d, want 12 (placeholders must be width-correct)", i, w)
 		}
 	}
 }
 
-// artColumn caches the kitty raster by (url,w,h,mode) and rebuilds — refreshing
-// the embedded transmit — only when the cover changes, so a steady cover costs
-// nothing per frame and a track change never composites the previous image.
+// artColumn caches the kitty raster by (url,w,h,mode) and rebuilds — stashing a
+// fresh transmit — only when the cover changes, so a steady cover costs nothing
+// per frame and a track change never composites the previous image.
 func TestArtColumnKittyCachesAndInvalidates(t *testing.T) {
 	m := artModel(t)
 	m.cfg.ArtMode = "auto"
@@ -126,6 +131,10 @@ func TestArtColumnKittyCachesAndInvalidates(t *testing.T) {
 	s1 := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/1", Art: fillImg(40, 40, color.RGBA{20, 180, 90, 255})}
 	line0 := m.artColumn(s1, 12, 6)[0]
 	key := m.artKey
+	if m.kittyTx == "" {
+		t.Fatal("initial build should stash a transmit")
+	}
+	m.kittyTx = "" // Update drains it in the real loop
 
 	again := m.artColumn(s1, 12, 6) // identical cover -> served from cache
 	if m.artKey != key {
@@ -134,14 +143,53 @@ func TestArtColumnKittyCachesAndInvalidates(t *testing.T) {
 	if again[0] != line0 {
 		t.Error("cached art rebuilt for an identical cover")
 	}
+	if m.kittyTx != "" {
+		t.Error("a cache hit should not re-stash a transmit")
+	}
 
 	s2 := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/2", Art: fillImg(40, 40, color.RGBA{200, 30, 30, 255})}
-	changed := m.artColumn(s2, 12, 6) // new cover -> rebuilt
+	m.artColumn(s2, 12, 6) // new cover -> rebuilt
 	if m.artKey == key {
 		t.Error("cache key not updated on cover change")
 	}
-	if changed[0] == line0 {
+	if m.kittyTx == "" {
 		t.Error("transmit not refreshed on cover change (a stale image could composite)")
+	}
+}
+
+// A transmit stashed by the last render is flushed by the next Update — any
+// message — as a tea.Raw command, and the stash is cleared so it goes out once.
+func TestUpdateFlushesKittyTransmit(t *testing.T) {
+	m := artModel(t)
+	m.kittyTx = "\x1b_Gtest\x1b\\"
+	_, cmd := m.Update(mediaKeyMsg{action: ""}) // dispatch itself yields no command
+	if m.kittyTx != "" {
+		t.Error("Update should clear the stashed transmit")
+	}
+	if cmd == nil {
+		t.Fatal("Update should return the tea.Raw flush command")
+	}
+	// Unwrap: with no dispatch command, tea.Batch collapses to the Raw command
+	// alone; walk a BatchMsg anyway so the assertion survives Batch semantics.
+	found := false
+	var walk func(tea.Msg)
+	walk = func(msg tea.Msg) {
+		switch v := msg.(type) {
+		case tea.RawMsg:
+			if v.Msg == "\x1b_Gtest\x1b\\" {
+				found = true
+			}
+		case tea.BatchMsg:
+			for _, c := range v {
+				if c != nil {
+					walk(c())
+				}
+			}
+		}
+	}
+	walk(cmd())
+	if !found {
+		t.Error("flush command should carry the stashed transmit as a tea.RawMsg")
 	}
 }
 

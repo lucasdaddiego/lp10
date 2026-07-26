@@ -57,7 +57,7 @@ func TestCov_LoadDerivesBaseFromHome(t *testing.T) {
 func TestCov_ApplyTOMLAllKeys(t *testing.T) {
 	cfg := Config{
 		Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep,
-		PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Mouse: true,
+		PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode,
 	}
 	applyTOML(&cfg, map[string]any{
 		"host":      "10.0.0.1",
@@ -67,12 +67,11 @@ func TestCov_ApplyTOMLAllKeys(t *testing.T) {
 		"discover":  false,
 		"art":       false,
 		"art_mode":  "kitty",
-		"mouse":     false,
 		"vol_step":  int64(7),
 	})
 	if cfg.Host != "10.0.0.1" || cfg.User != "pi" || cfg.Name != "Kitchen" ||
 		cfg.PingHost != "example.com" || cfg.Discover || cfg.Art ||
-		cfg.ArtMode != "kitty" || cfg.Mouse || cfg.VolStep != 7 {
+		cfg.ArtMode != "kitty" || cfg.VolStep != 7 {
 		t.Fatalf("applyTOML did not apply every key: %+v", cfg)
 	}
 }

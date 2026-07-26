@@ -18,17 +18,13 @@ import (
 )
 
 // View satisfies bubbletea v2's Model: the frame content plus the per-view
-// terminal state that v1 carried as program options (alt screen, mouse mode)
-// or commands (the window title).
+// terminal state that v1 carried as program options (the alt screen) or
+// commands (the window title). The mouse is deliberately not captured — lp10
+// is keyboard-only, and the terminal keeps its native selection and scroll.
 func (m *model) View() tea.View {
 	v := tea.NewView(m.viewContent())
 	v.AltScreen = true
 	v.WindowTitle = m.curTitle
-	if m.cfg.Mouse {
-		// CellMotion (not AllMotion) reports motion only while a button is held,
-		// so a left-drag scrubs a control while idle motion stays out of the loop.
-		v.MouseMode = tea.MouseModeCellMotion
-	}
 	return v
 }
 
@@ -43,11 +39,6 @@ func (m *model) viewContent() string {
 	}
 	s := m.st.Snap()
 	m.motifLive, m.searchLive = false, false // set true below iff the plasma / search figure is actually drawn
-	// Cleared each frame; renderDashboard repopulates. [:0] keeps the backing
-	// arrays (a dozen appends per frame otherwise) — safe because Update and
-	// View run sequentially on the program loop, so the zones a mouse event
-	// reads are never mid-overwrite.
-	m.mzBtns, m.mzVol, m.mzEQ = m.mzBtns[:0], volZone{}, m.mzEQ[:0]
 	if rows < MiniRows || cols < MiniCols {
 		m.diag = false
 		return m.renderMini(s)
@@ -212,12 +203,10 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 			mid = append(mid, "", src)
 		}
 		mid = append(mid, "", m.seekRow(s, midW), "", m.transportSegments(s, now, midW))
-		midLen := len(mid)
 		mid = frameBody(mid, nil, blockH, true) // centre the cohesive block in the column
 		art := m.boxArt(m.artColumn(s, coverW, coverH), coverW)
 		block := joinCols(art, mid, m.volRail(s, blockH-1), midW)
 
-		m.recordFullZones(coverW, midW, blockH, midLen, len(tail), inner, W)
 		// header pinned top, EQ + footer pinned bottom, the cover block centred between
 		return stack([]string{header, ""}, block, tail, inner)
 	}
@@ -231,7 +220,6 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	if errLine != "" {
 		tail = append(tail, errLine)
 	}
-	m.recordCompactZones(s, len(meta), len(tail), inner, W)
 	return frameBody(content, tail, inner, false)
 }
 
@@ -541,8 +529,7 @@ func (m *model) transportSegments(s protocol.Snapshot, now time.Time, w int) str
 // between buttons for the transport cluster in a w-wide column. The buttons are a
 // tidy centred cluster (capped, with leftover width padded on either side), and a
 // small gap separates them so they read as three distinct buttons rather than one
-// connected bar. Shared by transportSegments (rendering) and the mouse hit-zone
-// builder so the two never disagree.
+// connected bar.
 func transportLayout(w int) (pad int, widths []int, gap int) {
 	const maxCluster = 52
 	gap = transportGap
@@ -766,8 +753,7 @@ func (m *model) footerRow(W int) string {
 // toggleVerb is the transport toggle's icon-free action label: "pause" while
 // playing (press to pause), "play" while paused or idle (press to play). It carries
 // no play/pause glyph so it never duels with the colour-coded STATE shown on the
-// seek row. Shared by transportSegments, controlsRow, and recordCompactZones so the
-// rendered button and its hit-zone width never disagree.
+// seek row. Shared by transportSegments and controlsRow.
 func toggleVerb(s protocol.Snapshot) string {
 	if s.Playing == 0 {
 		return "pause"

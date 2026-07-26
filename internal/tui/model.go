@@ -97,6 +97,18 @@ type model struct {
 	ghostBlk []string
 	ghostKey artKey
 
+	// kittyTx holds the pending Kitty transmit escape (APC) for a just-(re)built
+	// cover raster. The bubbletea v2 cell renderer parses View content into a
+	// cell grid and drops escape sequences it doesn't model, so the transmit
+	// can't ride the first art line as it did under v1 — the placeholder cells
+	// survive (plain graphemes plus an SGR foreground) but the image payload
+	// would be silently swallowed, leaving an empty cover box. artColumn /
+	// ghostCover stash the escape here and Update flushes it out-of-band via
+	// tea.Raw on the next message (≤100ms, the tick heartbeat). Ordering is
+	// safe either way: placeholder cells composite whenever an image with
+	// their id exists, whether transmitted before or after they were drawn.
+	kittyTx string
+
 	// volume-rail cache: the rail repaints only when the volume/mute/height
 	// change (see volRail), not on every animated frame.
 	volBlk []string
@@ -108,14 +120,6 @@ type model struct {
 	// (recompute only on a cover change, including a deliberate nil result).
 	amb    *ambientTint
 	ambKey string
-
-	// mouse hit-zones recorded by the last dashboard render, in absolute terminal
-	// coordinates. Update consults them on a MouseMsg; they describe the frame the
-	// user is actually looking at and clicking on. Reset every View, populated only
-	// by renderDashboard (nil in the mini / diagnostics views).
-	mzBtns []btnZone // transport + mute buttons (press to fire)
-	mzVol  volZone   // the volume rail / meter (press or drag to set by position)
-	mzEQ   []eqZone  // the EQ band columns (full layout only)
 
 	interrupted bool // Ctrl-C, so Run can exit 130 like Python's KeyboardInterrupt
 

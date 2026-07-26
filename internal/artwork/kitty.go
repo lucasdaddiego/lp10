@@ -65,9 +65,12 @@ var kittyDiacritics = []rune{
 // mode, returning a zero-width `transmit` escape and `lines`, a cols×rows grid
 // of placeholder cells to paint where the image should appear. The terminal
 // loads the image under `id` as a virtual placement (a=T,U=1) sized cols×rows
-// cells, then composites it onto the placeholder run. Embed `transmit` once on
-// the first art line: it re-sends whenever that line is repainted (a cover or
-// size change), and the placeholders alone suffice while the image is stable.
+// cells, then composites it onto the placeholder run. Write `transmit` to the
+// terminal out-of-band, once per (cover, footprint) change — NOT embedded in
+// the placeholder lines: a cell-grid renderer (bubbletea v2 / ultraviolet)
+// parses view content into cells and strips an APC it doesn't model. Order is
+// free — placeholders composite whenever an image with their id exists — and
+// the placeholders alone suffice while the image is stable.
 //
 // Both the transmit escape (an APC) and each placeholder cell are width-correct
 // to lipgloss/runewidth (0 and 1 respectively), so the result drops into the
@@ -82,12 +85,17 @@ func KittyImage(img image.Image, cols, rows, id, pxW, pxH int) (transmit string,
 	}
 	px := sizeForPlacement(img, pxW, pxH)
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, px); err != nil {
+	if err := pngEnc.Encode(&buf, px); err != nil {
 		return "", nil
 	}
-	return kittyTransmit(id, cols, rows, base64.StdEncoding.EncodeToString(buf.Bytes())),
+	return kittyTransmit(id, cols, rows, buf.Bytes()),
 		kittyPlaceholders(id, cols, rows)
 }
+
+// pngEnc trades compression for encode speed: the payload's only destination
+// is the local pty, so zlib level 6 bought nothing while its encode time sat
+// directly on the render goroutine at every cover or size change.
+var pngEnc = png.Encoder{CompressionLevel: png.BestSpeed}
 
 // sizeForPlacement renders img into the placement's device-pixel footprint
 // (pxW×pxH) preserving the source's aspect ratio: the cover is scaled to fit and
@@ -226,14 +234,19 @@ func bilerp8(c00, c10, c01, c11, tx, ty float64) uint8 {
 // kittyTransmit builds the (possibly chunked) APC escape that transmits the PNG
 // payload and creates the virtual placement. Per the protocol, every control
 // key rides only the first chunk; continuation chunks carry just m (1 = more).
-func kittyTransmit(id, cols, rows int, payload string) string {
-	const chunk = 4096
+// The raw payload is base64-encoded chunk by chunk straight into the builder
+// (3072 raw bytes = exactly 4096 base64 chars, and 3072 % 3 == 0 keeps padding
+// off every chunk but the last), so no intermediate full-size base64 string is
+// ever allocated — the output is byte-identical to encoding first and slicing.
+func kittyTransmit(id, cols, rows int, payload []byte) string {
+	const rawChunk = 3072
 	var b strings.Builder
-	chunks := (len(payload) + chunk - 1) / chunk
-	b.Grow(len(payload) + chunks*48)
+	chunks := max((len(payload)+rawChunk-1)/rawChunk, 1)
+	b.Grow(base64.StdEncoding.EncodedLen(len(payload)) + chunks*48)
+	var enc [4096]byte
 	first := true
 	for {
-		n := min(chunk, len(payload))
+		n := min(rawChunk, len(payload))
 		piece := payload[:n]
 		payload = payload[n:]
 		more := 0
@@ -250,7 +263,8 @@ func kittyTransmit(id, cols, rows int, payload string) string {
 			fmt.Fprintf(&b, "m=%d", more)
 		}
 		b.WriteByte(';')
-		b.WriteString(piece)
+		base64.StdEncoding.Encode(enc[:], piece)
+		b.Write(enc[:base64.StdEncoding.EncodedLen(n)])
 		b.WriteString("\x1b\\")
 		if more == 0 {
 			return b.String()

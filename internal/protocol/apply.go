@@ -168,7 +168,7 @@ func parseRecord(rec Record) parsedRecord {
 	var p parsedRecord
 	p.hasB = len(rec["B"]) > 0
 	if p.hasB {
-		p.track, p.idle = ParseMB42(strings.Join(rec["B"], "\n"))
+		p.track, p.idle = ParseMB42(joinLines(rec["B"]))
 	}
 	p.pos, p.posOK = regInt(rec, "p")
 	p.play, p.playOK = regInt(rec, "t")

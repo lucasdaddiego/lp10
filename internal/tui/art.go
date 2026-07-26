@@ -28,10 +28,11 @@ const (
 )
 
 // kittyImageID is the fixed Kitty image id every cover is transmitted under. One
-// id suffices: the current cover is (re)loaded into it whenever the art changes,
-// immediately before the placeholders that reference it are painted, so a stale
-// image is never shown. The value is arbitrary but stable. The idle ghost cover
-// rides a separate id so the two never share a placement slot.
+// id suffices: the current cover is (re)loaded into it whenever the art changes
+// (the transmit is flushed via tea.Raw — see model.kittyTx), and the on-screen
+// placeholders re-composite the new content in place, so a stale image is never
+// shown. The value is arbitrary but stable. The idle ghost cover rides a
+// separate id so the two never share a placement slot.
 const (
 	kittyImageID = 1981
 	kittyGhostID = 1982
@@ -80,8 +81,9 @@ func (m *model) artChoice() artRender {
 // artColumn renders the left art panel: the real album cover (Kitty pixels or a
 // half-block raster) when one is loaded and supported, otherwise the procedural
 // plasma motif (radio/idle, art disabled, or a lesser terminal). The raster is
-// cached by (url,w,h,mode) so a steady cover costs nothing per frame; the Kitty
-// transmit rides the first line, so it re-sends only when that line repaints.
+// cached by (url,w,h,mode) so a steady cover costs nothing per frame; a rebuild
+// stashes the Kitty transmit on the model, so the image is (re)sent exactly
+// when the cover or its footprint changes (see model.kittyTx).
 func (m *model) artColumn(s protocol.Snapshot, w, h int) []string {
 	if s.Track == nil {
 		return m.idleArt(s, w, h) // nothing playing: searching arcs while connecting, else the ghost cover
@@ -99,7 +101,7 @@ func (m *model) artColumn(s protocol.Snapshot, w, h int) []string {
 		switch mode {
 		case artKitty:
 			if transmit, lines := artwork.KittyImage(s.Art, w, h, kittyImageID, w*m.cellW, h*m.cellH); len(lines) > 0 {
-				lines[0] = transmit + lines[0] // zero-width: loads the image, then the cells composite it
+				m.kittyTx += transmit // flushed out-of-band by Update; the cells then composite it
 				built = lines
 			} else if m.sty.trueColor {
 				built = artwork.HalfBlock(s.Art, w, h) // encode failed: degrade in place
@@ -171,7 +173,7 @@ func (m *model) ghostCover(s protocol.Snapshot, w, h int) []string {
 		switch mode {
 		case artKitty:
 			if transmit, lines := artwork.KittyImage(img, w, h, kittyGhostID, w*m.cellW, h*m.cellH); len(lines) > 0 {
-				lines[0] = transmit + lines[0]
+				m.kittyTx += transmit // flushed out-of-band by Update, like the live cover's
 				built = lines
 			} else if m.sty.trueColor {
 				built = artwork.HalfBlock(img, w, h)

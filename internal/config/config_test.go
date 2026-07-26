@@ -52,17 +52,6 @@ func TestArtDefaults(t *testing.T) {
 	}
 }
 
-func TestMouseDefaultsOnAndOverrides(t *testing.T) {
-	writeConfig(t, "")
-	if cfg := Load(); !cfg.Mouse {
-		t.Error("mouse should default to true")
-	}
-	writeConfig(t, "mouse = false\n")
-	if cfg := Load(); cfg.Mouse {
-		t.Error("mouse = false ignored")
-	}
-}
-
 func TestArtConfigOverride(t *testing.T) {
 	writeConfig(t, "art = false\nart_mode = \"halfblock\"\n")
 	cfg := Load()

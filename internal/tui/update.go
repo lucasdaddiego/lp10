@@ -140,10 +140,26 @@ func (m *model) do(action string) {
 	}
 }
 
-// Update is the Bubble Tea message loop. KeyReleaseMsg is deliberately not
-// handled: releases arrive only when keyboard enhancements are requested, and
-// this UI acts on presses alone.
+// Update is the Bubble Tea message loop: dispatch plus the Kitty-transmit
+// flush. A cover raster rebuilt during the previous View leaves its transmit
+// escape in m.kittyTx (the cell renderer would strip an APC from view content,
+// so it can't ride the art lines); it goes out here via tea.Raw, which writes
+// through the program's synchronized output. The tick heartbeat guarantees a
+// prompt flush, and the placeholders already on screen composite the image the
+// moment it lands.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	mm, cmd := m.dispatch(msg)
+	if m.kittyTx != "" {
+		cmd = tea.Batch(cmd, tea.Raw(m.kittyTx))
+		m.kittyTx = ""
+	}
+	return mm, cmd
+}
+
+// dispatch handles one message. KeyReleaseMsg is deliberately not handled:
+// releases arrive only when keyboard enhancements are requested, and this UI
+// acts on presses alone.
+func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.rows, m.cols = msg.Height, msg.Width
@@ -174,9 +190,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			next = frameSearch
 		}
 		return m, frameTick(next)
-	case tea.MouseMsg: // click / release / motion / wheel all implement this
-		m.handleMouse(msg)
-		return m, nil
 	case tea.KeyPressMsg:
 		if k := tea.Key(msg); k.Mod&tea.ModCtrl != 0 && k.Code == 'c' {
 			m.interrupted = true

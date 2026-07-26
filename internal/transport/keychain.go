@@ -56,22 +56,22 @@ func realRunSecurity() secOutcome {
 func KeychainPassword() (string, error) {
 	o := runSecurity()
 	if o.timeout {
-		return "", &TransportError{MarkerLocked, true, 60 * time.Second}
+		return "", &TransportError{MarkerLocked, 60 * time.Second}
 	}
 	if o.runErr != nil {
-		return "", &TransportError{fmt.Sprintf("%s: %v", MarkerBroken, o.runErr), true, 60 * time.Second}
+		return "", &TransportError{fmt.Sprintf("%s: %v", MarkerBroken, o.runErr), 60 * time.Second}
 	}
 	if o.rc != 0 {
 		if secretNotFound(o) {
-			return "", &TransportError{MarkerNoItem, true, 10 * time.Second}
+			return "", &TransportError{MarkerNoItem, 10 * time.Second}
 		}
-		return "", &TransportError{MarkerLocked, true, 60 * time.Second}
+		return "", &TransportError{MarkerLocked, 60 * time.Second}
 	}
 	pw := strings.TrimSuffix(o.stdout, "\n")
 	if pw == "" {
 		// A clean exit with no output means the item is absent (secret-tool may
 		// exit 0 in that case) — treat it as no-item, not an empty password.
-		return "", &TransportError{MarkerNoItem, true, 10 * time.Second}
+		return "", &TransportError{MarkerNoItem, 10 * time.Second}
 	}
 	return pw, nil
 }

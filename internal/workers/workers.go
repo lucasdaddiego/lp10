@@ -19,17 +19,23 @@ import (
 )
 
 const (
-	maxLine                 = 65536 // bound a line so a newline-free stream can't grow
-	InitialBackoff          = 250 * time.Millisecond
-	MaxBackoff              = 3 * time.Second
-	CommandGetTimeout       = 500 * time.Millisecond
-	CommandDeadline         = 4 * time.Second
-	LiveSessionTimeout      = 8 * time.Second
-	ConnectWindow           = 20 * time.Second
-	SilentAfter             = 8 * time.Second
-	DatalessAfter           = 30 * time.Second
-	DrainTimeout            = 1 * time.Second
-	SnapshotPersistInterval = 2 * time.Second
+	maxLine            = 65536 // bound a line so a newline-free stream can't grow
+	InitialBackoff     = 250 * time.Millisecond
+	MaxBackoff         = 3 * time.Second
+	CommandGetTimeout  = 500 * time.Millisecond
+	CommandDeadline    = 4 * time.Second
+	LiveSessionTimeout = 8 * time.Second
+	ConnectWindow      = 20 * time.Second
+	SilentAfter        = 8 * time.Second
+	DatalessAfter      = 30 * time.Second
+	DrainTimeout       = 1 * time.Second
+
+	// SnapshotPersistInterval bounds how often the instant-first-paint snapshot
+	// is rewritten mid-session. Its consumer only seeds the next launch's first
+	// frame, and Teardown persists a final fresh copy on quit, so a generous
+	// interval is fine — 2s here meant an atomic create+rename pair every 2s
+	// for the whole session (~1800 writes/hour) for no visible benefit.
+	SnapshotPersistInterval = 30 * time.Second
 )
 
 // classify maps residual ssh stderr to a fatal/transient verdict. It is a var
@@ -47,14 +53,13 @@ var classify = transport.ClassifyStderr
 func boundedLines(r io.Reader) func() (string, bool) {
 	br := bufio.NewReaderSize(r, maxLine)
 	return func() (string, bool) {
-		line, err := br.ReadSlice('\n')
+		// The error needs no inspection: ReadSlice returns nil error only when
+		// the delimiter was found, so an empty slice always means EOF/failure.
+		line, _ := br.ReadSlice('\n')
 		if len(line) > 0 {
 			return string(line), true
 		}
-		if err != nil {
-			return "", false
-		}
-		return "", true
+		return "", false
 	}
 }
 
@@ -78,18 +83,27 @@ func StreamWorker(st *protocol.State, cfg config.Config) {
 // stderr goes to a temp file, not a pipe, so ssh can never block on a full
 // stderr buffer; the residual is read post-mortem.
 func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) time.Duration {
-	errf, err := os.CreateTemp("", "lp10-ssh-stderr-*")
-	if err != nil {
+	// failStart notes a spawn failure, releases whatever pipes exist so far,
+	// and holds the retry cadence — the shared tail of every pre-launch error.
+	failStart := func(err error, closers ...io.Closer) time.Duration {
+		for _, c := range closers {
+			c.Close()
+		}
 		st.Note(fmt.Sprintf("cannot start ssh: %v", err))
 		st.Stop.Wait(3 * time.Second)
 		return backoff
+	}
+
+	errf, err := os.CreateTemp("", "lp10-ssh-stderr-*")
+	if err != nil {
+		return failStart(err)
 	}
 	defer func() {
 		errf.Close()
 		os.Remove(errf.Name())
 	}()
 
-	argv := append(transport.SSHArgv(cfg), transport.RemoteLoop("", cfg.PingHost))
+	argv := append(transport.SSHArgv(cfg), transport.RemoteLoop(cfg.PingHost))
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = transport.SpawnEnv()
 	cmd.Stderr = errf
@@ -98,29 +112,17 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 	// reads safe from Wait closing the pipe out from under them.
 	inR, inW, err := os.Pipe()
 	if err != nil {
-		st.Note(fmt.Sprintf("cannot start ssh: %v", err))
-		st.Stop.Wait(3 * time.Second)
-		return backoff
+		return failStart(err)
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
-		inR.Close()
-		inW.Close()
-		st.Note(fmt.Sprintf("cannot start ssh: %v", err))
-		st.Stop.Wait(3 * time.Second)
-		return backoff
+		return failStart(err, inR, inW)
 	}
 	cmd.Stdin = inR
 	cmd.Stdout = outW
 
 	if err := cmd.Start(); err != nil {
-		inR.Close()
-		inW.Close()
-		outR.Close()
-		outW.Close()
-		st.Note(fmt.Sprintf("cannot start ssh: %v", err))
-		st.Stop.Wait(3 * time.Second)
-		return backoff
+		return failStart(err, inR, inW, outR, outW)
 	}
 	// Parent drops the child's ends so EOF semantics work both ways.
 	inR.Close()
@@ -210,17 +212,16 @@ func closeStdinLocked(st *protocol.State, proc *protocol.Proc) {
 }
 
 // reap closes stdin, awaits/kills the child, and releases every pipe.
+// closeStdinLocked swallows a double-close panic itself, and WaitTimeout /
+// Kill (nil-guarded) cannot panic, so no extra recover wrapper is needed.
 func reap(st *protocol.State, proc *protocol.Proc) {
-	func() {
-		defer func() { recover() }()
-		closeStdinLocked(st, proc)
-		if !proc.WaitTimeout(1 * time.Second) {
-			if proc.Cmd.Process != nil {
-				proc.Cmd.Process.Kill()
-			}
-			proc.WaitTimeout(2 * time.Second)
+	closeStdinLocked(st, proc)
+	if !proc.WaitTimeout(1 * time.Second) {
+		if proc.Cmd.Process != nil {
+			proc.Cmd.Process.Kill()
 		}
-	}()
+		proc.WaitTimeout(2 * time.Second)
+	}
 	st.Reap()
 	if proc.Stdout != nil {
 		proc.Stdout.Close()
@@ -239,18 +240,22 @@ func selfSnap(st *protocol.State) map[string]any {
 
 // CommandWorker drains the command queue, reduces and writes commands, and
 // holds undeliverable ones in order for the next live session. A nil value is
-// the teardown drain sentinel. It never dies.
+// the teardown drain sentinel. It never dies. One ticker (not a fresh
+// time.After each cycle) paces the idle poll, mirroring TunnelWorker, so the
+// 2 Hz wait doesn't churn a timer allocation per cycle for the process life.
 func CommandWorker(st *protocol.State, cmds <-chan *protocol.Command, deadline time.Duration) {
+	tick := time.NewTicker(CommandGetTimeout)
+	defer tick.Stop()
 	var pending []protocol.Command
 	for !st.Stop.IsSet() {
-		if commandOnce(st, cmds, deadline, &pending) {
+		if commandOnce(st, cmds, tick.C, deadline, &pending) {
 			return
 		}
 	}
 }
 
 // commandOnce runs one batch cycle; returns true to break the worker loop.
-func commandOnce(st *protocol.State, cmds <-chan *protocol.Command, deadline time.Duration, pending *[]protocol.Command) (brk bool) {
+func commandOnce(st *protocol.State, cmds <-chan *protocol.Command, tick <-chan time.Time, deadline time.Duration, pending *[]protocol.Command) (brk bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			st.Note(fmt.Sprintf("command worker: %v", r))
@@ -262,7 +267,7 @@ func commandOnce(st *protocol.State, cmds <-chan *protocol.Command, deadline tim
 	var batch []protocol.Command
 	flush := false
 
-	// First item, blocking up to CommandGetTimeout.
+	// First item, blocking up to the ticker cadence (~CommandGetTimeout).
 	got := false
 	select {
 	case c := <-cmds:
@@ -272,7 +277,7 @@ func commandOnce(st *protocol.State, cmds <-chan *protocol.Command, deadline tim
 		} else {
 			batch = append(batch, *c)
 		}
-	case <-time.After(CommandGetTimeout):
+	case <-tick:
 	}
 
 	if !got {
@@ -389,8 +394,13 @@ func laterTime(a, b time.Time) time.Time {
 // Teardown is the quit path: a sentinel through the queue is a real flush
 // handshake (once popped, everything before it has been written or visibly
 // dropped); the short wait + SIGTERM ladder is just a fast-path so quit never
-// waits on the remote side.
+// waits on the remote side. It also persists one final snapshot, so the next
+// launch's first paint is exactly the state the user quit on regardless of
+// how coarse the mid-session SnapshotPersistInterval is.
 func Teardown(st *protocol.State, cmds chan<- *protocol.Command, drain time.Duration) {
+	if st.SnapshotFile != "" {
+		config.SaveSnapshot(st.SnapshotFile, selfSnap(st))
+	}
 	defer func() {
 		st.Stop.Set()
 		proc := st.Sproc()

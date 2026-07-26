@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/atomicfile"
 )
@@ -101,7 +102,13 @@ func decode(raw []byte) (image.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUndecodable, err)
 	}
-	return img, nil
+	// Convert to RGBA once, here, off the render goroutine. Every downstream
+	// consumer (Dominant, HalfBlock, Ghost, the Kitty resize AND png.Encode's
+	// fast path) wants RGBA; handing out the decoder's native *image.YCbCr
+	// meant each of them re-ran the full-image conversion — and a 640px cover
+	// that skips resizing (fit's identity return) reached png.Encode as YCbCr,
+	// hitting its per-pixel At()/boxing slow path on the render goroutine.
+	return rgbaOf(img), nil
 }
 
 func fetch(ctx context.Context, url string) ([]byte, error) {
@@ -115,6 +122,14 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// A deterministic client error (404 gone, 403 forbidden, …) will not
+		// heal on retry — mark it ErrUndecodable so the art worker gives up on
+		// this url instead of re-downloading the failure every few seconds for
+		// the life of the track. 408/429 and every 5xx stay transient.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+			resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
+			return nil, fmt.Errorf("%w: http %d for %s", ErrUndecodable, resp.StatusCode, url)
+		}
 		return nil, fmt.Errorf("art: http %d for %s", resp.StatusCode, url)
 	}
 	if resp.ContentLength > maxArtBytes {
@@ -202,6 +217,11 @@ func loadCache(dir, url string) ([]byte, bool) {
 	if err != nil || len(b) == 0 {
 		return nil, false
 	}
+	// Touch on hit so PruneCache's keep-newest policy is LRU, not
+	// FIFO-by-fetch-time — without this a daily-played album's cover would be
+	// evicted ahead of a one-off fetched last week. Best effort.
+	now := time.Now()
+	_ = os.Chtimes(p, now, now)
 	return b, true
 }
 

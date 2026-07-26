@@ -18,7 +18,13 @@ func regJSON(lines []string) any {
 	if len(lines) == 0 {
 		return nil
 	}
-	m := reMBData.FindStringSubmatch(joinLines(lines))
+	return regJSONStr(joinLines(lines))
+}
+
+// regJSONStr is regJSON's string core, shared with ParseMB42 so the envelope
+// regex and the match→parse steps exist exactly once.
+func regJSONStr(block string) any {
+	m := reMBData.FindStringSubmatch(block)
 	if m == nil {
 		return nil
 	}

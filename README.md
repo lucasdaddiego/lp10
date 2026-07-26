@@ -90,10 +90,9 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   the LAN by its `am=LP10` advertisement, so a changed DHCP lease never needs a
   config edit. Pure mDNS (no dependency, no bound port); falls back to the
   configured host.
-- **Mouse, too** — click the transport buttons, click or drag the volume rail,
-  scroll to nudge the volume (or the EQ band under the cursor), and click an EQ
-  band to grab and set it. Keyboard-first; the mouse is a convenience on top, and
-  can be turned off (`mouse = false`) to keep native terminal text selection.
+- **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
+  keeps its native text selection and scrolling; every control is a keystroke
+  away (see [Keys](#keys)).
 - **Adapts to the terminal** — the full dashboard, a compact frame, or a
   one-line mini view, by size.
 - **Light on both ends** — one ssh connection, a single static binary, and an
@@ -155,21 +154,9 @@ album-motif art, a vertical volume slider, and the graphic equalizer) at ≥ 25
 rows / 70 cols, a **compact** frame (no art, inline volume, one-line EQ summary)
 below that, and a one-line **mini** view below 9 rows / 58 cols.
 
-### Mouse
-
-On by default (disable with `mouse = false`). The gestures track what you see:
-
-- **Transport** — click prev / play-pause / next (and, in the compact frame, the
-  mute button).
-- **Volume** — click or drag the vertical rail to set the level; the wheel nudges
-  it by `vol_step` from anywhere not over a control.
-- **Equalizer** (full dashboard) — click a slider row to focus it; the wheel over a
-  row nudges that band; click an on/off band to flip it, or click/drag along a tone
-  band's track to set it by position.
-
-Capturing the mouse means the terminal's own click-to-select is suppressed while
-lp10 runs; set `mouse = false` if you'd rather keep native selection. There's no
-seek/scrub — the device exposes no seek command.
+There's no mouse support — lp10 is keyboard-only, so the terminal's native
+text selection and scrolling stay untouched. There's also no seek/scrub — the
+device exposes no seek command.
 
 ## Equalizer
 
@@ -331,7 +318,6 @@ ping_host = "spotify.com"   # diagnostics: the device's internet-latency target
 discover  = true            # find the LP10 on the LAN via mDNS at startup
 art       = true            # show the real album cover (off => the plasma motif)
 art_mode  = "auto"          # auto | kitty | halfblock | off  (see below)
-mouse     = true            # click / drag / scroll controls (off keeps native selection)
 ```
 
 ### Album art

@@ -73,7 +73,6 @@ type Config struct {
 	Discovered bool   // set at runtime when discovery resolved the host
 	Art        bool   // render real album art (from the track's CoverArtUrl)
 	ArtMode    string // auto|kitty|halfblock|off — how album art is drawn
-	Mouse      bool   // capture the mouse for click/drag/scroll controls
 	Warn       string
 }
 
@@ -81,7 +80,7 @@ type Config struct {
 // same strict per-field typing as the Python version, clamps vol_step, and lets
 // LP10_HOST override the host for a single run.
 func Load() Config {
-	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Mouse: true}
+	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode}
 
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -141,9 +140,6 @@ func applyTOML(cfg *Config, data map[string]any) {
 	}
 	if v, ok := data["art_mode"].(string); ok && artModes[v] {
 		cfg.ArtMode = v
-	}
-	if v, ok := data["mouse"].(bool); ok {
-		cfg.Mouse = v
 	}
 	switch v := data["vol_step"].(type) {
 	case int64:

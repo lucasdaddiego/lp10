@@ -1,23 +1,13 @@
 package protocol
 
-import "regexp"
-
-var reMB42 = regexp.MustCompile(`(?s)MID-Read:42 Data:(.*) Length:\d+\s*$`)
-
 // ParseMB42 turns a joined B-section into a sanitized Track, or signals idle.
 // Returns (track, false) for a real track, (nil, true) for a definitive idle
 // PlayView (clear the track now), and (nil, false) for unparseable garbage
-// (debounce the clear).
+// (debounce the clear). The register-read envelope is decoded by the shared
+// regJSONStr; the "Window CONTENTS" shape check below is what actually
+// discriminates a PlayView payload from any other register's JSON.
 func ParseMB42(block string) (Track, bool) {
-	if block == "" {
-		return nil, false
-	}
-	m := reMB42.FindStringSubmatch(block)
-	if m == nil {
-		return nil, false
-	}
-	obj := parseJSON(m[1])
-	mp, ok := obj.(map[string]any)
+	mp, ok := regJSONStr(block).(map[string]any)
 	if !ok {
 		return nil, false
 	}

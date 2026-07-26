@@ -14,6 +14,7 @@ const (
 	PlayHoldDuration = 1500 * time.Millisecond
 	DebounceWindow   = 3 * time.Second
 	// EQHoldDuration suppresses the device's own broadcast echo of an EQ/tone
-	// control just changed locally, so a rapid drag isn't fought by the echo.
+	// control just changed locally, so rapid repeated nudges aren't fought by
+	// the echo.
 	EQHoldDuration = 600 * time.Millisecond
 )

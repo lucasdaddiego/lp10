@@ -78,17 +78,17 @@ import (
 //go:embed remote_loop.sh
 var remoteLoopScript string
 
-// RemoteLoop returns the on-device loop script with the given command-id whitelist
-// (default "40|64") and the diagnostics internet-ping target. The ping host is
-// sanitized then substituted first: sanitizeHost strips quotes and underscores, so a
-// hostile value can neither break out of the single-quoted ph assignment nor forge
-// the __MIDS__ token. mids is trusted internal input. Each placeholder occurs once.
-func RemoteLoop(mids, pingHost string) string {
-	if mids == "" {
-		mids = "40|64"
-	}
+// RemoteLoop returns the on-device loop script with the diagnostics
+// internet-ping target substituted in. The ping host is sanitized then
+// substituted first: sanitizeHost strips quotes and underscores, so a hostile
+// value can neither break out of the single-quoted ph assignment nor forge the
+// __MIDS__ token. The command-id whitelist is the fixed "40|64" (transport +
+// volume) — MID 90, the stats toggle, has its own arm in the script outside
+// the whitelist, so the alternation never needs to vary. Each placeholder
+// occurs once.
+func RemoteLoop(pingHost string) string {
 	s := strings.Replace(remoteLoopScript, "__PING_HOST__", sanitizeHost(pingHost), 1)
-	return strings.Replace(s, "__MIDS__", mids, 1)
+	return strings.Replace(s, "__MIDS__", "40|64", 1)
 }
 
 // sanitizeHost keeps only hostname/IP-safe characters so a user-supplied

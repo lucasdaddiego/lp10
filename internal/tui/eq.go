@@ -23,9 +23,9 @@ var eqOrder = []int{1, 4, 3, 2, 5, 6, 0}
 // eqShort is the compact band label per wire code.
 var eqShort = map[string]string{"MXV": "Max Vol", "EQS": "EQ", "TRE": "Treble", "MID": "Mid", "BAS": "Bass", "VBS": "Sub", "VBI": "Lvl"}
 
-// sliderLabelW / sliderValW are the fixed-width columns shared by eqSliders (the
-// renderer) and recordFullZones (the mouse hit-zone builder). Both must agree so a
-// click on the rendered slider maps to the correct track position.
+// sliderLabelW / sliderValW are the fixed-width columns of the eqSliders rows:
+// the band label on the left, the right-aligned value on the right, the track
+// filling the width between them.
 const (
 	sliderLabelW = 8 // "Max Vol " — label column: longest name "Max Vol" (7) + 1 space
 	sliderValW   = 4 // right-aligned value column: " +10", " 100", "  -1", …

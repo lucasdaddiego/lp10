@@ -30,11 +30,11 @@ const (
 	// nouns) lives in secret_darwin.go / secret_linux.go.
 )
 
-// TransportError carries a fatal flag and a retry cadence, mirroring the Python
-// TransportError raised below main().
+// TransportError carries a classified ssh failure and its retry cadence. Any
+// non-nil TransportError is fatal by definition — ClassifyStderr returns nil
+// for transient failures — so there is no separate fatal flag.
 type TransportError struct {
 	Msg     string
-	Fatal   bool
 	Cadence time.Duration
 }
 
@@ -75,8 +75,9 @@ func SpawnEnv() []string {
 		"SSH_ASKPASS_REQUIRE": "force",
 		AskpassEnv:            "1",
 	}
-	env := make([]string, 0, len(os.Environ())+len(overrides))
-	for _, kv := range os.Environ() {
+	environ := os.Environ()
+	env := make([]string, 0, len(environ)+len(overrides))
+	for _, kv := range environ {
 		k := kv
 		if before, _, ok := strings.Cut(kv, "="); ok {
 			k = before
@@ -99,13 +100,13 @@ func ClassifyStderr(text string) *TransportError {
 	}
 	switch {
 	case strings.Contains(text, MarkerBroken):
-		return &TransportError{fmt.Sprintf("askpass cannot run %s — check PATH/sandboxing (lp10 retries every minute)", secretToolName), true, 60 * time.Second}
+		return &TransportError{fmt.Sprintf("askpass cannot run %s — check PATH/sandboxing (lp10 retries every minute)", secretToolName), 60 * time.Second}
 	case strings.Contains(text, MarkerLocked):
-		return &TransportError{fmt.Sprintf("%s is locked — unlock it (lp10 retries every minute)", secretStoreName), true, 60 * time.Second}
+		return &TransportError{fmt.Sprintf("%s is locked — unlock it (lp10 retries every minute)", secretStoreName), 60 * time.Second}
 	case strings.Contains(text, MarkerNoItem):
-		return &TransportError{"no saved password — run: " + StoreHint, true, 10 * time.Second}
+		return &TransportError{"no saved password — run: " + StoreHint, 10 * time.Second}
 	case strings.Contains(text, "Permission denied"):
-		return &TransportError{"SSH password rejected — update the saved password: " + StoreHint, true, 10 * time.Second}
+		return &TransportError{"SSH password rejected — update the saved password: " + StoreHint, 10 * time.Second}
 	}
 	return nil
 }
