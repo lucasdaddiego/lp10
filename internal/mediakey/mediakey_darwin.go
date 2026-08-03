@@ -27,6 +27,12 @@ var (
 // denied, so granting Accessibility takes effect without restarting lp10.
 const retryInterval = 3 * time.Second
 
+// nxKeyDown is the data1 key-state nibble for a press (0x0B is a release). It
+// lives here rather than in mediakey.go because goMediaKey is its only user and
+// that function is darwin-only — declared in the portable file it reads as dead
+// code on every other GOOS, which staticcheck flags as U1000.
+const nxKeyDown = 0x0A
+
 // goMediaKey is called from the C tap callback (mediakey_darwin.m) for each
 // system-defined aux-button event, on the tap's run-loop thread. It returns 1 to
 // consume the event and 0 to pass it through.

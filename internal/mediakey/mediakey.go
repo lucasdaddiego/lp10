@@ -47,9 +47,6 @@ const (
 	nxKeyRewind = 20
 )
 
-// nxKeyDown is the data1 key-state nibble for a press (0x0B is a release).
-const nxKeyDown = 0x0A
-
 // classify maps an NX aux-key code to the Key we forward (KeyNone otherwise).
 func classify(keyCode int) Key {
 	switch keyCode {
