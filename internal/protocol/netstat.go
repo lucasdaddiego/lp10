@@ -98,6 +98,11 @@ func errCounters(si *SysInfo) (out [4]int64, ok bool) {
 func (st *State) NetView() NetStat {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	return st.netViewLocked()
+}
+
+// netViewLocked returns the computed network readout. The caller holds st.mu.
+func (st *State) netViewLocked() NetStat {
 	ns := NetStat{RxRate: st.netRxRate, TxRate: st.netTxRate, RatesOK: st.netRatesOK}
 	if st.errsOK {
 		ns.RxErrs = st.errCur[0] - st.errBase[0]

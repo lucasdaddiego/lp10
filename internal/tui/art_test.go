@@ -98,7 +98,7 @@ func TestArtColumnKitty(t *testing.T) {
 	m := artModel(t)
 	m.cfg.ArtMode = "auto"
 	m.sty.kittyGraphics = true
-	s := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/1", Art: fillImg(40, 40, color.RGBA{20, 180, 90, 255})}
+	s := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/1", Art: fillImg(40, 40, color.RGBA{20, 180, 90, 255})}
 	lines := m.artColumn(s, 12, 6)
 	if len(lines) != 6 {
 		t.Fatalf("got %d lines, want 6", len(lines))
@@ -128,7 +128,7 @@ func TestArtColumnKittyCachesAndInvalidates(t *testing.T) {
 	m.cfg.ArtMode = "auto"
 	m.sty.kittyGraphics = true
 
-	s1 := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/1", Art: fillImg(40, 40, color.RGBA{20, 180, 90, 255})}
+	s1 := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/1", Art: fillImg(40, 40, color.RGBA{20, 180, 90, 255})}
 	line0 := m.artColumn(s1, 12, 6)[0]
 	key := m.artKey
 	if m.kittyTx == "" {
@@ -147,7 +147,7 @@ func TestArtColumnKittyCachesAndInvalidates(t *testing.T) {
 		t.Error("a cache hit should not re-stash a transmit")
 	}
 
-	s2 := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/2", Art: fillImg(40, 40, color.RGBA{200, 30, 30, 255})}
+	s2 := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/2", Art: fillImg(40, 40, color.RGBA{200, 30, 30, 255})}
 	m.artColumn(s2, 12, 6) // new cover -> rebuilt
 	if m.artKey == key {
 		t.Error("cache key not updated on cover change")
@@ -333,7 +333,7 @@ func artModel(t *testing.T) *model {
 func TestArtColumnHalfBlockWhenTrueColor(t *testing.T) {
 	m := artModel(t)
 	m.sty.trueColor = true
-	s := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/1", Art: fillImg(12, 12, color.RGBA{30, 120, 200, 255})}
+	s := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/1", Art: fillImg(12, 12, color.RGBA{30, 120, 200, 255})}
 	lines := m.artColumn(s, 12, 6)
 	if len(lines) != 6 {
 		t.Fatalf("got %d lines, want 6", len(lines))
@@ -353,9 +353,9 @@ func TestArtColumnFallsBackToMotif(t *testing.T) {
 		art       bool
 		snap      protocol.Snapshot
 	}{
-		{"lesser terminal", false, true, protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "u", Art: img}},
-		{"art disabled", true, false, protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "u", Art: img}},
-		{"no cover loaded", true, true, protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "u", Art: nil}},
+		{"lesser terminal", false, true, protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "u", Art: img}},
+		{"art disabled", true, false, protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "u", Art: img}},
+		{"no cover loaded", true, true, protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "u", Art: nil}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

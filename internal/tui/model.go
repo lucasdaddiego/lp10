@@ -58,6 +58,8 @@ type model struct {
 	cfg    config.Config
 	cmds   chan *protocol.Command
 	eqcmds chan workers.EQCommand
+	// Persistence belongs to the controller/runtime, not protocol.State.
+	premutePath string
 
 	focus         int  // transport-button focus (index into actions)
 	pane          int  // paneNow | paneEQ
@@ -129,6 +131,7 @@ type model struct {
 func newModel(st *protocol.State, cfg config.Config, cmds chan *protocol.Command, eqcmds chan workers.EQCommand) *model {
 	m := &model{
 		st: st, cfg: cfg, cmds: cmds, eqcmds: eqcmds,
+		premutePath:   config.PremutePath(cfg),
 		focus:         1,
 		showRemaining: true,
 		flash:         map[string]time.Time{},

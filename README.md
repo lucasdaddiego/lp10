@@ -54,7 +54,7 @@ $ lp10
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
 live terminal dashboard — now-playing, transport, a graphic equalizer, and a
-diagnostics overlay — from a single statically-linked Go binary. No companion
+diagnostics overlay — from a single Go executable. No companion
 app, no browser, no background daemon: run `lp10`, get one screen.
 
 ## Features
@@ -95,7 +95,7 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   away (see [Keys](#keys)).
 - **Adapts to the terminal** — the full dashboard, a compact frame, or a
   one-line mini view, by size.
-- **Light on both ends** — one ssh connection, a single static binary, and an
+- **Light on both ends** — one ssh connection, a single executable, and an
   on-device shell loop trimmed to the minimum of work (see [How it works](#how-it-works)).
 
 ## Install
@@ -281,6 +281,10 @@ BusyBox-ash loop on the device streams framed snapshots:
 - **Self-reaping** — the loop detects a dead session by read-timing and exits,
   so both ends are reaped no matter how the TUI died; the client reconnects with
   backoff.
+- **Typed state boundary** — device JSON is coerced once into a whitelisted
+  `Track` schema. The worker runtime owns child handles, shutdown coordination,
+  and snapshot persistence; the shared protocol state contains only the
+  lock-protected player, device, and liveness model consumed by the UI.
 
 ### Security & threat model
 
@@ -381,13 +385,13 @@ the suite.
 ## Project layout
 
 ```
-main.go                 entry: askpass hot path, signals, run + teardown
-internal/config/        config file, paths, premute/snapshot persistence
-internal/protocol/      LUCI wire framing, MB42 parse, command reduction, State
+main.go                 entry: askpass hot path, config/discovery, TUI launch
+internal/config/        config file, paths, typed premute/snapshot persistence
+internal/protocol/      LUCI framing, typed Track parsing, commands, domain State
 internal/transport/     secret-store/askpass auth, ssh argv, the on-device loop
 internal/transport/loopgen/  minifies remote_loop.src.sh into the embedded remote_loop.sh
 internal/discovery/     one-shot mDNS query to find the LP10 on the LAN
-internal/workers/       stream / command / watchdog / EQ-tunnel / album-art goroutines + teardown
+internal/workers/       owned processes, persistence, stream / command / watchdog / EQ / art runtime
 internal/tunnel/        the :2018 plain-text EQ/control protocol
 internal/artwork/       album-cover fetch/cache + half-block & Kitty rasterizers
 internal/tui/           Bubble Tea model, rendering, input dispatch, helpers

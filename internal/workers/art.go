@@ -18,15 +18,15 @@ const (
 	artPruneEvery   = 64                     // re-prune the disk cache every N covers loaded (not only at startup)
 )
 
-// ArtWorker keeps the decoded album cover aligned with the now-playing track.
+// artWorker keeps the decoded album cover aligned with the now-playing track.
 // It watches the current CoverArtUrl and, when it changes, loads the image from
 // the on-disk cache or fetches it once, handing the decoded result to State for
 // the UI to rasterize. A transient network failure is retried after a delay so
 // an outage recovers without hammering, while a deterministic decode failure (an
 // unsupported format) is given up on for that url — no point re-downloading it
 // every few seconds. No-op when art is disabled or art_mode is "off"; the UI
-// then keeps its procedural motif. Mirrors the other workers' Stop handling.
-func ArtWorker(st *protocol.State, cfg config.Config) {
+// then keeps its procedural motif. Mirrors the other workers' stop handling.
+func artWorker(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config) {
 	if !cfg.Art || cfg.ArtMode == "off" {
 		return
 	}
@@ -35,7 +35,7 @@ func ArtWorker(st *protocol.State, cfg config.Config) {
 	var loadedURL, failedURL string
 	var retryAt time.Time
 	loads := 0
-	for !st.Stop.IsSet() {
+	for !control.stop.IsSet() && ctx.Err() == nil {
 		url := st.Snap().CoverURL
 		switch {
 		case url == "" || url == loadedURL:
@@ -43,8 +43,8 @@ func ArtWorker(st *protocol.State, cfg config.Config) {
 		case url == failedURL && time.Now().Before(retryAt):
 			// backing off this url after a recent transient failure
 		default:
-			ctx, cancel := context.WithTimeout(context.Background(), artFetchTimeout)
-			img, err := artwork.Get(ctx, url, dir)
+			fetchCtx, cancel := context.WithTimeout(ctx, artFetchTimeout)
+			img, err := artwork.Get(fetchCtx, url, dir)
 			cancel()
 			switch {
 			case err == nil && img != nil:
@@ -62,6 +62,6 @@ func ArtWorker(st *protocol.State, cfg config.Config) {
 				failedURL, retryAt = url, time.Now().Add(artRetryDelay) // transient
 			}
 		}
-		st.Stop.Wait(artPoll)
+		control.stop.Wait(artPoll)
 	}
 }

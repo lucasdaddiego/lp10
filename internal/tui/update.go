@@ -106,7 +106,23 @@ func (m *model) syncStats() {
 	}
 }
 
-func (m *model) setVol(v int) { m.send(64, strconv.Itoa(m.st.SetVol(v))) }
+func (m *model) savePremute(v int) {
+	if v > 0 {
+		config.SavePremute(m.premutePath, v)
+	}
+}
+
+func (m *model) setVol(v int) {
+	value, persist := m.st.SetVol(v)
+	m.savePremute(persist)
+	m.send(64, strconv.Itoa(value))
+}
+
+func (m *model) adjustVol(delta int) {
+	value, persist := m.st.AdjustVol(delta)
+	m.savePremute(persist)
+	m.send(64, strconv.Itoa(value))
+}
 
 func (m *model) do(action string) {
 	m.flash[action] = time.Now().Add(FlashDuration)
@@ -124,16 +140,16 @@ func (m *model) do(action string) {
 		// skipping back is a double-press (device behavior, not modeled here).
 		m.send(40, "PREV")
 	case "volup":
-		m.send(64, strconv.Itoa(m.st.AdjustVol(+m.cfg.VolStep)))
+		m.adjustVol(+m.cfg.VolStep)
 	case "voldn":
-		m.send(64, strconv.Itoa(m.st.AdjustVol(-m.cfg.VolStep)))
+		m.adjustVol(-m.cfg.VolStep)
 	case "mute":
 		vol, premute := m.st.VolAndPremute()
 		if vol > 0 {
 			m.setVol(0)
 		} else {
 			if premute == 0 {
-				premute = config.LoadPremute(m.st.PremuteFile)
+				premute = config.LoadPremute(m.premutePath)
 			}
 			m.setVol(premute)
 		}
@@ -216,7 +232,7 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) computeTitle(s protocol.Snapshot) string {
 	var text string
 	if s.Track != nil {
-		text = GL["note"] + " " + s.Track.Str("TrackName") + " — " + s.Track.Str("Artist")
+		text = GL["note"] + " " + s.Track.TrackName + " — " + s.Track.Artist
 	} else {
 		text = m.cfg.Name
 	}

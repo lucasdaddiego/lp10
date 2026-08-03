@@ -176,11 +176,11 @@ func dispWindow(s string, off, w int) string {
 }
 
 // SourceName resolves the playback source label from the track's URL/source id.
-func SourceName(t protocol.Track) string {
+func SourceName(t *protocol.Track) string {
 	if t == nil {
 		return ""
 	}
-	url := strings.ToLower(t.Str("PlayUrl"))
+	url := strings.ToLower(t.PlayURL)
 	switch {
 	case strings.HasPrefix(url, "spotify:"):
 		return "Spotify"
@@ -189,8 +189,8 @@ func SourceName(t protocol.Track) string {
 	case strings.Contains(url, "airplay"):
 		return "AirPlay"
 	}
-	src, ok := protocol.Int(t["Current Source"])
-	if !ok || src == 0 {
+	src := t.CurrentSource
+	if src == 0 {
 		return ""
 	}
 	switch src {
@@ -211,13 +211,16 @@ func SourceName(t protocol.Track) string {
 }
 
 // Quality renders the "Mime · NN kHz" quality line for a track.
-func Quality(t protocol.Track) string {
-	var bits []string
-	if m := t.Str("Mime"); m != "" {
-		bits = append(bits, m)
+func Quality(t *protocol.Track) string {
+	if t == nil {
+		return ""
 	}
-	if sr, ok := protocol.Int(t["SampleRate"]); ok && sr != 0 {
-		bits = append(bits, strconv.FormatFloat(float64(sr)/1000, 'g', -1, 64)+" kHz")
+	var bits []string
+	if t.MIME != "" {
+		bits = append(bits, t.MIME)
+	}
+	if t.SampleRate != 0 {
+		bits = append(bits, strconv.FormatFloat(float64(t.SampleRate)/1000, 'g', -1, 64)+" kHz")
 	}
 	return strings.Join(bits, " · ")
 }

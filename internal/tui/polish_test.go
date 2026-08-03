@@ -20,7 +20,7 @@ func TestRefreshAmbient(t *testing.T) {
 
 	// the art worker precomputes the hue (Dominant/DominantOK); refreshAmbient now
 	// consumes it rather than scanning pixels on the render path
-	red := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/red",
+	red := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/red",
 		Art: fillImg(40, 40, color.RGBA{210, 30, 30, 255}), Dominant: color.RGBA{210, 30, 30, 255}, DominantOK: true}
 	m.refreshAmbient(red)
 	if m.amb == nil {
@@ -32,7 +32,7 @@ func TestRefreshAmbient(t *testing.T) {
 		t.Error("an unchanged cover recomputed the tint")
 	}
 
-	grey := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "http://x/grey",
+	grey := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/grey",
 		Art: fillImg(40, 40, color.RGBA{128, 128, 128, 255})}
 	m.refreshAmbient(grey)
 	if m.amb != nil {
@@ -40,7 +40,7 @@ func TestRefreshAmbient(t *testing.T) {
 	}
 
 	m.amb, m.ambKey = m.sty.tint(color.RGBA{200, 30, 30, 255}), "stale"
-	m.refreshAmbient(protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}}) // no art
+	m.refreshAmbient(protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}}) // no art
 	if m.amb != nil || m.ambKey != "" {
 		t.Error("no cover should clear the tint")
 	}

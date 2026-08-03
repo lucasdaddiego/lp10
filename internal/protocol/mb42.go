@@ -6,7 +6,7 @@ package protocol
 // (debounce the clear). The register-read envelope is decoded by the shared
 // regJSONStr; the "Window CONTENTS" shape check below is what actually
 // discriminates a PlayView payload from any other register's JSON.
-func ParseMB42(block string) (Track, bool) {
+func ParseMB42(block string) (*Track, bool) {
 	mp, ok := regJSONStr(block).(map[string]any)
 	if !ok {
 		return nil, false
@@ -16,9 +16,9 @@ func ParseMB42(block string) (Track, bool) {
 		return nil, false
 	}
 	t := SanitizeTrack(raw)
-	name := t.Str("TrackName")
-	total := t.GetInt("TotalTime")
-	src := t.GetInt("Current Source")
+	name := t.TrackName
+	total := t.TotalTime
+	src := t.CurrentSource
 	if name == "" && total <= 0 && src == 0 {
 		return nil, true // definitive idle
 	}

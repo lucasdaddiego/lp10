@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/fixtures"
 )
 
@@ -181,7 +180,7 @@ func assertNone(t *testing.T, block string) {
 	}
 }
 
-func mustTrack(t *testing.T, block string) Track {
+func mustTrack(t *testing.T, block string) *Track {
 	t.Helper()
 	tr, idle := ParseMB42(block)
 	if tr == nil || idle {
@@ -196,17 +195,17 @@ func TestRealIdleCaptureIsDefinitiveIdle(t *testing.T) {
 
 func TestPlayingCaptureIsATrack(t *testing.T) {
 	tr := mustTrack(t, bBlock("playing_record.txt"))
-	if tr.Str("TrackName") != "De Música Ligera" {
-		t.Errorf("TrackName = %q", tr.Str("TrackName"))
+	if tr.TrackName != "De Música Ligera" {
+		t.Errorf("TrackName = %q", tr.TrackName)
 	}
-	if tr.GetInt("TotalTime") != 211000 {
-		t.Errorf("TotalTime = %d", tr.GetInt("TotalTime"))
+	if tr.TotalTime != 211000 {
+		t.Errorf("TotalTime = %d", tr.TotalTime)
 	}
-	if tr["Seek"] != true {
-		t.Errorf("Seek = %v, want true", tr["Seek"])
+	if !tr.Seek {
+		t.Error("Seek = false, want true")
 	}
-	if !strings.HasPrefix(tr.Str("CoverArtUrl"), "https://") {
-		t.Errorf("CoverArtUrl = %q", tr.Str("CoverArtUrl"))
+	if !strings.HasPrefix(tr.CoverArtURL, "https://") {
+		t.Errorf("CoverArtUrl = %q", tr.CoverArtURL)
 	}
 }
 
@@ -228,17 +227,17 @@ func TestParseMB42SanitizesHostileFields(t *testing.T) {
 		`"TrackName": "a\u0007b", "PlayUrl": 7, "Album": null, ` +
 		`"TotalTime": 1e999, "Current Source": 4}} Length:1`
 	tr := mustTrack(t, block)
-	if tr.Str("TrackName") != "ab" {
-		t.Errorf("TrackName = %q, want \"ab\" (control char stripped)", tr.Str("TrackName"))
+	if tr.TrackName != "ab" {
+		t.Errorf("TrackName = %q, want \"ab\" (control char stripped)", tr.TrackName)
 	}
-	if tr.Str("PlayUrl") != "7" {
-		t.Errorf("PlayUrl = %q, want \"7\" (coerced to str)", tr.Str("PlayUrl"))
+	if tr.PlayURL != "7" {
+		t.Errorf("PlayUrl = %q, want \"7\" (coerced to str)", tr.PlayURL)
 	}
-	if _, ok := tr["Album"]; ok {
-		t.Error("Album (null) should be dropped")
+	if tr.Album != "" {
+		t.Errorf("Album (null) = %q, want empty", tr.Album)
 	}
-	if _, ok := tr["TotalTime"]; ok {
-		t.Error("TotalTime (inf) should be dropped")
+	if tr.TotalTime != 0 {
+		t.Errorf("TotalTime (inf) = %d, want zero", tr.TotalTime)
 	}
 }
 
@@ -252,10 +251,7 @@ func TestUnknownKeysDroppedAtBoundary(t *testing.T) {
 		"ChannelCount": 2,      // now whitelisted -> kept
 		"TotallyBogus": "nope", // not whitelisted -> dropped
 	})
-	if _, ok := tr["TotallyBogus"]; ok {
-		t.Error("unknown key should be dropped (whitelist, not passthrough)")
-	}
-	if tr.GetInt("ChannelCount") != 2 {
+	if tr.TrackName != "x" || tr.ChannelCount != 2 {
 		t.Error("ChannelCount should be whitelisted and kept")
 	}
 }
@@ -361,8 +357,8 @@ func TestIntNonfiniteFloats(t *testing.T) {
 
 func TestApplyPlayingRecord(t *testing.T) {
 	s := applyFixture("playing_record.txt").Snap()
-	if s.Track.Str("TrackName") != "De Música Ligera" {
-		t.Errorf("TrackName = %q", s.Track.Str("TrackName"))
+	if s.Track.TrackName != "De Música Ligera" {
+		t.Errorf("TrackName = %q", s.Track.TrackName)
 	}
 	if s.Playing != 0 {
 		t.Errorf("playing = %d, want 0", s.Playing)
@@ -382,9 +378,13 @@ func TestApplyNewDiagFields(t *testing.T) {
 	st := NewState()
 	ApplyRecord(st, records("device_record.txt")[0])  // @@i: now carries root= and dns=
 	ApplyRecord(st, records("playing_record.txt")[0]) // @@s: now carries the audio-chain tail
-	_, _, _, si := st.DiagView()
+	diag := st.DiagnosticView(time.Now())
+	si := diag.SysInfo
 	if si == nil {
 		t.Fatal("no sysinfo parsed")
+	}
+	if !diag.Snapshot.Connected || diag.LastData.IsZero() {
+		t.Errorf("diagnostic snapshot should include coherent player/liveness state: %+v", diag)
 	}
 	for _, c := range []struct{ got, want, name string }{
 		{si.PcmState, "RUNNING", "PcmState"}, {si.BufAvail, "4834", "BufAvail"},
@@ -398,7 +398,7 @@ func TestApplyNewDiagFields(t *testing.T) {
 	if si.NoiseDBm != "" { // ethernet fixture sends "-" -> dropped to ""
 		t.Errorf("NoiseDBm = %q, want \"\" (eth has no Wi-Fi noise)", si.NoiseDBm)
 	}
-	if dev := st.DevInfoView(); dev == nil || dev.DNS != "192.168.1.1" {
+	if dev := diag.DevInfo; dev == nil || dev.DNS != "192.168.1.1" {
 		t.Errorf("DevInfo dns = %v, want 192.168.1.1", dev)
 	}
 }
@@ -432,7 +432,7 @@ func TestHeartbeatKeepsExistingTrack(t *testing.T) {
 	ApplyRecord(st, records("playing_record.txt")[0])
 	ApplyRecord(st, records("heartbeat_record.txt")[0])
 	s := st.Snap()
-	if s.Track.Str("TrackName") != "De Música Ligera" {
+	if s.Track.TrackName != "De Música Ligera" {
 		t.Errorf("track lost on heartbeat: %v", s.Track)
 	}
 	if s.Pos < 31000 {
@@ -534,20 +534,20 @@ func TestIdleBClearsImmediatelyEvenWithinDebounce(t *testing.T) {
 
 func TestRealPlayingCaptureParses(t *testing.T) {
 	tr := mustTrack(t, bBlock("playing_record_real.txt"))
-	if tr.Str("TrackName") != "Cause We've Ended as Lovers" {
-		t.Errorf("TrackName = %q", tr.Str("TrackName"))
+	if tr.TrackName != "Cause We've Ended as Lovers" {
+		t.Errorf("TrackName = %q", tr.TrackName)
 	}
-	if tr.Str("Artist") != "Jeff Beck" {
-		t.Errorf("Artist = %q", tr.Str("Artist"))
+	if tr.Artist != "Jeff Beck" {
+		t.Errorf("Artist = %q", tr.Artist)
 	}
-	if tr.GetInt("TotalTime") != 341535 {
-		t.Errorf("TotalTime = %d", tr.GetInt("TotalTime"))
+	if tr.TotalTime != 341535 {
+		t.Errorf("TotalTime = %d", tr.TotalTime)
 	}
-	if tr["Seek"] != true {
-		t.Errorf("Seek = %v, want true", tr["Seek"])
+	if !tr.Seek {
+		t.Error("Seek = false, want true")
 	}
-	if !strings.HasPrefix(tr.Str("CoverArtUrl"), "https://i.scdn.co/") {
-		t.Errorf("CoverArtUrl = %q", tr.Str("CoverArtUrl"))
+	if !strings.HasPrefix(tr.CoverArtURL, "https://i.scdn.co/") {
+		t.Errorf("CoverArtUrl = %q", tr.CoverArtURL)
 	}
 }
 
@@ -719,7 +719,7 @@ func TestNetThroughputAndLatency(t *testing.T) {
 		t.Errorf("counter reset should skip the rate, got %v", n.RxRate)
 	}
 	// a reconnect clears the latency rings and the throughput baseline
-	st.StartProc(&Proc{})
+	st.StartConnection()
 	if n := st.NetView(); n.RatesOK || n.Ping[1].OK {
 		t.Errorf("reconnect should reset net stats, got %+v", n)
 	}
@@ -772,7 +772,7 @@ func TestFloodingSectionDoesNotShedSiblings(t *testing.T) {
 // A content-free @@B header (no track JSON) must not drive a track clear.
 func TestEmptyBSectionIsNotATrackClear(t *testing.T) {
 	st := NewState()
-	st.track = Track{"TrackName": "keep me"}
+	st.track = &Track{TrackName: "keep me"}
 	st.trackAt = time.Now()
 	ApplyRecord(st, recordsFrom(splitLines("@@B\n@@p\nMID-Read:49 Data:10 Length:2\n@@E\n"))[0])
 	if st.Snap().Track == nil {
@@ -782,7 +782,7 @@ func TestEmptyBSectionIsNotATrackClear(t *testing.T) {
 
 func TestStaleCachedTrackClearedByIdleRecord(t *testing.T) {
 	st := NewState()
-	st.track = Track{"TrackName": "ghost"}
+	st.track = &Track{TrackName: "ghost"}
 	st.trackAt = time.Time{}
 	ApplyRecord(st, records("idle_record.txt")[0])
 	if st.Snap().Track != nil {
@@ -827,10 +827,10 @@ func TestPositionClampedToTotalTime(t *testing.T) {
 
 func TestSetVolClampsAndReturns(t *testing.T) {
 	st := playingState()
-	if v := st.SetVol(150); v != 100 {
+	if v, _ := st.SetVol(150); v != 100 {
 		t.Errorf("SetVol(150) = %d, want 100", v)
 	}
-	if v := st.SetVol(-5); v != 0 {
+	if v, _ := st.SetVol(-5); v != 0 {
 		t.Errorf("SetVol(-5) = %d, want 0", v)
 	}
 }
@@ -847,10 +847,10 @@ func TestPremuteSavedOnAnyTransitionToZero(t *testing.T) {
 func TestAdjustVolIsDeltaBased(t *testing.T) {
 	st := playingState()
 	st.SetVol(50)
-	if v := st.AdjustVol(+2); v != 52 {
+	if v, _ := st.AdjustVol(+2); v != 52 {
 		t.Errorf("AdjustVol(+2) = %d, want 52", v)
 	}
-	if v := st.AdjustVol(-4); v != 48 {
+	if v, _ := st.AdjustVol(-4); v != 48 {
 		t.Errorf("AdjustVol(-4) = %d, want 48", v)
 	}
 }
@@ -873,34 +873,19 @@ func TestExternalResumeDoesNotJumpByPauseDuration(t *testing.T) {
 	}
 }
 
-func TestStopIsAnEvent(t *testing.T) {
+func TestSetVolReportsPremuteToPersist(t *testing.T) {
 	st := NewState()
-	if st.Stop == nil || st.Stop.IsSet() {
-		t.Error("stop should be an unset Event")
-	}
-	st.Stop.Set()
-	if !st.Stop.IsSet() {
-		t.Error("stop should be set after Set()")
+	st.SetVol(50)
+	if _, persist := st.SetVol(0); persist != 50 {
+		t.Errorf("premute to persist = %d, want 50", persist)
 	}
 }
 
-func TestSetVolPersistsPremute(t *testing.T) {
+func TestAdjustVolReportsPremuteToPersist(t *testing.T) {
 	st := NewState()
-	st.PremuteFile = t.TempDir() + "/premute"
 	st.SetVol(50)
-	st.SetVol(0)
-	if got := config.LoadPremute(st.PremuteFile); got != 50 {
-		t.Errorf("persisted premute = %d, want 50", got)
-	}
-}
-
-func TestAdjustVolPersistsPremute(t *testing.T) {
-	st := NewState()
-	st.PremuteFile = t.TempDir() + "/premute"
-	st.SetVol(50)
-	st.AdjustVol(-50)
-	if got := config.LoadPremute(st.PremuteFile); got != 50 {
-		t.Errorf("persisted premute = %d, want 50", got)
+	if _, persist := st.AdjustVol(-50); persist != 50 {
+		t.Errorf("premute to persist = %d, want 50", persist)
 	}
 }
 

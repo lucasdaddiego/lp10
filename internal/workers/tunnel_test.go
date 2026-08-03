@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
@@ -21,9 +22,10 @@ func TestTunnelWorkerRoundTrip(t *testing.T) {
 	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
 
 	st := protocol.NewState()
+	control := newRunControl()
 	eqcmds := make(chan EQCommand, 8)
-	go TunnelWorker(st, config.Config{Host: "unused"}, eqcmds)
-	defer st.Stop.Set()
+	go tunnelWorker(context.Background(), control, st, config.Config{Host: "unused"}, eqcmds)
+	defer control.stop.Set()
 
 	conn, err := ln.Accept()
 	if err != nil {

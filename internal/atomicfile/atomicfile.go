@@ -1,32 +1,41 @@
-// Package atomicfile writes small files via a deterministic .tmp sibling and an
-// atomic rename, so a reader never observes a half-written file and a writer
-// frozen mid-write leaves exactly one well-known temp path, overwritten on the
-// next attempt. Shared by config (the premute/snapshot state) and artwork (the
-// cover cache); both treat persistence as best-effort and ignore the error.
+// Package atomicfile writes small files via a unique temporary sibling and an
+// atomic rename, so a reader never observes a half-written file and concurrent
+// writers cannot truncate or rename one another's temporary file. Shared by
+// config (the premute/snapshot state) and artwork (the cover cache); both treat
+// persistence as best-effort and ignore the error.
 package atomicfile
 
-import "os"
+import (
+	"io"
+	"os"
+	"path/filepath"
+)
 
-// Write writes data to path via path+".tmp" then a rename. Files are created
-// 0600 (every caller persists private per-user state). On any failure the temp
-// file is removed and an existing target is left untouched.
+// Write writes data to path via a unique temporary sibling and then renames it.
+// Files are created 0600 (every caller persists private per-user state). On any
+// failure the temporary file is removed and an existing target is left
+// untouched.
 func Write(path string, data []byte) error {
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	tmp := f.Name()
+	defer os.Remove(tmp)
+
+	n, err := f.Write(data)
+	if err != nil {
+		_ = f.Close()
 		return err
 	}
+	if n != len(data) {
+		_ = f.Close()
+		return io.ErrShortWrite
+	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
 		return err
 	}
 	return nil

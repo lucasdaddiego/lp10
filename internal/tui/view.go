@@ -37,11 +37,10 @@ func (m *model) viewContent() string {
 	if rows == 0 || cols == 0 {
 		return ""
 	}
-	s := m.st.Snap()
 	m.motifLive, m.searchLive = false, false // set true below iff the plasma / search figure is actually drawn
 	if rows < MiniRows || cols < MiniCols {
 		m.diag = false
-		return m.renderMini(s)
+		return m.renderMini(m.st.Snap())
 	}
 
 	// The frame fills the whole terminal: W is the content width inside the
@@ -53,10 +52,10 @@ func (m *model) viewContent() string {
 	var body []string
 	switch {
 	case m.diag:
-		body = m.renderDiag(s, now, W)
+		body = m.renderDiagnostic(m.st.DiagnosticView(now), now, W)
 	default:
 		full := rows >= FullRows && cols >= FullCols
-		body = m.renderDashboard(s, now, W, full)
+		body = m.renderDashboard(m.st.Snap(), now, W, full)
 	}
 	return m.frameLines(body, W)
 }
@@ -122,8 +121,8 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 		if s.Playing != 0 {
 			glyph = GL["pause"]
 		}
-		line := fmt.Sprintf("%s %s — %s  %s/%s  %d%%", glyph, t.Str("TrackName"), t.Str("Artist"),
-			FmtMs(s.Pos), m.fmtRight(t.GetInt("TotalTime"), s.Pos), s.Vol)
+		line := fmt.Sprintf("%s %s — %s  %s/%s  %d%%", glyph, t.TrackName, t.Artist,
+			FmtMs(s.Pos), m.fmtRight(t.TotalTime, s.Pos), s.Vol)
 		return ps.txt.render(Clip(line, cols-1))
 	default:
 		msg := "connecting to LP10…"
@@ -412,9 +411,9 @@ func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 		}
 		return out
 	}
-	name := cmp.Or(t.Str("TrackName"), "—")
-	second := t.Str("Artist")
-	if al := t.Str("Album"); al != "" {
+	name := cmp.Or(t.TrackName, "—")
+	second := t.Artist
+	if al := t.Album; al != "" {
 		if second != "" {
 			second += " · " + al
 		} else {
@@ -427,9 +426,9 @@ func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 	// the URL bytes; downstream layout measures via lipgloss, which ignores it.
 	// The source/format ("Spotify · Ogg · 44.1 kHz") rides the header row, not
 	// here, so the now-playing block stays a tight two lines.
-	artist := t.Str("Artist")
+	artist := t.Artist
 	trackLink := spotifySearch(strings.TrimSpace(name + " " + artist))
-	secondLink := cmp.Or(spotifySearch(artist), spotifySearch(t.Str("Album")))
+	secondLink := cmp.Or(spotifySearch(artist), spotifySearch(t.Album))
 	return []string{
 		osc8(trackLink, ps.bri.render(m.marquee(name, w))),
 		osc8(secondLink, ps.dim.render(m.marquee(second, w))),
@@ -456,7 +455,7 @@ func sourceStyle(t *theme, name string) lipgloss.Style {
 
 // sourceFormat is the "Source · Mime · NN kHz" descriptor for a track (e.g.
 // "Spotify · Ogg · 44.1 kHz"), or "" when nothing is playing.
-func sourceFormat(t protocol.Track) string {
+func sourceFormat(t *protocol.Track) string {
 	if t == nil {
 		return ""
 	}
@@ -560,14 +559,14 @@ func (m *model) fullMeta(s protocol.Snapshot, w int) []string {
 		return m.metaLines(s, w)
 	}
 	ps := m.sty.pens()
-	name := cmp.Or(t.Str("TrackName"), "—")
-	artist := t.Str("Artist")
+	name := cmp.Or(t.TrackName, "—")
+	artist := t.Artist
 	out := []string{osc8(spotifySearch(strings.TrimSpace(name+" "+artist)),
 		ps.bri.render(m.marquee(name, w)))}
 	if artist != "" {
 		out = append(out, osc8(spotifySearch(artist), ps.dim.render(m.marquee(artist, w))))
 	}
-	if album := t.Str("Album"); album != "" {
+	if album := t.Album; album != "" {
 		out = append(out, osc8(spotifySearch(album), ps.dmr.render(m.marquee(album, w))))
 	}
 	return out
@@ -587,7 +586,7 @@ func (m *model) fullSourceLine(s protocol.Snapshot, w int) string {
 		return ""
 	}
 	ps := m.sty.pens()
-	if ch := t.GetInt("ChannelCount"); ch > 0 {
+	if ch := t.ChannelCount; ch > 0 {
 		q += fmt.Sprintf(" · %d ch", ch)
 	}
 	plain := "● " + q
@@ -665,7 +664,7 @@ func (m *model) seekRow(s protocol.Snapshot, W int) string {
 
 	total, pos := 0, s.Pos
 	if t != nil {
-		total = t.GetInt("TotalTime")
+		total = t.TotalTime
 	} else {
 		pos = 0 // nothing playing: don't bleed a stale elapsed time into the idle bar
 	}

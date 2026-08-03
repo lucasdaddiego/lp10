@@ -128,7 +128,7 @@ type ConfInfo struct {
 // parsedRecord is the lock-free decode of one framed record, ready to be
 // assigned under the State lock.
 type parsedRecord struct {
-	track Track
+	track *Track
 	idle  bool
 	hasB  bool // a content-free @@B header carries no track update
 
@@ -163,7 +163,7 @@ func regInt(rec Record, tag string) (int, bool) {
 // JSON's PlayState: both encode 0 = playing, but @@t arrives every tick while
 // @@B is polled every few ticks and shipped only on change, so reg 51 is always
 // at least as fresh. PlayState still crosses the parse boundary inside the
-// Track (see trackInt) but is deliberately not consumed.
+// Track but is deliberately not consumed.
 func parseRecord(rec Record) parsedRecord {
 	var p parsedRecord
 	p.hasB = len(rec["B"]) > 0

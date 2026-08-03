@@ -246,10 +246,10 @@ func TestDiagFormat(t *testing.T) {
 		t.Errorf("diagFormat(nil) = %q, want —", got)
 	}
 	// a track with neither quality nor channel info still reads as a dash
-	if got := diagFormat(protocol.Track{"TrackName": "x"}); got != "—" {
+	if got := diagFormat(&protocol.Track{TrackName: "x"}); got != "—" {
 		t.Errorf("diagFormat(bare track) = %q, want —", got)
 	}
-	tr := protocol.Track{"Mime": "Ogg", "SampleRate": 44100, "ChannelCount": 2}
+	tr := &protocol.Track{MIME: "Ogg", SampleRate: 44100, ChannelCount: 2}
 	if got := diagFormat(tr); got != "Ogg · 44.1 kHz · 2 ch" {
 		t.Errorf("diagFormat(full track) = %q", got)
 	}

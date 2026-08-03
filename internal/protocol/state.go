@@ -1,55 +1,26 @@
 // The shared State: the lock-protected model the worker goroutines mutate and
 // the TUI reads, its immutable Snapshot projection, and the accessor methods
-// grouped by concern (volume/mute, EQ tunnel, proc/liveness, diag views).
+// grouped by concern (volume/mute, EQ tunnel, connection liveness, diag views).
 
 package protocol
 
 import (
 	"image"
 	"image/color"
-	"io"
 	"maps"
 	"math"
-	"os/exec"
 	"sync"
 	"time"
-
-	"github.com/lucasdaddiego/lp10/internal/config"
 )
 
-// Proc is the live ssh child and its pipes, held by State for the writer/reaper.
-// Done is closed by the single goroutine that owns Cmd.Wait(), so reaper and
-// teardown can both await exit without racing on Wait (which may run only once).
-type Proc struct {
-	Cmd    *exec.Cmd
-	Stdin  io.WriteCloser
-	Stdout io.ReadCloser
-	Done   chan struct{}
-}
-
-// WaitTimeout reports whether the process has exited within d.
-func (p *Proc) WaitTimeout(d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-p.Done:
-		return true
-	case <-t.C:
-		return false
-	}
-}
-
-// State is the shared, lock-protected model the workers mutate and the TUI
-// reads. Field semantics match lp10lib.protocol.State.
+// State is the shared, lock-protected domain model the workers mutate and the
+// TUI reads. Child processes, shutdown coordination, and persistence paths are
+// deliberately owned by workers.Runtime instead.
 type State struct {
-	mu    sync.Mutex
-	WLock sync.Mutex // serializes sproc stdin write vs close
-
-	Stop    *Event
-	Drained *Event // command_worker flushed for quit
+	mu sync.Mutex
 
 	connected bool
-	track     Track
+	track     *Track
 	trackAt   time.Time
 	sysinfo   *SysInfo
 	devinfo   *DevInfo    // static device/network info (@@i, once per connection)
@@ -65,15 +36,10 @@ type State struct {
 	playHold time.Time
 	premute  int // 0 == none (Python None)
 
-	PremuteFile  string
-	SnapshotFile string
-
 	errMsg string
 	errAt  time.Time
 	fatal  bool
 
-	sproc     *Proc
-	spawnedAt time.Time
 	gotRecord bool
 	lastRx    time.Time // zero == never (this connection)
 	lastData  time.Time // zero == never (this connection)
@@ -114,8 +80,6 @@ type State struct {
 // defaults (playing starts at 2 = "not playing", posAt = now).
 func NewState() *State {
 	return &State{
-		Stop:    NewEvent(),
-		Drained: NewEvent(),
 		playing: 2,
 		posAt:   time.Now(),
 		eqVals:  map[string]int{},
@@ -126,7 +90,7 @@ func NewState() *State {
 // Snapshot is an immutable view of State for rendering.
 type Snapshot struct {
 	Connected bool
-	Track     Track
+	Track     *Track
 	Pos       int
 	Playing   int
 	Vol       int
@@ -167,10 +131,15 @@ func (st *State) SetArt(url string, img image.Image, dom color.RGBA, domOK bool)
 func (st *State) Snap() Snapshot {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	return st.snapLocked(time.Now())
+}
+
+// snapLocked projects State at now. The caller holds st.mu.
+func (st *State) snapLocked(now time.Time) Snapshot {
 	pos := st.posMs
 	t := st.track
 	if st.playing == 0 && t != nil && st.connected {
-		if elapsed := time.Since(st.posAt).Milliseconds(); elapsed > 0 {
+		if elapsed := now.Sub(st.posAt).Milliseconds(); elapsed > 0 {
 			if elapsed > int64(math.MaxInt-pos) {
 				pos = math.MaxInt
 			} else {
@@ -178,10 +147,13 @@ func (st *State) Snap() Snapshot {
 			}
 		}
 	}
-	if total := t.GetInt("TotalTime"); total > 0 && pos > total {
-		pos = total
+	if t != nil && t.TotalTime > 0 && pos > t.TotalTime {
+		pos = t.TotalTime
 	}
-	cover := t.Str("CoverArtUrl")
+	cover := ""
+	if t != nil {
+		cover = t.CoverArtURL
+	}
 	var art image.Image
 	var dom color.RGBA
 	var domOK bool
@@ -209,6 +181,24 @@ func (st *State) Snap() Snapshot {
 	}
 }
 
+// DiagnosticSnapshot is the complete, point-in-time state consumed by the
+// diagnostics overlay. One State lock supplies the player, liveness, device,
+// capability, network, and tunnel fields, preventing a frame from combining
+// values observed on opposite sides of a worker update.
+type DiagnosticSnapshot struct {
+	Snapshot Snapshot
+
+	LastRx, LastData time.Time
+	ConnectAttempts  int
+	SysInfo          *SysInfo
+	DevInfo          *DevInfo
+	ConfInfo         *ConfInfo
+	Details          *DevDetails
+	Multiroom        *Multiroom
+	Net              NetStat
+	EQConnected      bool
+}
+
 // ---- volume / mute ----
 
 func clamp100(v int) int { return max(0, min(100, v)) }
@@ -230,26 +220,24 @@ func (st *State) setVolLocked(v int) (int, int) {
 	return v, persist
 }
 
-// applyVol computes the target from the current volume under the lock, applies
-// it, and persists a captured pre-mute level outside the lock.
-func (st *State) applyVol(target func(cur int) int) int {
+// applyVol computes and applies the target under the lock. persist is the
+// pre-mute level a controller should save when this change enters mute; State
+// reports the value but performs no persistence itself.
+func (st *State) applyVol(target func(cur int) int) (value, persist int) {
 	st.mu.Lock()
-	v, persist := st.setVolLocked(target(st.vol))
-	path := st.PremuteFile
-	st.mu.Unlock()
-	if persist > 0 && path != "" {
-		config.SavePremute(path, persist)
-	}
-	return v
+	defer st.mu.Unlock()
+	return st.setVolLocked(target(st.vol))
 }
 
-// SetVol sets an absolute volume, persisting a pre-mute level if muting.
-func (st *State) SetVol(v int) int {
+// SetVol sets an absolute volume and returns the applied value plus any
+// pre-mute level the controller should persist.
+func (st *State) SetVol(v int) (value, persist int) {
 	return st.applyVol(func(int) int { return v })
 }
 
-// AdjustVol changes the volume by delta, persisting a pre-mute level if muting.
-func (st *State) AdjustVol(delta int) int {
+// AdjustVol changes the volume by delta and returns the applied value plus any
+// pre-mute level the controller should persist.
+func (st *State) AdjustVol(delta int) (value, persist int) {
 	return st.applyVol(func(cur int) int {
 		// Preserve the 0..100 invariant without performing an addition that can
 		// overflow when a caller supplies an extreme delta.
@@ -357,15 +345,13 @@ func (st *State) SetFatal(msg string) {
 	st.errMsg, st.errAt, st.fatal = msg, time.Now(), true
 }
 
-// ---- proc / liveness (used by the workers and the TUI) ----
+// ---- connection liveness (used by the workers and the TUI) ----
 
-// StartProc records a freshly spawned ssh child: liveness is per-connection, so
-// last_rx/last_data reset and a fresh spawn must prove itself again.
-func (st *State) StartProc(p *Proc) {
+// StartConnection resets per-connection liveness and counts a fresh attempt.
+// Process ownership remains with the worker runtime.
+func (st *State) StartConnection() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.sproc = p
-	st.spawnedAt = time.Now()
 	st.gotRecord = false
 	st.lastRx = time.Time{}
 	st.lastData = time.Time{}
@@ -376,40 +362,52 @@ func (st *State) StartProc(p *Proc) {
 	st.attempts++
 }
 
-// Reap marks the connection dead and drops the proc handle (idempotent).
-func (st *State) Reap() {
+// Disconnect marks the player connection dead (idempotent).
+func (st *State) Disconnect() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.connected = false
-	st.sproc = nil
 }
 
-// Sproc returns the current ssh child handle (or nil).
-func (st *State) Sproc() *Proc {
+// LivenessView snapshots the fields the watchdog needs in one locked read.
+func (st *State) LivenessView() (lastRx, lastData time.Time, got bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.sproc
+	return st.lastRx, st.lastData, st.gotRecord
 }
 
-// WatchdogView snapshots the fields the watchdog needs in one locked read.
-func (st *State) WatchdogView() (proc *Proc, spawned, lastRx, lastData time.Time, got bool) {
+// WriterLive reports whether a process spawned at spawned is live enough to
+// accept a command: a young connection may still be handshaking (ssh buffers
+// stdin), while a session that went data-silent is treated as wedged.
+func (st *State) WriterLive(now, spawned time.Time, liveTimeout time.Duration) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.sproc, st.spawnedAt, st.lastRx, st.lastData, st.gotRecord
-}
-
-// WriterTarget returns the proc to write to and whether the session is live
-// enough to accept a write: a young connection still handshaking is writable
-// (ssh buffers stdin); a session that went data-silent is a wedge to hold for.
-func (st *State) WriterTarget(now time.Time, liveTimeout time.Duration) (*Proc, bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	live := (!st.lastData.IsZero() && now.Sub(st.lastData) <= liveTimeout) ||
-		now.Sub(st.spawnedAt) <= liveTimeout
-	return st.sproc, live
+	return (!st.lastData.IsZero() && now.Sub(st.lastData) <= liveTimeout) ||
+		now.Sub(spawned) <= liveTimeout
 }
 
 // ---- diagnostics views ----
+
+// DiagnosticView returns every value used by one diagnostics frame under one
+// lock. The one-shot pointer values are safe to publish because ApplyRecord
+// replaces them wholesale and never mutates a published value.
+func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return DiagnosticSnapshot{
+		Snapshot:        st.snapLocked(now),
+		LastRx:          st.lastRx,
+		LastData:        st.lastData,
+		ConnectAttempts: st.attempts,
+		SysInfo:         st.sysinfo,
+		DevInfo:         st.devinfo,
+		ConfInfo:        st.confinfo,
+		Details:         st.details,
+		Multiroom:       st.mroom,
+		Net:             st.netViewLocked(),
+		EQConnected:     st.eqConnected,
+	}
+}
 
 // DiagView snapshots the fields the diagnostics overlay reads in one lock. The
 // overlay's error line comes from Snap (Error/ErrorAt/Fatal), not from here.
@@ -458,7 +456,7 @@ func (st *State) MultiroomView() *Multiroom {
 // Preload seeds the cached track/pos/vol for an instant first paint. The clock
 // never resumes from a cached position, so playing starts at 2 (not playing)
 // and trackAt is the zero time (any garbage B immediately clears a stale track).
-func (st *State) Preload(track Track, pos, vol int) {
+func (st *State) Preload(track *Track, pos, vol int) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.track = track

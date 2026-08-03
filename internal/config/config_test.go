@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // writeConfig points XDG_CONFIG_HOME at a temp dir holding the given
@@ -170,13 +172,15 @@ func TestStateDirFailureDegradesToNoPersistence(t *testing.T) {
 	if LoadSnapshot("") != nil {
 		t.Error("LoadSnapshot(\"\") should be nil")
 	}
-	SavePremute("", 50)   // no-ops, must not panic
-	SaveSnapshot("", nil) // no-ops, must not panic
+	SavePremute("", 50)                // no-ops, must not panic
+	SaveSnapshot("", CachedSnapshot{}) // no-ops, must not panic
 }
 
 func TestSnapshotWithCorruptTrackIsRejected(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	SaveSnapshot(p, map[string]any{"track": "junk-string", "vol": 4})
+	if err := os.WriteFile(p, []byte(`{"track":"junk-string","vol":4}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if LoadSnapshot(p) != nil {
 		t.Error("snapshot with a string track must be rejected")
 	}
@@ -203,20 +207,76 @@ func TestPremuteDefaultsAndClamps(t *testing.T) {
 
 func TestSnapshotRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	snap := map[string]any{
-		"track": map[string]any{"TrackName": "x"}, "vol": 44, "playing": 0, "pos": 1,
+	snap := CachedSnapshot{
+		Track: &protocol.Track{TrackName: "x"}, Vol: 44, Playing: 0, Pos: 1,
 	}
 	SaveSnapshot(p, snap)
 	got := LoadSnapshot(p)
 	if got == nil {
 		t.Fatal("snapshot did not round-trip")
 	}
-	tr, _ := got["track"].(map[string]any)
-	if tr["TrackName"] != "x" {
-		t.Errorf("track.TrackName = %v, want x", tr["TrackName"])
+	if got.Track == nil || got.Track.TrackName != "x" {
+		t.Errorf("track = %+v, want TrackName x", got.Track)
 	}
 	if LoadSnapshot(filepath.Join(t.TempDir(), "missing.json")) != nil {
 		t.Error("missing snapshot should be nil")
+	}
+}
+
+func TestLoadSnapshotPreservesLegacyJSONShape(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "snap.json")
+	raw := `{
+		"track": {
+			"TrackName": "Legacy",
+			"Artist": "Artist",
+			"Album": "Album",
+			"PlaybackSource": "Spotify",
+			"PlayUrl": "spotify:track:x",
+			"Mime": "audio/flac",
+			"CoverArtUrl": "https://example.test/cover.jpg",
+			"TotalTime": 180000,
+			"Current Source": 4,
+			"SampleRate": 44100,
+			"Repeat": 1,
+			"Shuffle": 0,
+			"PlayState": 0,
+			"ChannelCount": 2,
+			"Seek": true,
+			"Next": true,
+			"Prev": false,
+			"Skip": true,
+			"future-field": "ignored"
+		},
+		"pos": 1234,
+		"playing": 0,
+		"vol": 44,
+		"eq": {"BAS": 3}
+	}`
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadSnapshot(p)
+	if got == nil || got.Track == nil {
+		t.Fatal("legacy-shaped snapshot was rejected")
+	}
+	tr := got.Track
+	if tr.TrackName != "Legacy" || tr.PlayURL != "spotify:track:x" ||
+		tr.CurrentSource != 4 || tr.SampleRate != 44100 || tr.ChannelCount != 2 ||
+		!tr.Seek || !tr.Next || tr.Prev || !tr.Skip {
+		t.Errorf("legacy track fields = %+v", tr)
+	}
+	if got.Pos != 1234 || got.Playing != 0 || got.Vol != 44 || got.EQ["BAS"] != 3 {
+		t.Errorf("legacy snapshot fields = %+v", got)
+	}
+}
+
+func TestLoadSnapshotRejectsWrongTypedKnownField(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "snap.json")
+	if err := os.WriteFile(p, []byte(`{"track":{"SampleRate":"44100"},"vol":44}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if LoadSnapshot(p) != nil {
+		t.Error("wrong-typed known track field should reject the cache")
 	}
 }
 
@@ -244,17 +304,11 @@ func TestSavePremuteWithIOErrorIsSwallowed(t *testing.T) {
 	}
 }
 
-func TestSaveSnapshotWithMarshalErrorIsSwallowed(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "snap.json")
-	SaveSnapshot(p, make(chan int)) // unmarshalable; must not panic
-	if _, err := os.Stat(p); err == nil {
-		t.Error("nothing should be written when marshaling fails")
-	}
-}
-
 func TestLoadSnapshotWithNonDictTrack(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	SaveSnapshot(p, map[string]any{"track": []string{"not", "a", "dict"}, "vol": 44})
+	if err := os.WriteFile(p, []byte(`{"track":["not","a","dict"],"vol":44}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if LoadSnapshot(p) != nil {
 		t.Error("non-dict track should reject the snapshot")
 	}

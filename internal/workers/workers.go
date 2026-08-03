@@ -1,6 +1,6 @@
-// Package workers runs the background goroutines: the stream reader/reconnect
-// loop, the command writer, the watchdog, and teardown. Port of
-// lp10lib/workers.py (Python threads -> goroutines).
+// Package workers owns the background runtime: child processes, shutdown and
+// drain coordination, snapshot persistence, stream reconnects, command writes,
+// watchdogs, the EQ tunnel, and artwork loading.
 package workers
 
 import (
@@ -63,18 +63,18 @@ func boundedLines(r io.Reader) func() (string, bool) {
 	}
 }
 
-// StreamWorker is the reconnect loop; it never dies.
-func StreamWorker(st *protocol.State, cfg config.Config) {
+// streamWorker is the reconnect loop; it never dies.
+func streamWorker(st *protocol.State, cfg config.Config, snapshotPath string, procs *processSlot, control *runControl) {
 	backoff := InitialBackoff
-	for !st.Stop.IsSet() {
+	for !control.stop.IsSet() {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					st.Note(fmt.Sprintf("stream worker: %v", r))
-					st.Stop.Wait(time.Second)
+					control.stop.Wait(time.Second)
 				}
 			}()
-			backoff = streamOnce(st, cfg, backoff)
+			backoff = streamOnceWithSnapshot(st, cfg, backoff, snapshotPath, procs, control)
 		}()
 	}
 }
@@ -82,7 +82,11 @@ func StreamWorker(st *protocol.State, cfg config.Config) {
 // streamOnce is one connection lifecycle, returning the next reconnect backoff.
 // stderr goes to a temp file, not a pipe, so ssh can never block on a full
 // stderr buffer; the residual is read post-mortem.
-func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) time.Duration {
+func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration, control *runControl) time.Duration {
+	return streamOnceWithSnapshot(st, cfg, backoff, "", newProcessSlot(), control)
+}
+
+func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.Duration, snapshotPath string, procs *processSlot, control *runControl) time.Duration {
 	// failStart notes a spawn failure, releases whatever pipes exist so far,
 	// and holds the retry cadence — the shared tail of every pre-launch error.
 	failStart := func(err error, closers ...io.Closer) time.Duration {
@@ -90,7 +94,7 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 			c.Close()
 		}
 		st.Note(fmt.Sprintf("cannot start ssh: %v", err))
-		st.Stop.Wait(3 * time.Second)
+		control.stop.Wait(3 * time.Second)
 		return backoff
 	}
 
@@ -128,18 +132,18 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 	inR.Close()
 	outW.Close()
 
-	proc := &protocol.Proc{Cmd: cmd, Stdin: inW, Stdout: outR, Done: make(chan struct{})}
+	proc := &process{Cmd: cmd, Stdin: inW, Stdout: outR, Done: make(chan struct{})}
 	go func() {
 		cmd.Wait()
 		close(proc.Done)
 	}()
-	st.StartProc(proc)
+	procs.start(st, proc)
 
-	if !st.Stop.IsSet() {
+	if !control.stop.IsSet() {
 		var lastPersist time.Time
 		nextLine := boundedLines(outR)
 		for rec := range protocol.IterRecords(nextLine) {
-			if st.Stop.IsSet() {
+			if control.stop.IsSet() {
 				break
 			}
 			hadData, ok := applyRecordSafe(st, rec)
@@ -149,15 +153,15 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 			backoff = InitialBackoff
 			st.ClearFatalOnData()
 			now := time.Now()
-			if st.SnapshotFile != "" && now.Sub(lastPersist) > SnapshotPersistInterval && !st.Stop.IsSet() {
-				config.SaveSnapshot(st.SnapshotFile, selfSnap(st))
+			if snapshotPath != "" && now.Sub(lastPersist) > SnapshotPersistInterval && !control.stop.IsSet() {
+				config.SaveSnapshot(snapshotPath, selfSnap(st))
 				lastPersist = now
 			}
 		}
 	}
-	reap(st, proc)
+	reap(st, procs, proc)
 
-	if st.Stop.IsSet() {
+	if control.stop.IsSet() {
 		return backoff
 	}
 	errf.Seek(0, io.SeekStart)
@@ -166,14 +170,14 @@ func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration) ti
 
 	if terr := classify(residual); terr != nil {
 		st.SetFatal(terr.Error())
-		st.Stop.Wait(terr.Cadence)
+		control.stop.Wait(terr.Cadence)
 		return backoff
 	}
 	if trimmed := strings.TrimSpace(residual); trimmed != "" {
 		lines := strings.Split(trimmed, "\n")
 		st.Note(clip160(lines[len(lines)-1]))
 	}
-	return waitBackoff(st, backoff)
+	return waitBackoff(control, backoff)
 }
 
 // clip160 truncates an ssh-stderr line for a UI Note, dropping any trailing partial
@@ -200,29 +204,20 @@ func applyRecordSafe(st *protocol.State, rec protocol.Record) (hadData, ok bool)
 	return protocol.ApplyRecord(st, rec), true
 }
 
-// closeStdinLocked closes the child's stdin while holding WLock, so the close can't
-// race a concurrent write; an already-closed/raced Close panic is swallowed.
-func closeStdinLocked(st *protocol.State, proc *protocol.Proc) {
-	defer func() { recover() }()
-	st.WLock.Lock()
-	defer st.WLock.Unlock()
-	if proc.Stdin != nil {
-		proc.Stdin.Close()
-	}
-}
-
 // reap closes stdin, awaits/kills the child, and releases every pipe.
-// closeStdinLocked swallows a double-close panic itself, and WaitTimeout /
+// processSlot.closeStdin swallows a double-close panic itself, and waitTimeout /
 // Kill (nil-guarded) cannot panic, so no extra recover wrapper is needed.
-func reap(st *protocol.State, proc *protocol.Proc) {
-	closeStdinLocked(st, proc)
-	if !proc.WaitTimeout(1 * time.Second) {
-		if proc.Cmd.Process != nil {
+func reap(st *protocol.State, procs *processSlot, proc *process) {
+	procs.closeStdin(proc)
+	if !proc.waitTimeout(1 * time.Second) {
+		if proc.Cmd != nil && proc.Cmd.Process != nil {
 			proc.Cmd.Process.Kill()
 		}
-		proc.WaitTimeout(2 * time.Second)
+		proc.waitTimeout(2 * time.Second)
 	}
-	st.Reap()
+	if procs.clear(proc) {
+		st.Disconnect()
+	}
 	if proc.Stdout != nil {
 		proc.Stdout.Close()
 	}
@@ -230,11 +225,11 @@ func reap(st *protocol.State, proc *protocol.Proc) {
 
 // selfSnap is the persisted subset of a snapshot: the player state plus the
 // last-known EQ/tone values, so both panes paint instantly on the next launch.
-func selfSnap(st *protocol.State) map[string]any {
+func selfSnap(st *protocol.State) config.CachedSnapshot {
 	s := st.Snap()
 	_, eq := st.EQView()
-	return map[string]any{
-		"track": s.Track, "pos": s.Pos, "playing": s.Playing, "vol": s.Vol, "eq": eq,
+	return config.CachedSnapshot{
+		Track: s.Track, Pos: s.Pos, Playing: s.Playing, Vol: s.Vol, EQ: eq,
 	}
 }
 
@@ -243,23 +238,23 @@ func selfSnap(st *protocol.State) map[string]any {
 // the teardown drain sentinel. It never dies. One ticker (not a fresh
 // time.After each cycle) paces the idle poll, mirroring TunnelWorker, so the
 // 2 Hz wait doesn't churn a timer allocation per cycle for the process life.
-func CommandWorker(st *protocol.State, cmds <-chan *protocol.Command, deadline time.Duration) {
+func commandWorker(st *protocol.State, procs *processSlot, control *runControl, cmds <-chan *protocol.Command, deadline time.Duration) {
 	tick := time.NewTicker(CommandGetTimeout)
 	defer tick.Stop()
 	var pending []protocol.Command
-	for !st.Stop.IsSet() {
-		if commandOnce(st, cmds, tick.C, deadline, &pending) {
+	for !control.stop.IsSet() {
+		if commandOnce(st, procs, control, cmds, tick.C, deadline, &pending) {
 			return
 		}
 	}
 }
 
 // commandOnce runs one batch cycle; returns true to break the worker loop.
-func commandOnce(st *protocol.State, cmds <-chan *protocol.Command, tick <-chan time.Time, deadline time.Duration, pending *[]protocol.Command) (brk bool) {
+func commandOnce(st *protocol.State, procs *processSlot, control *runControl, cmds <-chan *protocol.Command, tick <-chan time.Time, deadline time.Duration, pending *[]protocol.Command) (brk bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			st.Note(fmt.Sprintf("command worker: %v", r))
-			st.Stop.Wait(time.Second)
+			control.stop.Wait(time.Second)
 			brk = false
 		}
 	}()
@@ -326,17 +321,9 @@ drain:
 			}
 		}
 		lines := sb.String()
-		proc, live := st.WriterTarget(now, LiveSessionTimeout)
 		if lines != "" {
 			sent = false
-			if proc != nil && proc.Stdin != nil && live {
-				st.WLock.Lock()
-				_, werr := io.WriteString(proc.Stdin, lines)
-				st.WLock.Unlock()
-				if werr == nil {
-					sent = true
-				}
-			}
+			sent = procs.write(st, now, LiveSessionTimeout, lines)
 			if !sent { // carry over in order; each keeps its own timestamp
 				*pending = reduced
 			}
@@ -347,10 +334,10 @@ drain:
 		if len(*pending) > 0 {
 			st.Note("command not delivered")
 		}
-		st.Drained.Set()
+		control.drained.Set()
 		return true
 	}
-	if !sent && st.Stop.Wait(200*time.Millisecond) {
+	if !sent && control.stop.Wait(200*time.Millisecond) {
 		return true
 	}
 	return false
@@ -358,14 +345,15 @@ drain:
 
 // Watchdog kills a connection that never proved itself, went silent, or wedged
 // data-silent mid-stream.
-func Watchdog(st *protocol.State, silentAfter, connectWindow, datalessAfter time.Duration) {
-	for !st.Stop.Wait(500 * time.Millisecond) {
+func watchdog(st *protocol.State, procs *processSlot, control *runControl, silentAfter, connectWindow, datalessAfter time.Duration) {
+	for !control.stop.Wait(500 * time.Millisecond) {
 		func() {
 			defer func() { recover() }()
-			proc, spawned, lastRx, lastData, got := st.WatchdogView()
+			proc, spawned := procs.current()
 			if proc == nil {
 				return
 			}
+			lastRx, lastData, got := st.LivenessView()
 			now := time.Now()
 			base := laterTime(spawned, lastRx)
 			limit := connectWindow
@@ -376,7 +364,7 @@ func Watchdog(st *protocol.State, silentAfter, connectWindow, datalessAfter time
 			// dataless connection alive
 			wedged := now.Sub(laterTime(spawned, lastData)) > datalessAfter
 			if now.Sub(base) > limit || wedged {
-				if proc.Cmd.Process != nil {
+				if proc.Cmd != nil && proc.Cmd.Process != nil {
 					proc.Cmd.Process.Kill()
 				}
 			}
@@ -397,31 +385,31 @@ func laterTime(a, b time.Time) time.Time {
 // waits on the remote side. It also persists one final snapshot, so the next
 // launch's first paint is exactly the state the user quit on regardless of
 // how coarse the mid-session SnapshotPersistInterval is.
-func Teardown(st *protocol.State, cmds chan<- *protocol.Command, drain time.Duration) {
-	if st.SnapshotFile != "" {
-		config.SaveSnapshot(st.SnapshotFile, selfSnap(st))
+func teardown(st *protocol.State, procs *processSlot, control *runControl, cmds chan<- *protocol.Command, drain time.Duration, snapshotPath string) {
+	if snapshotPath != "" {
+		config.SaveSnapshot(snapshotPath, selfSnap(st))
 	}
 	defer func() {
-		st.Stop.Set()
-		proc := st.Sproc()
+		control.stop.Set()
+		proc, _ := procs.current()
 		if proc == nil {
 			return
 		}
-		closeStdinLocked(st, proc)
-		if proc.WaitTimeout(300 * time.Millisecond) {
+		procs.closeStdin(proc)
+		if proc.waitTimeout(300 * time.Millisecond) {
 			return
 		}
-		if proc.Cmd.Process != nil {
+		if proc.Cmd != nil && proc.Cmd.Process != nil {
 			proc.Cmd.Process.Signal(syscall.SIGTERM)
 		}
-		if proc.WaitTimeout(1500 * time.Millisecond) {
+		if proc.waitTimeout(1500 * time.Millisecond) {
 			return
 		}
-		if proc.Cmd.Process != nil {
+		if proc.Cmd != nil && proc.Cmd.Process != nil {
 			proc.Cmd.Process.Kill()
 		}
-		proc.WaitTimeout(1 * time.Second)
+		proc.waitTimeout(1 * time.Second)
 	}()
 	cmds <- nil
-	st.Drained.Wait(drain)
+	control.drained.Wait(drain)
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/lucasdaddiego/lp10/internal/atomicfile"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // homeDir resolves the user's home directory, falling back to the passwd
@@ -247,9 +248,20 @@ func SavePremute(path string, v int) {
 	_ = atomicfile.Write(path, []byte(strconv.Itoa(clampVol(v))))
 }
 
-// LoadSnapshot reads the cached snapshot. A corrupt file (not an object, or a
-// non-object/non-null "track") returns nil so it cannot become a crash loop.
-func LoadSnapshot(path string) map[string]any {
+// CachedSnapshot is the typed, versionless on-disk first-paint state. Its JSON
+// tags preserve the existing cache contract so snapshots written by earlier
+// releases remain readable.
+type CachedSnapshot struct {
+	Track   *protocol.Track `json:"track"`
+	Pos     int             `json:"pos"`
+	Playing int             `json:"playing"`
+	Vol     int             `json:"vol"`
+	EQ      map[string]int  `json:"eq"`
+}
+
+// LoadSnapshot reads the cached snapshot. A corrupt file, non-object root, or
+// field with the wrong JSON type returns nil so it cannot become a crash loop.
+func LoadSnapshot(path string) *CachedSnapshot {
 	if path == "" {
 		return nil
 	}
@@ -257,24 +269,19 @@ func LoadSnapshot(path string) map[string]any {
 	if err != nil {
 		return nil
 	}
-	var v any
-	if json.Unmarshal(b, &v) != nil {
+	var root map[string]json.RawMessage
+	if json.Unmarshal(b, &root) != nil || root == nil {
 		return nil
 	}
-	snap, ok := v.(map[string]any)
-	if !ok {
+	var snap CachedSnapshot
+	if json.Unmarshal(b, &snap) != nil {
 		return nil
 	}
-	if tr, present := snap["track"]; present && tr != nil {
-		if _, ok := tr.(map[string]any); !ok {
-			return nil
-		}
-	}
-	return snap
+	return &snap
 }
 
 // SaveSnapshot persists the snapshot as JSON. Failures are swallowed.
-func SaveSnapshot(path string, snap any) {
+func SaveSnapshot(path string, snap CachedSnapshot) {
 	if path == "" {
 		return
 	}

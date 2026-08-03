@@ -2,6 +2,7 @@ package workers
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/png"
 	"net/http"
@@ -40,9 +41,10 @@ func TestArtWorkerLoadsAndDedups(t *testing.T) {
 	defer srv.Close()
 
 	st := protocol.NewState()
-	st.Preload(protocol.Track{"TrackName": "x", "CoverArtUrl": srv.URL}, 0, 50)
-	go ArtWorker(st, config.Config{Art: true, ArtMode: "auto"})
-	defer st.Stop.Set()
+	control := newRunControl()
+	st.Preload(&protocol.Track{TrackName: "x", CoverArtURL: srv.URL}, 0, 50)
+	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto"})
+	defer control.stop.Set()
 
 	if !waitFor(func() bool { return st.Snap().Art != nil }, 3*time.Second) {
 		t.Fatal("art never loaded")
@@ -67,8 +69,8 @@ func TestArtWorkerDisabledFetchesNothing(t *testing.T) {
 
 	for _, cfg := range []config.Config{{Art: false}, {Art: true, ArtMode: "off"}} {
 		st := protocol.NewState()
-		st.Preload(protocol.Track{"CoverArtUrl": srv.URL}, 0, 50)
-		ArtWorker(st, cfg) // must return synchronously, not loop
+		st.Preload(&protocol.Track{CoverArtURL: srv.URL}, 0, 50)
+		artWorker(context.Background(), newRunControl(), st, cfg) // must return synchronously, not loop
 		if st.Snap().Art != nil {
 			t.Errorf("cfg %+v: art set despite being disabled", cfg)
 		}

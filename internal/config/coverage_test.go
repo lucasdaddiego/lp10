@@ -212,19 +212,21 @@ func TestCov_LoadSnapshotInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestCov_LoadSnapshotTrackVariants covers the accepting paths of the track
-// guard: a snapshot with no "track" key (present == false) and one with an
-// explicit null track (present, but nil) both round-trip.
+// TestCov_LoadSnapshotTrackVariants covers the typed decoder's accepting paths:
+// a snapshot with no "track" key and one with an explicit null track both
+// round-trip.
 func TestCov_LoadSnapshotTrackVariants(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
 
-	SaveSnapshot(p, map[string]any{"vol": 12})
-	if got := LoadSnapshot(p); got == nil || got["vol"] == nil {
+	if err := os.WriteFile(p, []byte(`{"vol":12}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadSnapshot(p); got == nil || got.Vol != 12 {
 		t.Errorf("snapshot without a track key should round-trip, got %v", got)
 	}
 
-	SaveSnapshot(p, map[string]any{"track": nil, "vol": 3})
-	if got := LoadSnapshot(p); got == nil {
+	SaveSnapshot(p, CachedSnapshot{Track: nil, Vol: 3})
+	if got := LoadSnapshot(p); got == nil || got.Track != nil || got.Vol != 3 {
 		t.Error("snapshot with an explicit null track should be accepted")
 	}
 }

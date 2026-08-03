@@ -7,6 +7,7 @@ package workers
 // waitUntil, readUntilContains.
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -44,17 +45,17 @@ func (covPanicWriter) Close() error              { return nil }
 // ---- pure-ish helpers -------------------------------------------------------
 
 func TestCov_WaitBackoff(t *testing.T) {
-	st := protocol.NewState() // Stop NOT set: the wait elapses and the value doubles
-	if got := waitBackoff(st, time.Millisecond); got != 2*time.Millisecond {
+	control := newRunControl() // stop unset: the wait elapses and the value doubles
+	if got := waitBackoff(control, time.Millisecond); got != 2*time.Millisecond {
 		t.Errorf("doubling: got %v want 2ms", got)
 	}
 	// 1600ms*2 = 3200ms > MaxBackoff(3s) -> capped. (~1.6s wait, Stop unset.)
-	if got := waitBackoff(st, 1600*time.Millisecond); got != MaxBackoff {
+	if got := waitBackoff(control, 1600*time.Millisecond); got != MaxBackoff {
 		t.Errorf("cap: got %v want %v", got, MaxBackoff)
 	}
 	// Stop set: Wait returns immediately, backoff is returned unchanged.
-	stopped := protocol.NewState()
-	stopped.Stop.Set()
+	stopped := newRunControl()
+	stopped.stop.Set()
 	if got := waitBackoff(stopped, 1234*time.Millisecond); got != 1234*time.Millisecond {
 		t.Errorf("stop set: got %v want 1234ms (unchanged)", got)
 	}
@@ -150,9 +151,10 @@ func TestCov_TunnelRoundTripFloodReconnect(t *testing.T) {
 	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
 
 	st := protocol.NewState()
+	control := newRunControl()
 	eqcmds := make(chan EQCommand, 8)
-	go TunnelWorker(st, config.Config{Host: "unused"}, eqcmds)
-	defer st.Stop.Set()
+	go tunnelWorker(context.Background(), control, st, config.Config{Host: "unused"}, eqcmds)
+	defer control.stop.Set()
 
 	conn, err := ln.Accept()
 	if err != nil {
@@ -211,8 +213,9 @@ func TestCov_TunnelDialFailure(t *testing.T) {
 
 	st := protocol.NewState()
 	st.SetEQConnected(true) // a stale "connected" the dial-failure path must clear
-	go TunnelWorker(st, config.Config{Host: "unused"}, make(chan EQCommand))
-	defer st.Stop.Set()
+	control := newRunControl()
+	go tunnelWorker(context.Background(), control, st, config.Config{Host: "unused"}, make(chan EQCommand))
+	defer control.stop.Set()
 
 	if !waitFor(func() bool { c, _ := st.EQView(); return !c }, 3*time.Second) {
 		t.Error("a refused dial should mark the tunnel disconnected")
@@ -230,8 +233,12 @@ func TestCov_TunnelStopDuringSeed(t *testing.T) {
 	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
 
 	st := protocol.NewState()
+	control := newRunControl()
 	done := make(chan struct{})
-	go func() { TunnelWorker(st, config.Config{Host: "unused"}, make(chan EQCommand)); close(done) }()
+	go func() {
+		tunnelWorker(context.Background(), control, st, config.Config{Host: "unused"}, make(chan EQCommand))
+		close(done)
+	}()
 
 	conn, err := ln.Accept()
 	if err != nil {
@@ -239,7 +246,7 @@ func TestCov_TunnelStopDuringSeed(t *testing.T) {
 	}
 	defer conn.Close()
 
-	st.Stop.Set() // interrupt the on-connect seed loop -> worker exits
+	control.stop.Set() // interrupt the on-connect seed loop -> worker exits
 
 	select {
 	case <-done:
@@ -257,16 +264,17 @@ func TestCov_TunnelSuccessResetsBackoff(t *testing.T) {
 	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
 
 	st := protocol.NewState()
+	control := newRunControl()
 	got := make(chan time.Duration, 1)
 	go func() {
-		got <- tunnelOnce(st, config.Config{Host: "unused"}, make(chan EQCommand), MaxBackoff)
+		got <- tunnelOnce(control, st, config.Config{Host: "unused"}, make(chan EQCommand), MaxBackoff)
 	}()
 	conn, err := ln.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	st.Stop.Set() // exit the successful lifecycle without a reconnect wait
+	control.stop.Set() // exit the successful lifecycle without a reconnect wait
 
 	select {
 	case backoff := <-got:
@@ -310,12 +318,13 @@ func TestCov_ApplyRecordSafeReportsData(t *testing.T) {
 // and the flush reports the still-pending command as undelivered.
 func TestCov_CommandFlushWithPending(t *testing.T) {
 	st := protocol.NewState() // no proc -> nothing can be written
+	control := newRunControl()
 	cmds := make(chan *protocol.Command, 4)
 	cmds <- &protocol.Command{Mid: 64, Data: "30", TS: time.Now()} // fresh, undeliverable
 	cmds <- nil                                                    // drain sentinel, picked up in the drain loop
-	go CommandWorker(st, cmds, CommandDeadline)
+	go commandWorker(st, newProcessSlot(), control, cmds, CommandDeadline)
 
-	if !st.Drained.Wait(3 * time.Second) {
+	if !control.drained.Wait(3 * time.Second) {
 		t.Fatal("worker should drain on the sentinel")
 	}
 	if e := st.Snap().Error; e != "command not delivered" {
@@ -327,13 +336,14 @@ func TestCov_CommandFlushWithPending(t *testing.T) {
 // and Stop fires during the post-failure 200ms wait, breaking the worker.
 func TestCov_CommandFailedSendStopExits(t *testing.T) {
 	st := protocol.NewState() // no proc -> send fails
+	control := newRunControl()
 	cmds := make(chan *protocol.Command, 4)
 	done := make(chan struct{})
-	go func() { CommandWorker(st, cmds, CommandDeadline); close(done) }()
+	go func() { commandWorker(st, newProcessSlot(), control, cmds, CommandDeadline); close(done) }()
 
 	cmds <- &protocol.Command{Mid: 40, Data: "NEXT", TS: time.Now()}
 	time.Sleep(60 * time.Millisecond) // worker is now in the post-failure 200ms wait
-	st.Stop.Set()                     // wakes that wait -> commandOnce returns true
+	control.stop.Set()                // wakes that wait -> commandOnce returns true
 
 	select {
 	case <-done:
@@ -347,11 +357,13 @@ func TestCov_CommandFailedSendStopExits(t *testing.T) {
 // afterwards, so the worker simply spins until Stop.
 func TestCov_CommandWorkerRecoversPanic(t *testing.T) {
 	st := protocol.NewState()
-	st.StartProc(&protocol.Proc{Stdin: covPanicWriter{}, Done: make(chan struct{})}) // live (spawnedAt=now)
+	procs := newProcessSlot()
+	control := newRunControl()
+	procs.start(st, &process{Stdin: covPanicWriter{}, Done: make(chan struct{})})
 	cmds := make(chan *protocol.Command, 4)
 	cmds <- &protocol.Command{Mid: 40, Data: "NEXT", TS: time.Now()}
-	go CommandWorker(st, cmds, CommandDeadline)
-	defer st.Stop.Set()
+	go commandWorker(st, procs, control, cmds, CommandDeadline)
+	defer control.stop.Set()
 
 	if !waitFor(func() bool { return strings.Contains(st.Snap().Error, "command worker") }, 4*time.Second) {
 		t.Fatalf("recover note not set; error=%q", st.Snap().Error)
@@ -361,19 +373,22 @@ func TestCov_CommandWorkerRecoversPanic(t *testing.T) {
 // ---- watchdog ---------------------------------------------------------------
 
 // TestCov_WatchdogNilTickThenSilentAfterData covers the no-proc early return
-// (a tick with sproc nil) and the post-data silent kill (got=true -> silentAfter).
+// (a tick with no current child) and the post-data silent kill
+// (got=true -> silentAfter).
 func TestCov_WatchdogNilTickThenSilentAfterData(t *testing.T) {
 	st := protocol.NewState()
+	procs := newProcessSlot()
+	control := newRunControl()
 	// silentAfter tiny, connect/dataless large: only the post-data silent path kills.
-	go Watchdog(st, 100*time.Millisecond, 5*time.Second, 5*time.Second)
-	defer st.Stop.Set()
+	go watchdog(st, procs, control, 100*time.Millisecond, 5*time.Second, 5*time.Second)
+	defer control.stop.Set()
 
 	time.Sleep(700 * time.Millisecond) // one tick runs with no proc (early return)
 
 	proc := fakeProc(t, "sleep", "30")
-	st.StartProc(proc)
+	procs.start(st, proc)
 	protocol.ApplyRecord(st, protocol.Record{"v": {"Data:44"}}) // gotRecord=true, lastData/lastRx=now
-	if !proc.WaitTimeout(3 * time.Second) {
+	if !proc.waitTimeout(3 * time.Second) {
 		t.Error("watchdog should kill a proc that went silent after delivering data")
 	}
 }
@@ -384,15 +399,16 @@ func TestCov_WatchdogNilTickThenSilentAfterData(t *testing.T) {
 // killed by reap after the grace wait.
 func TestCov_ReapKillsUnresponsiveChild(t *testing.T) {
 	st := protocol.NewState()
+	procs := newProcessSlot()
 	proc := fakeProc(t, "sleep", "30") // ignores stdin close
-	st.StartProc(proc)
+	procs.start(st, proc)
 
-	reap(st, proc) // closes stdin (ignored) -> WaitTimeout grace -> Kill
+	reap(st, procs, proc) // closes stdin (ignored) -> waitTimeout grace -> Kill
 
-	if st.Sproc() != nil {
-		t.Error("reap should clear sproc")
+	if current, _ := procs.current(); current != nil {
+		t.Error("reap should clear the process slot")
 	}
-	if !proc.WaitTimeout(2 * time.Second) {
+	if !proc.waitTimeout(2 * time.Second) {
 		t.Error("reap should have killed the unresponsive child")
 	}
 }
@@ -403,9 +419,10 @@ func TestCov_ReapKillsUnresponsiveChild(t *testing.T) {
 func TestCov_StreamOnceCreateTempFailure(t *testing.T) {
 	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "no-such-subdir"))
 	st := protocol.NewState()
-	st.Stop.Set() // so the post-failure 3s wait is instant
+	control := newRunControl()
+	control.stop.Set() // so the post-failure 3s wait is instant
 
-	next := streamOnce(st, config.Config{}, InitialBackoff)
+	next := streamOnce(st, config.Config{}, InitialBackoff, control)
 	if next != InitialBackoff {
 		t.Errorf("backoff=%v want unchanged %v", next, InitialBackoff)
 	}
@@ -418,9 +435,10 @@ func TestCov_StreamOnceCreateTempFailure(t *testing.T) {
 // no records) and checks the trailing backoff doubles and caps at MaxBackoff.
 func TestCov_StreamOnceBackoffCaps(t *testing.T) {
 	t.Setenv("LP10_SSH", covExitSSH(t))
-	st := protocol.NewState() // Stop NOT set: the trailing backoff wait elapses
+	st := protocol.NewState()
+	control := newRunControl() // stop unset: the trailing backoff wait elapses
 	// 1600ms*2 = 3200ms > MaxBackoff -> capped (~1.6s wait).
-	if next := streamOnce(st, config.Config{}, 1600*time.Millisecond); next != MaxBackoff {
+	if next := streamOnce(st, config.Config{}, 1600*time.Millisecond, control); next != MaxBackoff {
 		t.Errorf("backoff=%v want capped %v", next, MaxBackoff)
 	}
 }
@@ -433,10 +451,11 @@ func TestCov_StreamWorkerRecoversPanic(t *testing.T) {
 	classify = func(string) *transport.TransportError { panic("classify boom") }
 
 	st := protocol.NewState()
+	control := newRunControl()
 	done := make(chan struct{})
-	go func() { StreamWorker(st, config.Config{}); close(done) }()
+	go func() { streamWorker(st, config.Config{}, "", newProcessSlot(), control); close(done) }()
 	defer func() {
-		st.Stop.Set()
+		control.stop.Set()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
@@ -456,15 +475,17 @@ func TestCov_StreamWorkerRecoversPanic(t *testing.T) {
 // on SIGTERM exercises the first wait + SIGTERM rung.
 func TestCov_TeardownSigtermLadder(t *testing.T) {
 	st := protocol.NewState()
-	st.StartProc(fakeProc(t, "sleep", "30")) // ignores stdin close; dies on SIGTERM
-	proc := st.Sproc()
+	procs := newProcessSlot()
+	control := newRunControl()
+	proc := fakeProc(t, "sleep", "30") // ignores stdin close; dies on SIGTERM
+	procs.start(st, proc)
 
-	Teardown(st, make(chan *protocol.Command, 1), 50*time.Millisecond)
+	teardown(st, procs, control, make(chan *protocol.Command, 1), 50*time.Millisecond, "")
 
-	if !proc.WaitTimeout(2 * time.Second) {
+	if !proc.waitTimeout(2 * time.Second) {
 		t.Error("sleep should be terminated by the SIGTERM rung")
 	}
-	if !st.Stop.IsSet() {
+	if !control.stop.IsSet() {
 		t.Error("teardown must set stop")
 	}
 }
@@ -473,12 +494,14 @@ func TestCov_TeardownSigtermLadder(t *testing.T) {
 // SIGTERM forces the final SIGKILL rung.
 func TestCov_TeardownKillLadder(t *testing.T) {
 	st := protocol.NewState()
-	st.StartProc(fakeProc(t, "sh", "-c", "trap '' TERM; while true; do sleep 1; done"))
-	proc := st.Sproc()
+	procs := newProcessSlot()
+	control := newRunControl()
+	proc := fakeProc(t, "sh", "-c", "trap '' TERM; while true; do sleep 1; done")
+	procs.start(st, proc)
 
-	Teardown(st, make(chan *protocol.Command, 1), 50*time.Millisecond)
+	teardown(st, procs, control, make(chan *protocol.Command, 1), 50*time.Millisecond, "")
 
-	if !proc.WaitTimeout(2 * time.Second) {
+	if !proc.waitTimeout(2 * time.Second) {
 		t.Error("a TERM-trapping process should be SIGKILLed by the final rung")
 	}
 }
@@ -497,9 +520,10 @@ func TestCov_ArtTransientFailureBacksOff(t *testing.T) {
 	defer srv.Close()
 
 	st := protocol.NewState()
-	st.Preload(protocol.Track{"TrackName": "x", "CoverArtUrl": srv.URL}, 0, 50)
-	go ArtWorker(st, config.Config{Art: true, ArtMode: "auto"})
-	defer st.Stop.Set()
+	control := newRunControl()
+	st.Preload(&protocol.Track{TrackName: "x", CoverArtURL: srv.URL}, 0, 50)
+	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto"})
+	defer control.stop.Set()
 
 	if !waitFor(func() bool { return atomic.LoadInt32(&hits) >= 1 }, 3*time.Second) {
 		t.Fatal("transient endpoint never hit")
@@ -525,9 +549,10 @@ func TestCov_ArtUndecodableGivesUp(t *testing.T) {
 	defer srv.Close()
 
 	st := protocol.NewState()
-	st.Preload(protocol.Track{"TrackName": "x", "CoverArtUrl": srv.URL}, 0, 50)
-	go ArtWorker(st, config.Config{Art: true, ArtMode: "auto"})
-	defer st.Stop.Set()
+	control := newRunControl()
+	st.Preload(&protocol.Track{TrackName: "x", CoverArtURL: srv.URL}, 0, 50)
+	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto"})
+	defer control.stop.Set()
 
 	if !waitFor(func() bool { return atomic.LoadInt32(&hits) >= 1 }, 3*time.Second) {
 		t.Fatal("undecodable endpoint never hit")

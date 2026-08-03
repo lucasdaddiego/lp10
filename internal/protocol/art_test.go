@@ -11,7 +11,7 @@ import (
 // never lingers after a change.
 func TestSnapArtStaleness(t *testing.T) {
 	st := NewState()
-	st.Preload(Track{"TrackName": "x", "CoverArtUrl": "http://a/1"}, 0, 50)
+	st.Preload(&Track{TrackName: "x", CoverArtURL: "http://a/1"}, 0, 50)
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	dom := color.RGBA{200, 30, 30, 255}
 

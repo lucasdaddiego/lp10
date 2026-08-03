@@ -109,7 +109,7 @@ func TestErrCounterSessionDeltas(t *testing.T) {
 	if n := st.NetView(); n.RxErrs != 0 || n.Drops != 0 {
 		t.Errorf("counter reset = %+v, want re-baselined zeros", n)
 	}
-	st.StartProc(&Proc{})
+	st.StartConnection()
 	if n := st.NetView(); n.ErrsOK {
 		t.Error("a reconnect should clear ErrsOK until the next sample")
 	}

@@ -61,6 +61,7 @@ func makeModel(t *testing.T) (*model, *protocol.State, func() []protocol.Command
 func modelWith(st *protocol.State) (*model, *protocol.State, func() []protocol.Command) {
 	cmds := make(chan *protocol.Command, 64)
 	m := newModel(st, defaultCfg(), cmds, nil)
+	m.premutePath = "" // unit models must not read or write the user's state dir
 	collect := func() []protocol.Command {
 		var out []protocol.Command
 		for {
@@ -263,19 +264,19 @@ func TestDispW(t *testing.T) {
 }
 
 func TestSourceName(t *testing.T) {
-	if SourceName(nil) != "" || SourceName(protocol.Track{}) != "" || SourceName(protocol.Track{"Current Source": 0}) != "" {
+	if SourceName(nil) != "" || SourceName(&protocol.Track{}) != "" || SourceName(&protocol.Track{CurrentSource: 0}) != "" {
 		t.Error("unknown source should be blank")
 	}
 	cases := []struct {
-		t    protocol.Track
+		t    *protocol.Track
 		want string
 	}{
-		{protocol.Track{"PlayUrl": "spotify:track:x"}, "Spotify"},
-		{protocol.Track{"PlayUrl": "tidal:track:x"}, "TIDAL"},
-		{protocol.Track{"PlayUrl": "airplay:x"}, "AirPlay"},
-		{protocol.Track{"Current Source": 1}, "AirPlay"},
-		{protocol.Track{"Current Source": 2}, "DLNA"},
-		{protocol.Track{"Current Source": 3}, "Bluetooth"},
+		{&protocol.Track{PlayURL: "spotify:track:x"}, "Spotify"},
+		{&protocol.Track{PlayURL: "tidal:track:x"}, "TIDAL"},
+		{&protocol.Track{PlayURL: "airplay:x"}, "AirPlay"},
+		{&protocol.Track{CurrentSource: 1}, "AirPlay"},
+		{&protocol.Track{CurrentSource: 2}, "DLNA"},
+		{&protocol.Track{CurrentSource: 3}, "Bluetooth"},
 	}
 	for _, c := range cases {
 		if got := SourceName(c.t); got != c.want {
@@ -285,16 +286,16 @@ func TestSourceName(t *testing.T) {
 }
 
 func TestQuality(t *testing.T) {
-	if got := Quality(protocol.Track{"Mime": "audio/ogg", "SampleRate": "44100"}); got != "audio/ogg · 44.1 kHz" {
+	if got := Quality(&protocol.Track{MIME: "audio/ogg", SampleRate: 44100}); got != "audio/ogg · 44.1 kHz" {
 		t.Errorf("quality = %q", got)
 	}
-	if Quality(protocol.Track{}) != "" {
+	if Quality(&protocol.Track{}) != "" {
 		t.Error("empty track should yield empty quality")
 	}
-	if got := Quality(protocol.Track{"SampleRate": 44100}); !strings.Contains(got, "44.1 kHz") {
+	if got := Quality(&protocol.Track{SampleRate: 44100}); !strings.Contains(got, "44.1 kHz") {
 		t.Errorf("sample-rate only = %q", got)
 	}
-	got := Quality(protocol.Track{"Mime": "audio/flac", "SampleRate": 44100})
+	got := Quality(&protocol.Track{MIME: "audio/flac", SampleRate: 44100})
 	if !strings.Contains(got, "audio/flac") || !strings.Contains(got, "44.1 kHz") {
 		t.Errorf("both = %q", got)
 	}
@@ -314,37 +315,34 @@ func TestSourceNameOnSanitizedTrack(t *testing.T) {
 
 func TestPreloadSnapshotIsPausedAndSanitized(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]any{
-		"track": map[string]any{"TrackName": "x", "Junk": struct{}{}},
-		"pos":   5000, "vol": 30, "playing": 0,
+	workers.PreloadSnapshot(st, &config.CachedSnapshot{
+		Track: &protocol.Track{TrackName: "x"},
+		Pos:   5000, Vol: 30, Playing: 0,
 	})
 	s := st.Snap()
 	if s.Playing != 2 {
 		t.Error("never resume a cached clock (playing should be 2)")
 	}
-	if s.Track.Str("TrackName") != "x" {
+	if s.Track == nil || s.Track.TrackName != "x" {
 		t.Errorf("track = %v", s.Track)
-	}
-	if _, ok := s.Track["Junk"]; ok {
-		t.Error("unknown field should be dropped")
 	}
 	if s.Pos != 5000 || s.Vol != 30 {
 		t.Errorf("pos=%d vol=%d, want 5000/30", s.Pos, s.Vol)
 	}
 }
 
-func TestPreloadSnapshotRejectsJunkValues(t *testing.T) {
+func TestPreloadSnapshotEmptyValuesStayEmpty(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]any{"track": 42, "pos": "junk", "vol": nil})
+	workers.PreloadSnapshot(st, &config.CachedSnapshot{Track: &protocol.Track{}})
 	s := st.Snap()
 	if s.Track != nil || s.Pos != 0 || s.Vol != 0 {
-		t.Errorf("junk preload should yield empty state: %+v", s)
+		t.Errorf("empty preload should yield empty state: %+v", s)
 	}
 }
 
 func TestPreloadSnapshotNoneIsNoop(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, nil)
+	workers.PreloadSnapshot(st, nil)
 	if s := st.Snap(); s.Track != nil || s.Pos != 0 {
 		t.Errorf("nil preload should be a no-op: %+v", s)
 	}
@@ -352,14 +350,13 @@ func TestPreloadSnapshotNoneIsNoop(t *testing.T) {
 
 func TestPreloadSnapshotSeedsEQ(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]any{
-		"track": map[string]any{"TrackName": "x"},
-		"pos":   1000, "vol": 30,
-		"eq": map[string]any{
-			"MXV": 100.0, "BAS": 3.0, "EQS": 1.0,
-			"ZZZ": 5.0,    // unknown code -> dropped
-			"TRE": "junk", // non-numeric -> dropped
-			"MID": 999.0,  // out of range -> clamped to the control's max (10)
+	workers.PreloadSnapshot(st, &config.CachedSnapshot{
+		Track: &protocol.Track{TrackName: "x"},
+		Pos:   1000, Vol: 30,
+		EQ: map[string]int{
+			"MXV": 100, "BAS": 3, "EQS": 1,
+			"ZZZ": 5,   // unknown code -> dropped
+			"MID": 999, // out of range -> clamped to the control's max (10)
 		},
 	})
 	if v, ok := st.EQValue("MXV"); !ok || v != 100 {
@@ -374,9 +371,6 @@ func TestPreloadSnapshotSeedsEQ(t *testing.T) {
 	if _, ok := st.EQValue("ZZZ"); ok {
 		t.Error("unknown EQ code should be dropped")
 	}
-	if _, ok := st.EQValue("TRE"); ok {
-		t.Error("non-numeric EQ value should be dropped")
-	}
 	// preloaded values must NOT arm the echo hold: the device's seed overwrites
 	st.ApplyTunnel("BAS", -5)
 	if v, _ := st.EQValue("BAS"); v != -5 {
@@ -386,11 +380,11 @@ func TestPreloadSnapshotSeedsEQ(t *testing.T) {
 
 func TestPreloadSnapshotBasic(t *testing.T) {
 	st := protocol.NewState()
-	preloadSnapshot(st, map[string]any{
-		"track": map[string]any{"TrackName": "Test"}, "pos": 1000, "vol": 50, "playing": 0,
+	workers.PreloadSnapshot(st, &config.CachedSnapshot{
+		Track: &protocol.Track{TrackName: "Test"}, Pos: 1000, Vol: 50, Playing: 0,
 	})
 	s := st.Snap()
-	if s.Track.Str("TrackName") != "Test" || s.Pos != 1000 || s.Vol != 50 || s.Playing != 2 {
+	if s.Track == nil || s.Track.TrackName != "Test" || s.Pos != 1000 || s.Vol != 50 || s.Playing != 2 {
 		t.Errorf("preload basic wrong: %+v", s)
 	}
 }

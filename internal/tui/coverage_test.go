@@ -172,7 +172,7 @@ func TestCov_sourceNameSources(t *testing.T) {
 		want string
 	}{{4, "Spotify"}, {5, "Line-In"}, {6, "USB"}, {7, "Source 7"}}
 	for _, c := range cases {
-		if got := SourceName(protocol.Track{"Current Source": c.src}); got != c.want {
+		if got := SourceName(&protocol.Track{CurrentSource: c.src}); got != c.want {
 			t.Errorf("SourceName(src %d) = %q, want %q", c.src, got, c.want)
 		}
 	}
@@ -1161,14 +1161,14 @@ func TestCov_metaLinesVariants(t *testing.T) {
 	}
 
 	// empty title -> "—", artist + album joined on the second line
-	s1 := protocol.Snapshot{Track: protocol.Track{"TrackName": "", "Artist": "A", "Album": "Al"}}
+	s1 := protocol.Snapshot{Track: &protocol.Track{Artist: "A", Album: "Al"}}
 	l1 := stripANSI(strings.Join(m.metaLines(s1, 40), "\n"))
 	if !strings.Contains(l1, "—") || !strings.Contains(l1, "A · Al") {
 		t.Errorf("metaLines empty-title = %q", l1)
 	}
 
 	// no artist but an album -> the album-search link fallback path
-	s2 := protocol.Snapshot{Track: protocol.Track{"TrackName": "T", "Artist": "", "Album": "OnlyAlbum"}}
+	s2 := protocol.Snapshot{Track: &protocol.Track{TrackName: "T", Album: "OnlyAlbum"}}
 	l2 := stripANSI(strings.Join(m.metaLines(s2, 40), "\n"))
 	if !strings.Contains(l2, "OnlyAlbum") {
 		t.Errorf("metaLines album-only = %q", l2)
@@ -1179,7 +1179,7 @@ func TestCov_fullMetaVariants(t *testing.T) {
 	m, _, _ := makeModel(t)
 	m.sty = newTheme()
 	// empty title -> "—", and with no artist/album there's a single line
-	s := protocol.Snapshot{Track: protocol.Track{"TrackName": ""}}
+	s := protocol.Snapshot{Track: &protocol.Track{}}
 	out := m.fullMeta(s, 40)
 	if len(out) != 1 || !strings.Contains(stripANSI(out[0]), "—") {
 		t.Errorf("fullMeta empty-title = %v", out)
@@ -1190,11 +1190,11 @@ func TestCov_fullSourceLineVariants(t *testing.T) {
 	m, _, _ := makeModel(t)
 	m.sty = newTheme()
 	// a track with no source/format -> ""
-	if got := m.fullSourceLine(protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}}, 60); got != "" {
+	if got := m.fullSourceLine(protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}}, 60); got != "" {
 		t.Errorf("fullSourceLine no-format = %q, want empty", got)
 	}
 	// a channel count appends "· N ch"
-	s := protocol.Snapshot{Track: protocol.Track{"PlayUrl": "spotify:track:x", "Mime": "audio/ogg", "SampleRate": 44100, "ChannelCount": 2}}
+	s := protocol.Snapshot{Track: &protocol.Track{PlayURL: "spotify:track:x", MIME: "audio/ogg", SampleRate: 44100, ChannelCount: 2}}
 	if got := stripANSI(m.fullSourceLine(s, 60)); !strings.Contains(got, "2 ch") {
 		t.Errorf("fullSourceLine channel count = %q", got)
 	}
@@ -1215,12 +1215,12 @@ func TestCov_seekRowNarrowAndTint(t *testing.T) {
 
 func TestCov_headerRowReconnectAndNarrow(t *testing.T) {
 	st := protocol.NewState()
-	st.StartProc(&protocol.Proc{})
-	st.StartProc(&protocol.Proc{}) // attempts -> 2, still disconnected
+	st.StartConnection()
+	st.StartConnection() // attempts -> 2, still disconnected
 	m, _, _ := modelWith(st)
 	m.sty = newTheme()
 	if m.st.Snap().Attempts <= 1 {
-		t.Skip("attempts not bumped by StartProc on this build")
+		t.Skip("attempts not bumped by StartConnection on this build")
 	}
 	if got := stripANSI(m.headerRow(m.st.Snap(), time.Now(), 80, false)); !strings.Contains(got, "reconnecting") {
 		t.Errorf("disconnected header should read reconnecting: %q", got)
@@ -1283,10 +1283,10 @@ func sRec(over map[int]string) string {
 func richDiag(t *testing.T, freq string, over map[int]string) (*model, *protocol.State) {
 	t.Helper()
 	st := protocol.NewState()
-	st.StartProc(&protocol.Proc{}) // attempts -> 1 (singular "attempt"); records flow in below
-	st.SetEQConnected(true)        // control tunnel "live"
+	st.StartConnection()    // attempts -> 1 (singular "attempt"); records flow in below
+	st.SetEQConnected(true) // control tunnel "live"
 	st.PreloadEQ(map[string]int{"EQS": 1, "TRE": 3, "MID": -2, "BAS": 5, "VBS": 1, "VBI": 40, "MXV": 100})
-	st.Preload(protocol.Track{"TrackName": "X", "Mime": "audio/flac", "SampleRate": 44100, "ChannelCount": 2}, 1000, 0)
+	st.Preload(&protocol.Track{TrackName: "X", MIME: "audio/flac", SampleRate: 44100, ChannelCount: 2}, 1000, 0)
 	applyRaw(st, wifiDev(freq))
 	// a data record marks the link connected; vol 0 + connected => muted
 	applyRaw(st, "@@p\nMID-Read:49 Data:1000 Length:4\n@@v\nMID-Read:64 Data:0 Length:1\n@@E\n")
@@ -1437,7 +1437,7 @@ func TestCov_latencyRowWideFields(t *testing.T) {
 
 func TestCov_artColumnKittyDegrade(t *testing.T) {
 	img := fillImg(40, 40, color.RGBA{20, 180, 90, 255})
-	s := protocol.Snapshot{Track: protocol.Track{"TrackName": "x"}, CoverURL: "u", Art: img}
+	s := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "u", Art: img}
 
 	// truecolor: a failed kitty encode degrades to the half-block raster
 	m := artModel(t)

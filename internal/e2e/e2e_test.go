@@ -82,6 +82,8 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 		// — instead of a real device. An empty value would NOT do this: the
 		// discovery gate only checks that the variable is non-empty.
 		"LP10_HOST=127.0.0.1",
+		// Keep the control tunnel hermetic independently of host resolution.
+		"LP10_TUNNEL_ADDR=127.0.0.1:0",
 		"LP10_STATE_DIR="+stateDir,
 		"XDG_CONFIG_HOME="+cfgDir,
 	)
@@ -115,7 +117,7 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 		}
 	}()
 	t.Cleanup(func() { _ = cmd.Process.Kill(); ptmx.Close() })
-	time.Sleep(2 * time.Second) // let it draw
+	s.waitForOutput(t, "┗")
 	return s
 }
 
@@ -123,6 +125,21 @@ func (s *tuiSession) output() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.buf.String()
+}
+
+// waitForOutput waits for a concrete first-paint marker rather than sleeping a
+// fixed amount. The bottom frame border is written after the complete initial
+// view, including any startup warning.
+func (s *tuiSession) waitForOutput(t *testing.T, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(s.output(), marker) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for initial TUI output %q; output:\n%s", marker, s.output())
 }
 
 // waitExit waits for the process to exit and returns its code (-1 on timeout).

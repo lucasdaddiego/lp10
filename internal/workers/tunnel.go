@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -53,27 +54,31 @@ func tunnelAddr(cfg config.Config) string {
 	return net.JoinHostPort(cfg.Host, strconv.Itoa(tunnel.Port))
 }
 
-// TunnelWorker maintains the device's plain-text control connection (:2018): it
+// tunnelWorker maintains the device's plain-text control connection (:2018): it
 // reconnects with backoff, seeds current values on connect, applies the device's
 // broadcasts to State, and writes queued EQ commands. It never dies — a dead
 // tunnel only disables the EQ panel; the ssh player stream is unaffected.
-func TunnelWorker(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand) {
+func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand) {
 	backoff := InitialBackoff
-	for !st.Stop.IsSet() {
+	for !control.stop.IsSet() && ctx.Err() == nil {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					st.Note(fmt.Sprintf("tunnel worker: %v", r))
-					st.Stop.Wait(time.Second)
+					control.stop.Wait(time.Second)
 				}
 			}()
-			backoff = tunnelOnce(st, cfg, eqcmds, backoff)
+			backoff = tunnelOnceContext(ctx, control, st, cfg, eqcmds, backoff)
 		}()
 	}
 }
 
 // tunnelOnce is one connection lifecycle, returning the next reconnect backoff.
-func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration) time.Duration {
+func tunnelOnce(control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration) time.Duration {
+	return tunnelOnceContext(context.Background(), control, st, cfg, eqcmds, backoff)
+}
+
+func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration) time.Duration {
 	dialer := net.Dialer{
 		Timeout: tunnelDialTimeout,
 		KeepAliveConfig: net.KeepAliveConfig{
@@ -83,10 +88,13 @@ func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, 
 			Count:    tunnelKeepCount,
 		},
 	}
-	conn, err := dialer.Dial("tcp", tunnelAddr(cfg))
+	conn, err := dialer.DialContext(ctx, "tcp", tunnelAddr(cfg))
 	if err != nil {
 		st.SetEQConnected(false)
-		return waitBackoff(st, backoff)
+		if ctx.Err() != nil {
+			return backoff
+		}
+		return waitBackoff(control, backoff)
 	}
 	st.SetEQConnected(true)
 
@@ -96,14 +104,14 @@ func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, 
 	// Seed: query each control so the panel shows the device's current values.
 	dead := false
 	for _, q := range tunnel.SeedQueries() {
-		if st.Stop.IsSet() {
+		if control.stop.IsSet() || ctx.Err() != nil {
 			break
 		}
 		if _, werr := conn.Write([]byte(q)); werr != nil {
 			dead = true
 			break
 		}
-		st.Stop.Wait(tunnelSeedSpacing)
+		control.stop.Wait(tunnelSeedSpacing)
 	}
 	if !dead {
 		select {
@@ -123,10 +131,11 @@ func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, 
 	// lets us notice Stop with no commands in flight, without churning timers.
 	poll := time.NewTicker(tunnelPoll)
 	defer poll.Stop()
-	for !st.Stop.IsSet() && !dead {
+	for !control.stop.IsSet() && ctx.Err() == nil && !dead {
 		select {
 		case <-done:
 			dead = true
+		case <-ctx.Done():
 		case cmd, ok := <-eqcmds:
 			if !ok {
 				eqcmds = nil // disable this select arm; a closed channel is always ready
@@ -151,10 +160,10 @@ func tunnelOnce(st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, 
 	<-done // reader exits once the closed conn fails its Read
 	st.SetEQConnected(false)
 
-	if st.Stop.IsSet() {
+	if control.stop.IsSet() || ctx.Err() != nil {
 		return backoff
 	}
-	return waitBackoff(st, backoff)
+	return waitBackoff(control, backoff)
 }
 
 // eqCommandWire validates and ages one queued EQ command. A zero timestamp is
@@ -198,8 +207,8 @@ func tunnelReader(st *protocol.State, conn net.Conn, done chan struct{}) {
 
 // waitBackoff sleeps the current backoff (interruptible by Stop) and returns the
 // doubled-and-capped next value, mirroring streamOnce's cadence.
-func waitBackoff(st *protocol.State, backoff time.Duration) time.Duration {
-	if !st.Stop.Wait(backoff) {
+func waitBackoff(control *runControl, backoff time.Duration) time.Duration {
+	if !control.stop.Wait(backoff) {
 		backoff *= 2
 		if backoff > MaxBackoff {
 			backoff = MaxBackoff

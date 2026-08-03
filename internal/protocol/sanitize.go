@@ -14,36 +14,40 @@ import (
 	"unicode"
 )
 
-// Track fields the rest of the program may see, by type. Everything else from
-// the device JSON is dropped at the parse boundary. Some whitelisted fields
-// (Repeat/Shuffle/Seek/Skip/Next/Prev, and PlayState — see parseRecord for why
-// reg 51 wins) are retained but not consumed today: they document the wire
-// schema and keep the boundary stable if the UI grows into them.
-var (
-	trackStr  = []string{"TrackName", "Artist", "Album", "PlaybackSource", "PlayUrl", "Mime", "CoverArtUrl"}
-	trackInt  = []string{"TotalTime", "Current Source", "SampleRate", "Repeat", "Shuffle", "PlayState", "ChannelCount"}
-	trackBool = []string{"Seek", "Next", "Prev", "Skip"}
-)
+// Track is the typed, sanitized now-playing schema. JSON tags deliberately
+// retain the device/cache wire names, including the legacy "PlayUrl",
+// "CoverArtUrl", and spaced "Current Source" keys. Fields not represented here
+// are dropped at the parse boundary.
+//
+// Repeat/Shuffle/Seek/Skip/Next/Prev and PlayState are retained even though the
+// UI does not consume them yet: they document the supported wire contract and
+// keep the typed boundary ready for future controls.
+type Track struct {
+	TrackName      string `json:"TrackName,omitempty"`
+	Artist         string `json:"Artist,omitempty"`
+	Album          string `json:"Album,omitempty"`
+	PlaybackSource string `json:"PlaybackSource,omitempty"`
+	PlayURL        string `json:"PlayUrl,omitempty"`
+	MIME           string `json:"Mime,omitempty"`
+	CoverArtURL    string `json:"CoverArtUrl,omitempty"`
 
-// Track is a sanitized now-playing record: string/int/bool fields only.
-type Track map[string]any
+	TotalTime     int `json:"TotalTime,omitempty"`
+	CurrentSource int `json:"Current Source,omitempty"`
+	SampleRate    int `json:"SampleRate,omitempty"`
+	Repeat        int `json:"Repeat,omitempty"`
+	Shuffle       int `json:"Shuffle,omitempty"`
+	PlayState     int `json:"PlayState,omitempty"`
+	ChannelCount  int `json:"ChannelCount,omitempty"`
 
-// Str returns the string field, or "" if absent or not a string.
-func (t Track) Str(k string) string {
-	if t == nil {
-		return ""
-	}
-	s, _ := t[k].(string)
-	return s
+	Seek bool `json:"Seek,omitempty"`
+	Next bool `json:"Next,omitempty"`
+	Prev bool `json:"Prev,omitempty"`
+	Skip bool `json:"Skip,omitempty"`
 }
 
-// GetInt returns the int field (0 if absent), matching `_int(t.get(k)) or 0`.
-func (t Track) GetInt(k string) int {
-	if t == nil {
-		return 0
-	}
-	n, _ := Int(t[k])
-	return n
+// Empty reports whether t contains no sanitized track data.
+func (t *Track) Empty() bool {
+	return t == nil || *t == (Track{})
 }
 
 // Int coerces a value to an int the way protocol._int does: bool -> not an int,
@@ -114,38 +118,54 @@ func printable(s string) string {
 	return b.String()
 }
 
-// SanitizeTrack whitelist-copies device/snapshot track JSON into known-typed
-// fields. Returns a (possibly empty) Track, or nil when obj is not an object.
-func SanitizeTrack(obj any) Track {
+// SanitizeTrack whitelist-copies device track JSON into Track. It returns a
+// possibly-empty Track for an object and nil when obj is not an object.
+func SanitizeTrack(obj any) *Track {
 	m, ok := obj.(map[string]any)
 	if !ok {
 		return nil
 	}
-	t := Track{}
-	for _, k := range trackStr {
-		v, present := m[k]
+
+	str := func(key string) string {
+		v, present := m[key]
 		if !present || v == nil {
-			continue
+			return ""
 		}
 		s, isStr := v.(string)
 		if !isStr {
 			s = pyStr(v)
 		}
-		if s = printable(s); s != "" {
-			t[k] = s
-		}
+		return printable(s)
 	}
-	for _, k := range trackInt {
-		if n, ok := Int(m[k]); ok {
-			t[k] = n
-		}
+	integer := func(key string) int {
+		n, _ := Int(m[key])
+		return n
 	}
-	for _, k := range trackBool {
-		if b, ok := m[k].(bool); ok {
-			t[k] = b
-		}
+	boolean := func(key string) bool {
+		b, _ := m[key].(bool)
+		return b
 	}
-	return t
+
+	return &Track{
+		TrackName:      str("TrackName"),
+		Artist:         str("Artist"),
+		Album:          str("Album"),
+		PlaybackSource: str("PlaybackSource"),
+		PlayURL:        str("PlayUrl"),
+		MIME:           str("Mime"),
+		CoverArtURL:    str("CoverArtUrl"),
+		TotalTime:      integer("TotalTime"),
+		CurrentSource:  integer("Current Source"),
+		SampleRate:     integer("SampleRate"),
+		Repeat:         integer("Repeat"),
+		Shuffle:        integer("Shuffle"),
+		PlayState:      integer("PlayState"),
+		ChannelCount:   integer("ChannelCount"),
+		Seek:           boolean("Seek"),
+		Next:           boolean("Next"),
+		Prev:           boolean("Prev"),
+		Skip:           boolean("Skip"),
+	}
 }
 
 // pyStr mirrors Python's str() for the non-string values that may land in a

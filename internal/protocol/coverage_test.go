@@ -114,48 +114,6 @@ func TestCov_ParseJSONRequiresOneCompleteValue(t *testing.T) {
 	}
 }
 
-// ---- Proc.WaitTimeout -------------------------------------------------------
-
-func TestCov_WaitTimeout(t *testing.T) {
-	// already-exited: Done is closed -> reports exited immediately.
-	done := make(chan struct{})
-	close(done)
-	if !(&Proc{Done: done}).WaitTimeout(time.Second) {
-		t.Error("WaitTimeout on a closed Done should report exited (true)")
-	}
-	// still running: Done stays open past d -> times out (false).
-	if (&Proc{Done: make(chan struct{})}).WaitTimeout(10 * time.Millisecond) {
-		t.Error("WaitTimeout should report false when the process has not exited")
-	}
-}
-
-// ---- Event.Wait -------------------------------------------------------------
-
-func TestCov_EventWait(t *testing.T) {
-	// already set -> returns true without blocking.
-	e := NewEvent()
-	e.Set()
-	if !e.Wait(time.Second) {
-		t.Error("Wait on an already-set event should return true")
-	}
-
-	// set concurrently while blocked -> observes the channel close.
-	e2 := NewEvent()
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		e2.Set()
-	}()
-	if !e2.Wait(2 * time.Second) {
-		t.Error("Wait should return true when Set arrives via the channel")
-	}
-
-	// never set, deadline elapses -> timeout branch returns IsSet() == false.
-	e3 := NewEvent()
-	if e3.Wait(10 * time.Millisecond) {
-		t.Error("Wait should return false when an unset event times out")
-	}
-}
-
 // ---- IterRecords early-break (yield returns false) --------------------------
 
 func TestCov_IterRecordsEarlyBreak(t *testing.T) {
@@ -242,10 +200,10 @@ func TestCov_StateInputInvariants(t *testing.T) {
 	}
 
 	// Extreme adjustments saturate without overflowing before the volume clamp.
-	if got := st.AdjustVol(math.MaxInt); got != 100 {
+	if got, _ := st.AdjustVol(math.MaxInt); got != 100 {
 		t.Errorf("AdjustVol(MaxInt) = %d, want 100", got)
 	}
-	if got := st.AdjustVol(math.MinInt); got != 0 {
+	if got, _ := st.AdjustVol(math.MinInt); got != 0 {
 		t.Errorf("AdjustVol(MinInt) = %d, want 0", got)
 	}
 
@@ -265,7 +223,7 @@ func TestCov_StateInputInvariants(t *testing.T) {
 	}
 
 	deviceState.mu.Lock()
-	deviceState.track = Track{"TrackName": "overflow guard"}
+	deviceState.track = &Track{TrackName: "overflow guard"}
 	deviceState.posMs = math.MaxInt
 	deviceState.posAt = time.Now().Add(-time.Second)
 	deviceState.playing = 0
@@ -305,47 +263,39 @@ func TestCov_NoteAndFatal(t *testing.T) {
 	}
 }
 
-// ---- proc / watchdog / writer accessors -------------------------------------
+// ---- connection-liveness accessors -----------------------------------------
 
-func TestCov_ProcAndWatchdogAccessors(t *testing.T) {
+func TestCov_ConnectionLivenessAccessors(t *testing.T) {
 	st := NewState()
-	if st.Sproc() != nil {
-		t.Error("Sproc should be nil before any spawn")
-	}
 	if st.RawAttempts() != 0 {
 		t.Errorf("RawAttempts = %d, want 0", st.RawAttempts())
 	}
 
-	p := &Proc{Done: make(chan struct{})}
-	st.StartProc(p)
+	spawned := time.Now()
+	st.StartConnection()
 	if st.RawAttempts() != 1 {
-		t.Errorf("RawAttempts after StartProc = %d, want 1", st.RawAttempts())
-	}
-	if st.Sproc() != p {
-		t.Error("Sproc should return the started proc")
+		t.Errorf("RawAttempts after StartConnection = %d, want 1", st.RawAttempts())
 	}
 
-	proc, spawned, lastRx, lastData, got := st.WatchdogView()
-	if proc != p || spawned.IsZero() || !lastRx.IsZero() || !lastData.IsZero() || got {
-		t.Errorf("WatchdogView = (%v, spawned=%v rx=%v data=%v got=%v), want (proc, recent, zero, zero, false)",
-			proc, spawned, lastRx, lastData, got)
+	lastRx, lastData, got := st.LivenessView()
+	if !lastRx.IsZero() || !lastData.IsZero() || got {
+		t.Errorf("LivenessView = (rx=%v data=%v got=%v), want (zero, zero, false)",
+			lastRx, lastData, got)
 	}
 
 	// A fresh spawn is writable within the live window.
-	if target, live := st.WriterTarget(time.Now(), 5*time.Second); target != p || !live {
-		t.Errorf("WriterTarget(fresh) = (%v, %v), want (proc, true)", target, live)
+	if !st.WriterLive(time.Now(), spawned, 5*time.Second) {
+		t.Error("WriterLive should accept a fresh connection")
 	}
 	// Far past the live window with no data -> not live.
-	if _, live := st.WriterTarget(time.Now().Add(time.Hour), time.Second); live {
-		t.Error("WriterTarget should report not-live long after spawn with no data")
+	if st.WriterLive(time.Now().Add(time.Hour), spawned, time.Second) {
+		t.Error("WriterLive should reject a long-silent connection")
 	}
 
-	st.Reap()
-	if st.Sproc() != nil {
-		t.Error("Reap should drop the proc handle")
-	}
+	ApplyRecord(st, Record{"v": {"Data:44"}})
+	st.Disconnect()
 	if st.Snap().Connected {
-		t.Error("Reap should mark the connection dead")
+		t.Error("Disconnect should mark the connection dead")
 	}
 }
 

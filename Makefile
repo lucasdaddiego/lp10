@@ -26,13 +26,21 @@ generate: ## Regenerate embedded files (remote_loop.sh from remote_loop.src.sh)
 	go generate ./...
 
 cover: ## Merged unit + integration coverage of the shipped packages -> coverage.out
-	@covdir=$$(mktemp -d); unit=$$(mktemp); intg=$$(mktemp); \
-	LP10_COVERDIR=$$covdir go test ./... -coverpkg=./... -coverprofile=$$unit >/dev/null; \
-	go tool covdata textfmt -i=$$covdir -o=$$intg; \
-	go run github.com/wadey/gocovmerge@v0.0.0-20160331181800-b5bfa59ec0ad $$unit $$intg \
-	  | grep -vE '/internal/(e2e|fixtures|testutil)/|/cmd/fakessh/' > coverage.out; \
-	rm -rf $$covdir $$unit $$intg; \
-	go tool cover -func=coverage.out | tail -1; \
+	@set -eu; \
+	covdir=$$(mktemp -d); \
+	unit=$$(mktemp); \
+	intg=$$(mktemp); \
+	merged=$$(mktemp); \
+	out=$$(mktemp ./.coverage.out.XXXXXX); \
+	cleanup() { rm -rf "$$covdir" "$$unit" "$$intg" "$$merged" "$$out"; }; \
+	trap cleanup EXIT HUP INT TERM; \
+	LP10_COVERDIR="$$covdir" go test ./... -coverpkg=./... -coverprofile="$$unit" >/dev/null; \
+	go tool covdata textfmt -i="$$covdir" -o="$$intg"; \
+	go run github.com/wadey/gocovmerge@v0.0.0-20160331181800-b5bfa59ec0ad "$$unit" "$$intg" > "$$merged"; \
+	grep -vE '/internal/(e2e|fixtures|testutil)/|/cmd/fakessh/' "$$merged" > "$$out"; \
+	report=$$(go tool cover -func="$$out"); \
+	printf '%s\n' "$$report" | tail -1; \
+	mv "$$out" coverage.out; \
 	echo "shipped-package coverage (test scaffolding excluded); HTML: go tool cover -html=coverage.out"
 
 install: ## Install a stripped release binary into ~/.bin
