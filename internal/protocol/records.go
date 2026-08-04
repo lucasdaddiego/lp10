@@ -26,7 +26,6 @@ func IterRecords(nextLine func() (string, bool)) iter.Seq[Record] {
 	return func(yield func(Record) bool) {
 		rec := Record{}
 		key := byte(0)
-		n := 0 // lines accumulated into the current section (reset per section)
 		for {
 			line, ok := nextLine()
 			if !ok {
@@ -43,9 +42,9 @@ func IterRecords(nextLine func() (string, bool)) iter.Seq[Record] {
 					if !yield(rec) {
 						return
 					}
-					rec, key, n = Record{}, 0, 0
+					rec, key = Record{}, 0
 				case tags[tag]:
-					key, n = tag, 0
+					key = tag
 					if _, exists := rec[string(key)]; !exists {
 						rec[string(key)] = []string{}
 					}
@@ -53,13 +52,16 @@ func IterRecords(nextLine func() (string, bool)) iter.Seq[Record] {
 					key = 0
 				}
 			} else if key != 0 && line != "" {
-				if n >= maxRecLines {
+				// Measured against the lines actually accumulated, not a per-header
+				// counter: a repeated @@B re-opens the section without clearing it,
+				// so resetting a counter there would hand the flood a fresh budget
+				// on every header and the section could grow without bound.
+				if len(rec[string(key)]) >= maxRecLines {
 					// this section is flooding: drop what it accumulated and stop
 					// appending, but keep the record's other (well-formed) sections
 					delete(rec, string(key))
 					key = 0
 				} else {
-					n++
 					rec[string(key)] = append(rec[string(key)], line)
 				}
 			}

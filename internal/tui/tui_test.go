@@ -331,6 +331,36 @@ func TestPreloadSnapshotIsPausedAndSanitized(t *testing.T) {
 	}
 }
 
+// The snapshot cache is not device data at read time: a truncated, tampered or
+// foreign file reaches Preload straight from encoding/json, so the load boundary
+// owes it the same printable() stripping SanitizeTrack gives the device. An ESC
+// left in a cached title is charged 0 columns by the renderer but 1 by DispW,
+// so the now-playing line would size short and paint reverse-video to the border.
+func TestPreloadSnapshotStripsControlCharacters(t *testing.T) {
+	st := protocol.NewState()
+	workers.PreloadSnapshot(st, &config.CachedSnapshot{
+		Track: &protocol.Track{TrackName: "a\x1b[7mb", Artist: "x\ny"},
+		Pos:   0, Vol: 30,
+	})
+	s := st.Snap()
+	if s.Track == nil {
+		t.Fatal("cached track should still preload")
+	}
+	if s.Track.TrackName != "a[7mb" || s.Track.Artist != "xy" {
+		t.Errorf("cached track not sanitized: name=%q artist=%q", s.Track.TrackName, s.Track.Artist)
+	}
+}
+
+// A cached track whose only content is control characters sanitizes down to
+// nothing, and an empty track must not be preloaded.
+func TestPreloadSnapshotControlOnlyTrackIsEmpty(t *testing.T) {
+	st := protocol.NewState()
+	workers.PreloadSnapshot(st, &config.CachedSnapshot{Track: &protocol.Track{TrackName: "\x1b\x07"}})
+	if s := st.Snap(); s.Track != nil {
+		t.Errorf("control-only cached track should sanitize to empty, got %+v", s.Track)
+	}
+}
+
 func TestPreloadSnapshotEmptyValuesStayEmpty(t *testing.T) {
 	st := protocol.NewState()
 	workers.PreloadSnapshot(st, &config.CachedSnapshot{Track: &protocol.Track{}})

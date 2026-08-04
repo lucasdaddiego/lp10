@@ -107,7 +107,7 @@ func PreloadSnapshot(st *protocol.State, cached *config.CachedSnapshot) {
 	if cached == nil {
 		return
 	}
-	track := cached.Track
+	track := protocol.SanitizeCached(cached.Track)
 	if track.Empty() {
 		track = nil
 	}

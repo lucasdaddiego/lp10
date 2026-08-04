@@ -1219,8 +1219,11 @@ func TestCov_headerRowReconnectAndNarrow(t *testing.T) {
 	st.StartConnection() // attempts -> 2, still disconnected
 	m, _, _ := modelWith(st)
 	m.sty = newTheme()
+	// the attempt counter is this module's own behaviour, not an environment
+	// capability: failing to establish the precondition IS the regression, so it
+	// must fail rather than skip (a skip would report a green run).
 	if m.st.Snap().Attempts <= 1 {
-		t.Skip("attempts not bumped by StartConnection on this build")
+		t.Fatalf("setup: two StartConnection calls should bump attempts, got %d", m.st.Snap().Attempts)
 	}
 	if got := stripANSI(m.headerRow(m.st.Snap(), time.Now(), 80, false)); !strings.Contains(got, "reconnecting") {
 		t.Errorf("disconnected header should read reconnecting: %q", got)

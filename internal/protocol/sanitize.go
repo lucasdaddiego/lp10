@@ -168,6 +168,27 @@ func SanitizeTrack(obj any) *Track {
 	}
 }
 
+// SanitizeCached is the SanitizeTrack pass for a Track that was decoded straight
+// into its typed fields rather than whitelist-copied — today the on-disk snapshot
+// cache, which the program does not control at read time (it may be truncated,
+// hand-edited, or written by another build). The typed decode already covers the
+// str()/int() coercion SanitizeTrack does; only the printable() stripping is left
+// to apply. It returns a sanitized copy, so the caller's value is untouched.
+func SanitizeCached(t *Track) *Track {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	c.TrackName = printable(c.TrackName)
+	c.Artist = printable(c.Artist)
+	c.Album = printable(c.Album)
+	c.PlaybackSource = printable(c.PlaybackSource)
+	c.PlayURL = printable(c.PlayURL)
+	c.MIME = printable(c.MIME)
+	c.CoverArtURL = printable(c.CoverArtURL)
+	return &c
+}
+
 // pyStr mirrors Python's str() for the non-string values that may land in a
 // string field (Python str(True) == "True", str(1.5) == "1.5").
 func pyStr(v any) string {

@@ -322,7 +322,6 @@ drain:
 		}
 		lines := sb.String()
 		if lines != "" {
-			sent = false
 			sent = procs.write(st, now, LiveSessionTimeout, lines)
 			if !sent { // carry over in order; each keeps its own timestamp
 				*pending = reduced

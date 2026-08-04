@@ -149,6 +149,28 @@ func TestOversizedRecordIsShedNotBuffered(t *testing.T) {
 	}
 }
 
+// The cap must also hold when the flood repeats the section header: the record
+// keeps the lines already accumulated under that key, so a per-header counter
+// would hand the section a fresh budget on every @@B and let it grow forever.
+func TestRepeatedSectionHeaderDoesNotResetTheCap(t *testing.T) {
+	var lines []string
+	for range 100000 {
+		lines = append(lines, "@@B", strings.Repeat("x", 80))
+	}
+	lines = append(lines, "@@E")
+	recs := recordsFrom(lines)
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1", len(recs))
+	}
+	total := 0
+	for _, v := range recs[0] {
+		total += len(v)
+	}
+	if total > maxRecLines {
+		t.Errorf("repeated-header flood buffered %d lines, want <= %d", total, maxRecLines)
+	}
+}
+
 func TestIterRecordsContinuesOnException(t *testing.T) {
 	// An odd/non-track B section must not stop framing: the following well-formed
 	// record is still yielded, intact.
