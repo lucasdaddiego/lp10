@@ -101,9 +101,19 @@ func (m *model) key(ev keyEvent) (quit bool) {
 		return false
 	}
 
-	// tab toggles which pane has focus.
+	// The EQ pane isn't drawn at mini size, so keep focus on the player there:
+	// otherwise a pane focus held from before a shrink (or a tab press) would let
+	// the arrow keys silently drive an invisible equalizer — including nudging
+	// the Max Vol hardware cap down with no on-screen feedback.
+	if m.miniMode() {
+		m.pane = paneNow
+	}
+
+	// tab toggles which pane has focus (no-op at mini size — no second pane).
 	if ev.kind == kTab || ev.kind == kShiftTab {
-		m.pane = (m.pane + 1) % 2
+		if !m.miniMode() {
+			m.pane = (m.pane + 1) % 2
+		}
 		return false
 	}
 	if ev.kind == kEsc {
@@ -175,7 +185,9 @@ func (m *model) key(ev keyEvent) (quit bool) {
 		case 't':
 			m.showRemaining = !m.showRemaining
 		case 'e':
-			m.pane = paneEQ
+			if !m.miniMode() { // no EQ pane to focus at mini size
+				m.pane = paneEQ
+			}
 		case '?':
 			m.diag = true
 		}

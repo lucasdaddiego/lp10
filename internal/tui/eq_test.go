@@ -150,3 +150,38 @@ func TestEQUnknownValuesQueryNotSet(t *testing.T) {
 		t.Errorf("queued cmd=%+v want {MXV 35}", cmd)
 	}
 }
+
+func TestEQPaneInertAtMiniSize(t *testing.T) {
+	// At mini size the EQ pane isn't drawn, so its keys must not drive it: a pane
+	// focus held from before a shrink is dropped, tab/e can't re-enter it, and
+	// arrows act on the player (never nudging the invisible Max Vol cap).
+	m, st, eqcmds := eqModel(t)
+	st.ApplyTunnel("MXV", 40) // known, so a leaked nudge WOULD send
+	m.pane = paneEQ           // as if focused before the shrink
+	m.rows, m.cols = 8, 40    // below MiniRows/MiniCols
+
+	m.key(ke(kTab)) // must not toggle into (or within) the EQ pane
+	if m.pane != paneNow {
+		t.Fatalf("tab at mini size: pane=%d want paneNow", m.pane)
+	}
+	m.key(kr('e')) // must not focus EQ
+	if m.pane != paneNow {
+		t.Fatalf("e at mini size: pane=%d want paneNow", m.pane)
+	}
+	m.eqFocus = len(eqOrder) - 1 // Max Vol, were the pane active
+	m.key(ke(kLeft))             // must be a player action, not an EQ nudge
+	m.key(ke(kRight))
+	if n := len(eqcmds); n != 0 {
+		t.Errorf("%d EQ commands sent at mini size, want 0", n)
+	}
+	if v, _ := st.EQValue("MXV"); v != 40 {
+		t.Errorf("MXV changed to %d at mini size, want 40 (untouched)", v)
+	}
+
+	// Back at full size the EQ pane works again.
+	m.rows, m.cols = 24, 80
+	m.key(kr('e'))
+	if m.pane != paneEQ {
+		t.Fatal("e at full size should focus the EQ pane")
+	}
+}

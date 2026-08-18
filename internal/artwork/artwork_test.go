@@ -8,11 +8,24 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// allowedHost returns raw's hostname, passed as Get/fetch's SSRF-exempt host so
+// a test can fetch from its own loopback httptest server (127.0.0.1 is otherwise
+// blocked as a private address).
+func allowedHost(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Hostname()
+}
 
 // solid builds a w×h image filled with c.
 func solid(w, h int, c color.RGBA) *image.RGBA {
@@ -126,7 +139,7 @@ func TestGetFetchAndCache(t *testing.T) {
 	}))
 	dir := t.TempDir()
 
-	img, err := Get(context.Background(), srv.URL, dir)
+	img, err := Get(context.Background(), srv.URL, dir, allowedHost(t, srv.URL))
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
 	}
@@ -143,7 +156,7 @@ func TestGetFetchAndCache(t *testing.T) {
 
 	// second call serves from cache even with the server down
 	srv.Close()
-	if _, err := Get(context.Background(), srv.URL, dir); err != nil {
+	if _, err := Get(context.Background(), srv.URL, dir, allowedHost(t, srv.URL)); err != nil {
 		t.Errorf("cached Get after server close: %v", err)
 	}
 	if hits != 1 {
@@ -156,7 +169,7 @@ func TestGetHTTPError(t *testing.T) {
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 	defer srv.Close()
-	if _, err := Get(context.Background(), srv.URL, t.TempDir()); err == nil {
+	if _, err := Get(context.Background(), srv.URL, t.TempDir(), allowedHost(t, srv.URL)); err == nil {
 		t.Error("expected error on 404")
 	}
 }
@@ -173,7 +186,7 @@ func TestGetCorruptCacheRefetches(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "x"), nil, 0o600); err == nil {
 		os.WriteFile(cacheFile(dir, srv.URL), []byte("not an image"), 0o600)
 	}
-	img, err := Get(context.Background(), srv.URL, dir)
+	img, err := Get(context.Background(), srv.URL, dir, allowedHost(t, srv.URL))
 	if err != nil || img == nil {
 		t.Fatalf("refetch on corrupt cache: img=%v err=%v", img, err)
 	}

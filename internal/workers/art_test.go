@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +15,17 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
+
+// allowedHost returns raw's hostname, passed as the artWorker's cfg.Host so a
+// test's loopback httptest server is exempt from the artwork SSRF block.
+func allowedHost(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Hostname()
+}
 
 func smallPNG(t *testing.T) []byte {
 	t.Helper()
@@ -43,7 +55,7 @@ func TestArtWorkerLoadsAndDedups(t *testing.T) {
 	st := protocol.NewState()
 	control := newRunControl()
 	st.Preload(&protocol.Track{TrackName: "x", CoverArtURL: srv.URL}, 0, 50)
-	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto"})
+	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto", Host: allowedHost(t, srv.URL)})
 	defer control.stop.Set()
 
 	if !waitFor(func() bool { return st.Snap().Art != nil }, 3*time.Second) {

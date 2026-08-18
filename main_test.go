@@ -61,4 +61,15 @@ func TestResolveDevice(t *testing.T) {
 	off := base
 	off.Discover = false
 	resolveDevice(off, probed)
+
+	// A hostile advertised name carrying escape bytes is control-stripped before
+	// it composes the header label (mDNS labels are attacker-controllable). The
+	// ESC/BEL that would start an OSC-8 sequence are removed; the inert printable
+	// remainder is harmless without them.
+	evil := func(string, time.Duration) (discovery.Device, bool) {
+		return discovery.Device{Name: "Den\x1b]8;;http://evil\x07x", Model: "LP10", IP: net.IPv4(192, 168, 1, 41)}, true
+	}
+	if cfg = resolveDevice(base, evil); cfg.Name != "LP10 · Den]8;;http://evilx" {
+		t.Errorf("device name must strip the ESC/BEL, got %q", cfg.Name)
+	}
 }

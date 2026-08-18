@@ -41,6 +41,7 @@ type harness struct {
 	fakeSSH string
 	tmp     string
 	wg      sync.WaitGroup
+	restore func() // package-var restore, run after the worker join (see newHarness)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -68,6 +69,12 @@ func newHarness(t *testing.T) *harness {
 		case <-time.After(5 * time.Second):
 			t.Error("harness workers did not exit after stop")
 		}
+		// Restore package vars ONLY after the join: a worker still calling
+		// classify() would otherwise race this write (t.Cleanup is LIFO, so a
+		// restore registered in start() would run before this join).
+		if h.restore != nil {
+			h.restore()
+		}
 	})
 	return h
 }
@@ -88,7 +95,7 @@ func (h *harness) start(scenario string, opts startOpts) *protocol.State {
 			}
 			return nil
 		}
-		h.t.Cleanup(func() { classify = orig })
+		h.restore = func() { classify = orig } // run post-join, see newHarness
 	}
 	cfg := config.Load()
 	h.wg.Go(func() { streamWorker(h.st, cfg, opts.snapshot, h.procs, h.control) })

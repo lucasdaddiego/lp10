@@ -21,7 +21,7 @@ import (
 // arbitrary-protocol fetch) and surface as a deterministic ErrUndecodable.
 func TestGetRejectsNonHTTPScheme(t *testing.T) {
 	for _, u := range []string{"file:///etc/passwd", "ftp://h/x", "gopher://h", "data:image/png;base64,AAAA", "://nope"} {
-		if _, err := Get(context.Background(), u, t.TempDir()); !errors.Is(err, ErrUndecodable) {
+		if _, err := Get(context.Background(), u, t.TempDir(), ""); !errors.Is(err, ErrUndecodable) {
 			t.Errorf("scheme %q: err=%v, want ErrUndecodable", u, err)
 		}
 	}
@@ -62,7 +62,7 @@ func TestGetUndecodableBytesAreTyped(t *testing.T) {
 		w.Write([]byte("definitely not an image"))
 	}))
 	defer srv.Close()
-	if _, err := Get(context.Background(), srv.URL, t.TempDir()); !errors.Is(err, ErrUndecodable) {
+	if _, err := Get(context.Background(), srv.URL, t.TempDir(), allowedHost(t, srv.URL)); !errors.Is(err, ErrUndecodable) {
 		t.Errorf("non-image body: err=%v, want ErrUndecodable (so the worker won't retry it)", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestGetRejectsOversizedResponse(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	if _, err := Get(context.Background(), srv.URL, t.TempDir()); !errors.Is(err, ErrUndecodable) {
+	if _, err := Get(context.Background(), srv.URL, t.TempDir(), allowedHost(t, srv.URL)); !errors.Is(err, ErrUndecodable) {
 		t.Errorf("oversized response: err=%v, want ErrUndecodable", err)
 	}
 }
@@ -87,7 +87,7 @@ func TestGetDecodesGIF(t *testing.T) {
 		w.Write(buf.Bytes())
 	}))
 	defer srv.Close()
-	if img, err := Get(context.Background(), srv.URL, t.TempDir()); err != nil || img == nil {
+	if img, err := Get(context.Background(), srv.URL, t.TempDir(), allowedHost(t, srv.URL)); err != nil || img == nil {
 		t.Fatalf("gif cover: img=%v err=%v", img, err)
 	}
 }

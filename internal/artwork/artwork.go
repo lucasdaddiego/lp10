@@ -27,6 +27,7 @@ import (
 	_ "image/png"  // ""
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -54,15 +55,59 @@ const (
 // can give up on it rather than re-downloading on every retry tick.
 var ErrUndecodable = errors.New("art: undecodable image")
 
-var httpClient = &http.Client{}
+// allowHostKey carries the one host exempt from the SSRF block (the configured
+// device, which legitimately serves AirPlay/DLNA covers on a private IP) into
+// the redirect check, which is otherwise per-client not per-request.
+type ctxKey int
+
+const allowHostKey ctxKey = iota
+
+var httpClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("art: stopped after 10 redirects")
+		}
+		allow, _ := req.Context().Value(allowHostKey).(string)
+		return checkFetchHost(req.URL.Hostname(), allow)
+	},
+}
+
+// checkFetchHost blocks a cover fetch that resolves to a loopback / private /
+// link-local address — a device-supplied CoverArtUrl pointing at the laptop's
+// own internal network (SSRF: a blind GET / port probe from a host that may
+// reach more than the speaker can). The configured device host is exempt, since
+// its own covers live on a private IP. Best-effort against the resolver's TOCTOU
+// (a rebinding attacker could still race the subsequent dial); a custom
+// DialContext validating the connected IP would close that, at more cost than
+// this home-LAN threat warrants.
+func checkFetchHost(host, allowHost string) error {
+	if host == "" {
+		return fmt.Errorf("%w: empty host", ErrUndecodable)
+	}
+	if allowHost != "" && host == allowHost {
+		return nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("%w: resolve %s: %v", ErrUndecodable, host, err)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("%w: blocked non-public host %s (%s)", ErrUndecodable, host, ip)
+		}
+	}
+	return nil
+}
 
 // Get returns the decoded cover for url. It serves from the on-disk cache under
 // dir (raw bytes keyed by the url hash) when present, else fetches once over
 // HTTP(S), decodes (gif/jpeg/png), and populates the cache. dir == "" disables
-// the cache (network only). The caller's ctx bounds the network wait. A url with
-// a non-http(s) scheme, or an image that fails to decode or exceeds maxArtPixels,
-// returns ErrUndecodable.
-func Get(ctx context.Context, rawurl, dir string) (image.Image, error) {
+// the cache (network only). The caller's ctx bounds the network wait. allowHost
+// is the one host exempt from the private-address SSRF block (the configured
+// device). A url with a non-http(s) scheme, a blocked/unresolvable host, or an
+// image that fails to decode or exceeds maxArtPixels, returns ErrUndecodable.
+func Get(ctx context.Context, rawurl, dir, allowHost string) (image.Image, error) {
 	if u, err := url.Parse(rawurl); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("%w: scheme %q", ErrUndecodable, rawurl)
 	}
@@ -73,7 +118,7 @@ func Get(ctx context.Context, rawurl, dir string) (image.Image, error) {
 		}
 		// a corrupt/undecodable cache entry falls through to a refetch
 	}
-	raw, err := fetch(ctx, rawurl)
+	raw, err := fetch(ctx, rawurl, allowHost)
 	if err != nil {
 		return nil, err // transient (network / HTTP status): caller may retry
 	}
@@ -111,8 +156,18 @@ func decode(raw []byte) (image.Image, error) {
 	return rgbaOf(img), nil
 }
 
-func fetch(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func fetch(ctx context.Context, rawurl, allowHost string) ([]byte, error) {
+	// Validate the initial host up front (CheckRedirect only guards later hops),
+	// and stash allowHost so the redirect check can re-apply the same rule.
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUndecodable, err)
+	}
+	if err := checkFetchHost(u.Hostname(), allowHost); err != nil {
+		return nil, err
+	}
+	ctx = context.WithValue(ctx, allowHostKey, allowHost)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -128,9 +183,9 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 		// the life of the track. 408/429 and every 5xx stay transient.
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
 			resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
-			return nil, fmt.Errorf("%w: http %d for %s", ErrUndecodable, resp.StatusCode, url)
+			return nil, fmt.Errorf("%w: http %d for %s", ErrUndecodable, resp.StatusCode, rawurl)
 		}
-		return nil, fmt.Errorf("art: http %d for %s", resp.StatusCode, url)
+		return nil, fmt.Errorf("art: http %d for %s", resp.StatusCode, rawurl)
 	}
 	if resp.ContentLength > maxArtBytes {
 		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrUndecodable, maxArtBytes)

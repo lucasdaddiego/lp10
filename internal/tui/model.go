@@ -52,6 +52,14 @@ const (
 	paneEQ  = 1 // equalizer strip
 )
 
+// miniMode reports whether the terminal is too small for the dashboard, so only
+// the one-line mini view renders (no EQ pane). Mirrors viewContent's threshold,
+// including its rows==0||cols==0 "no size yet" guard: before the first
+// WindowSizeMsg nothing is drawn and this is not mini.
+func (m *model) miniMode() bool {
+	return m.rows > 0 && m.cols > 0 && (m.rows < MiniRows || m.cols < MiniCols)
+}
+
 // model is the Bubble Tea model: controller logic plus render state.
 type model struct {
 	st     *protocol.State

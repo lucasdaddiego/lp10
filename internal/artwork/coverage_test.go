@@ -40,7 +40,7 @@ func TestCov_DecodeFailsAfterConfigOK(t *testing.T) {
 // http.NewRequestWithContext fails before any network use when the URL can't be
 // parsed into a request (fetch is called directly, bypassing Get's scheme check).
 func TestCov_FetchRequestBuildError(t *testing.T) {
-	if _, err := fetch(context.Background(), "://nope"); err == nil {
+	if _, err := fetch(context.Background(), "://nope", ""); err == nil {
 		t.Fatal("fetch with an unparseable URL should error at request build")
 	}
 }
@@ -54,7 +54,7 @@ func TestCov_FetchTransportError(t *testing.T) {
 	defer srv.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Do must refuse the cancelled context
-	if _, err := fetch(ctx, srv.URL); err == nil {
+	if _, err := fetch(ctx, srv.URL, allowedHost(t, srv.URL)); err == nil {
 		t.Fatal("fetch with a cancelled context should surface a transport error")
 	}
 }
@@ -310,5 +310,38 @@ func TestCov_KittyImageEncodeFailureDegrades(t *testing.T) {
 	empty := image.NewRGBA(image.Rect(0, 0, 0, 0)) // non-nil, zero area
 	if tr, ls := KittyImage(empty, 1, 1, 1, 0, 0); tr != "" || ls != nil {
 		t.Errorf("zero-area image should degrade to (\"\", nil), got (%q, %v)", tr, ls)
+	}
+}
+
+// TestCov_CheckFetchHost pins the SSRF host rule directly (IP literals so
+// LookupIP never hits the network): private/loopback/link-local/unspecified are
+// blocked, a public IP passes, and the configured device host is exempt.
+func TestCov_CheckFetchHost(t *testing.T) {
+	blocked := []string{"127.0.0.1", "10.0.0.5", "192.168.1.40", "169.254.1.1", "0.0.0.0", ""}
+	for _, h := range blocked {
+		if err := checkFetchHost(h, ""); !errors.Is(err, ErrUndecodable) {
+			t.Errorf("checkFetchHost(%q, \"\") = %v, want blocked", h, err)
+		}
+	}
+	if err := checkFetchHost("8.8.8.8", ""); err != nil {
+		t.Errorf("public IP literal should pass: %v", err)
+	}
+	if err := checkFetchHost("192.168.1.40", "192.168.1.40"); err != nil {
+		t.Errorf("configured device host should be exempt: %v", err)
+	}
+}
+
+// TestCov_FetchBlocksLoopback: fetch refuses a loopback httptest server with no
+// exemption (before any request goes out), but the same host exempted decodes.
+func TestCov_FetchBlocksLoopback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(pngBytes(t, solid(2, 2, color.RGBA{5, 5, 5, 255})))
+	}))
+	defer srv.Close()
+	if _, err := fetch(context.Background(), srv.URL, ""); !errors.Is(err, ErrUndecodable) {
+		t.Errorf("loopback fetch without exemption = %v, want ErrUndecodable (blocked)", err)
+	}
+	if _, err := Get(context.Background(), srv.URL, t.TempDir(), allowedHost(t, srv.URL)); err != nil {
+		t.Errorf("exempted device host should fetch: %v", err)
 	}
 }

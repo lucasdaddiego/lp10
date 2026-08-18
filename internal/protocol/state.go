@@ -326,12 +326,16 @@ func (st *State) EQView() (connected bool, vals map[string]int) {
 
 // ---- errors ----
 
-// Note records a transient error message (no-op once fatal).
+// Note records a transient error message (no-op once fatal). The text is
+// control-stripped: a note can carry raw ssh stderr / a device banner, which
+// the error line renders at full width — an un-stripped ESC there could inject
+// an escape sequence (an OSC-8 hyperlink survives an SGR reset and bleeds down
+// the frame).
 func (st *State) Note(msg string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if !st.fatal {
-		st.errMsg, st.errAt = msg, time.Now()
+		st.errMsg, st.errAt = printable(msg), time.Now()
 	}
 }
 
@@ -345,11 +349,12 @@ func (st *State) ClearFatalOnData() {
 	}
 }
 
-// SetFatal latches a fatal error with its timestamp.
+// SetFatal latches a fatal error with its timestamp. Control-stripped like
+// Note: a fatal message can echo classified ssh stderr from an untrusted device.
 func (st *State) SetFatal(msg string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.errMsg, st.errAt, st.fatal = msg, time.Now(), true
+	st.errMsg, st.errAt, st.fatal = printable(msg), time.Now(), true
 }
 
 // ---- connection liveness (used by the workers and the TUI) ----

@@ -23,6 +23,7 @@ import (
 
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/discovery"
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/transport"
 	"github.com/lucasdaddiego/lp10/internal/tui"
 )
@@ -57,8 +58,11 @@ func resolveDevice(cfg config.Config, find func(string, time.Duration) (discover
 		cfg.Host, cfg.Discovered = dev.Addr(), true
 		// Label the UI with the device's own advertised name ("LP10 · Living")
 		// when the user hasn't set a custom name — so no room name is hardcoded.
-		if cfg.Name == config.DefaultName && dev.Name != "" {
-			cfg.Name = config.DefaultName + " · " + dev.Name
+		// The mDNS label is attacker-controllable and reaches the header
+		// unfiltered (unlike the @@-section device strings), so control-strip it
+		// here — a raw ESC in it could otherwise inject an escape sequence.
+		if name := protocol.Printable(dev.Name); cfg.Name == config.DefaultName && name != "" {
+			cfg.Name = config.DefaultName + " · " + name
 		}
 	}
 	return cfg

@@ -44,7 +44,7 @@ func artWorker(ctx context.Context, control *runControl, st *protocol.State, cfg
 			// backing off this url after a recent transient failure
 		default:
 			fetchCtx, cancel := context.WithTimeout(ctx, artFetchTimeout)
-			img, err := artwork.Get(fetchCtx, url, dir)
+			img, err := artwork.Get(fetchCtx, url, dir, cfg.Host)
 			cancel()
 			switch {
 			case err == nil && img != nil:

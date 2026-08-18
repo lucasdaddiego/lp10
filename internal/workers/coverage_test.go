@@ -521,7 +521,7 @@ func TestCov_ArtTransientFailureBacksOff(t *testing.T) {
 	st := protocol.NewState()
 	control := newRunControl()
 	st.Preload(&protocol.Track{TrackName: "x", CoverArtURL: srv.URL}, 0, 50)
-	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto"})
+	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto", Host: allowedHost(t, srv.URL)})
 	defer control.stop.Set()
 
 	if !waitFor(func() bool { return atomic.LoadInt32(&hits) >= 1 }, 3*time.Second) {
@@ -550,7 +550,7 @@ func TestCov_ArtUndecodableGivesUp(t *testing.T) {
 	st := protocol.NewState()
 	control := newRunControl()
 	st.Preload(&protocol.Track{TrackName: "x", CoverArtURL: srv.URL}, 0, 50)
-	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto"})
+	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto", Host: allowedHost(t, srv.URL)})
 	defer control.stop.Set()
 
 	if !waitFor(func() bool { return atomic.LoadInt32(&hits) >= 1 }, 3*time.Second) {

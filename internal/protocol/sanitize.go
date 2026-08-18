@@ -103,6 +103,14 @@ func floatInt(f float64) (int, bool) {
 	return int(f), true
 }
 
+// Printable strips control/separator characters from a device-supplied string
+// before it reaches the terminal, so a raw ESC/BEL/C1 byte can't start an
+// escape sequence (SGR colour bleed, an injected OSC-8 hyperlink) in the
+// rendered frame. It is the exported form of printable, for the few
+// device-string boundaries outside this package (the mDNS device name, ssh
+// stderr notes) that the @@-section parsers don't already cover.
+func Printable(s string) string { return printable(s) }
+
 // printable strips control/separator characters the way CPython's
 // str.isprintable does: non-printable == category Other (C*) or Separator (Z*),
 // except the ASCII space. Using the category test (rather than Go's

@@ -243,6 +243,20 @@ func TestCov_NoteAndFatal(t *testing.T) {
 		t.Errorf("errMsg = %q, want \"transient\"", msg)
 	}
 
+	// Note/SetFatal control-strip: ssh stderr / a device banner can carry raw
+	// escapes, and the error line renders at full width. The ESC/BEL bytes that
+	// would START a sequence are removed (the leftover printable "]8;;" is inert
+	// without its ESC), so no OSC-8 link or SGR run can survive to the terminal.
+	st2 := NewState()
+	st2.Note("bad\x1b]8;;http://evil\x07line")
+	if msg := st2.Snap().Error; msg != "bad]8;;http://evilline" {
+		t.Errorf("Note must strip the ESC/BEL, got %q", msg)
+	}
+	st2.SetFatal("fatal\x1b[31mred")
+	if msg := st2.Snap().Error; msg != "fatal[31mred" {
+		t.Errorf("SetFatal must strip the ESC, got %q", msg)
+	}
+
 	// SetFatal latches; Note is a no-op while fatal.
 	st.SetFatal("boom")
 	st.Note("ignored while fatal")
