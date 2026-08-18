@@ -237,7 +237,7 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// the new diag-gated gathers (all default to "-" so absent paths don't break the line)
 		`for ad in /proc/asound/card*/pcm*p/sub*; do`,
 		`buffer_size) bs=$av;;`,
-		`scaling_cur_freq 2>/dev/null`,
+		`2>/dev/null < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq`,
 		`ns=${nz%.}`, // Wi-Fi noise floor (for SNR)
 		`printf 'dns=%s\n' "$dns"`,
 		`if [ "$dg" = 1 ]; then`,
@@ -269,7 +269,7 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 // silently on the device (which CI can't reach). The sample matches the on-device
 // probe of the AR241CE: status has `avail` but no `xruns` line.
 func TestRemoteLoopAudioChainParses(t *testing.T) {
-	const snip = `as=-; ab=-; ar=-; af=-; ac=-; bs=-; for ad in /proc/asound/card*/pcm*p/sub*; do while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in state) as=$av;; avail) ab=$av;; esac; done < "$ad/status" 2>/dev/null; while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac; done < "$ad/hw_params" 2>/dev/null; done`
+	const snip = `as=-; ab=-; ar=-; af=-; ac=-; bs=-; for ad in /proc/asound/card*/pcm*p/sub*; do while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in state) as=$av;; avail) ab=$av;; esac; done 2>/dev/null < "$ad/status"; while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac; done 2>/dev/null < "$ad/hw_params"; done`
 	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
 		t.Fatal("audio-chain gather snippet not found verbatim in the loop")
 	}

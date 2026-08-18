@@ -403,3 +403,21 @@ func TestCov_WriterLiveDatalessStreak(t *testing.T) {
 		t.Error("a young spawn after a data-ful session should have the grace")
 	}
 }
+
+// TestCov_StaleDataDeathArmsStreak: a session that HAD data but died with it
+// stale (the mid-outage watchdog kill) must arm the streak immediately, so
+// even the first respawn of an outage refuses the young-spawn grace.
+func TestCov_StaleDataDeathArmsStreak(t *testing.T) {
+	orig := staleDeathAfter
+	staleDeathAfter = 0 // any age counts as stale
+	defer func() { staleDeathAfter = orig }()
+
+	st := NewState()
+	st.StartConnection()
+	ApplyRecord(st, Record{"v": {"Data:44"}})
+	st.Disconnect() // data present but stale at death
+	st.StartConnection()
+	if st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+		t.Error("first respawn after a stale-data death should not have the grace")
+	}
+}

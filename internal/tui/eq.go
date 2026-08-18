@@ -35,20 +35,23 @@ const (
 func (m *model) eqSpec() tunnel.Spec { return tunnel.Specs[eqOrder[m.eqFocus]] }
 
 // eqAdjust nudges the focused control by dir*step, clamps it, and sends it.
-// A control the device hasn't reported yet (slider shows "—") is left alone:
-// nudging would fabricate a 0 baseline and send it — for MXV that hard-caps
-// the speaker's output at 0/5%.
+// A control the device hasn't reported yet (slider shows "—") is never nudged:
+// that would fabricate a 0 baseline and send it — for MXV a hard cap of the
+// speaker's output at 0/5%. Instead the keypress re-queries the control, so a
+// lost seed reply self-heals on the next press (the device only broadcasts on
+// change, so nothing else would ever repopulate it mid-connection).
 func (m *model) eqAdjust(dir int) {
 	sp := m.eqSpec()
 	cur, known := m.st.EQValue(sp.Code)
 	if !known {
+		m.queryEQ(sp.Code)
 		return
 	}
 	m.sendEQ(sp.Code, tunnel.Clamp(sp.Code, cur+dir*sp.Step))
 }
 
-// eqToggleFocused flips a focused on/off control (no-op on ranged controls and
-// on a toggle whose state is still unknown).
+// eqToggleFocused flips a focused on/off control (no-op on ranged controls; an
+// unknown toggle re-queries instead, like eqAdjust).
 func (m *model) eqToggleFocused() {
 	sp := m.eqSpec()
 	if sp.Kind != tunnel.Toggle {
@@ -56,6 +59,7 @@ func (m *model) eqToggleFocused() {
 	}
 	cur, known := m.st.EQValue(sp.Code)
 	if !known {
+		m.queryEQ(sp.Code)
 		return
 	}
 	v := 0
@@ -63,6 +67,12 @@ func (m *model) eqToggleFocused() {
 		v = 1
 	}
 	m.sendEQ(sp.Code, v)
+}
+
+// queryEQ asks the device to re-broadcast one control's value (no local write,
+// no echo hold — the broadcast lands via ApplyTunnel like any other).
+func (m *model) queryEQ(code string) {
+	nbSend(m.eqcmds, workers.EQCommand{Code: code, Query: true, TS: time.Now()})
 }
 
 // sendEQ records the change optimistically (arming the echo hold) and enqueues

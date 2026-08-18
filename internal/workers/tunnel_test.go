@@ -191,3 +191,18 @@ func TestTunnelCarryDeliveredOnNextConnection(t *testing.T) {
 		t.Errorf("carry = %+v, want consumed after delivery", carry)
 	}
 }
+
+// TestEQCommandWireQuery: a Query command emits the bare "CODE;" query wire; an
+// expired query is dropped silently (not "command not delivered" — it isn't
+// lost user intent).
+func TestEQCommandWireQuery(t *testing.T) {
+	now := time.Now()
+	if wire, stale := eqCommandWire(EQCommand{Code: "MXV", Query: true, TS: now}, now); wire != "MXV;" || stale {
+		t.Errorf("query wire = (%q, %v), want (MXV;, false)", wire, stale)
+	}
+	if wire, stale := eqCommandWire(EQCommand{
+		Code: "MXV", Query: true, TS: now.Add(-EQCommandDeadline - time.Second),
+	}, now); wire != "" || stale {
+		t.Errorf("expired query = (%q, %v), want silently dropped", wire, stale)
+	}
+}

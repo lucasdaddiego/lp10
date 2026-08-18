@@ -43,30 +43,46 @@ const (
 // fast_fatal monkeypatch of workers.classify_stderr).
 var classify = transport.ClassifyStderr
 
-// backoffResetAfter is how long a session must have been up before a data
-// record resets the reconnect backoff. Resetting on the first record let a
-// session that dies right after one tick reconnect at InitialBackoff forever —
-// sustained ssh churn the device's sshd punishes with a lockout. (The tunnel's
-// analog: a completed seed with a live reader.) A var so tests can shorten it.
+// backoffResetAfter is how long a session must have been DELIVERING (measured
+// from its first data record, not its spawn) before a data record resets the
+// reconnect backoff. Resetting on the first record let a session that dies
+// right after one tick reconnect at InitialBackoff forever — sustained ssh
+// churn the device's sshd punishes with a lockout — and spawn-relative aging
+// would readmit that churn whenever the handshake itself ate the window. (The
+// tunnel's analog: a completed seed with a live reader.) A var so tests can
+// shorten it.
 var backoffResetAfter = 8 * time.Second
 
-// boundedLines yields lines from r, each at most maxLine bytes (mirroring
-// readline(_MAX_LINE)): a line ends at '\n' or once the cap is hit. Returns
-// ("", false) at EOF with nothing buffered. ReadSlice serves a whole line from
-// bufio's buffer in one call (vs a byte at a time); the buffer is sized to
-// maxLine so a newline-free run comes back in maxLine chunks via ErrBufferFull,
-// bounding memory exactly as before. string(line) copies out of the buffer, so
-// the lines IterRecords retains stay valid across later reads.
+// boundedLines yields lines from r, each at most maxLine bytes: a line ends at
+// '\n' or once the cap is hit. Returns ("", false) at EOF with nothing
+// buffered. ReadSlice serves a whole line from bufio's buffer in one call (vs
+// a byte at a time); the buffer is sized to maxLine so a newline-free run
+// comes back in maxLine chunks via ErrBufferFull, bounding memory. Only the
+// FIRST chunk of an over-long line is yielded (it holds the true line start);
+// the continuations are discarded, so an arbitrary 64KB byte boundary can
+// never fabricate a line start — i.e. a `@@` landing there can't open a fake
+// record section. string(line) copies out of the buffer, so the lines
+// IterRecords retains stay valid across later reads.
 func boundedLines(r io.Reader) func() (string, bool) {
 	br := bufio.NewReaderSize(r, maxLine)
+	midLine := false // last yield ended at the cap, not at '\n'
 	return func() (string, bool) {
-		// The error needs no inspection: ReadSlice returns nil error only when
-		// the delimiter was found, so an empty slice always means EOF/failure.
-		line, _ := br.ReadSlice('\n')
-		if len(line) > 0 {
+		for {
+			// The error needs no inspection beyond ErrBufferFull: ReadSlice
+			// returns nil error only when the delimiter was found, so an empty
+			// slice always means EOF/failure.
+			line, err := br.ReadSlice('\n')
+			if len(line) == 0 {
+				return "", false
+			}
+			capped := err == bufio.ErrBufferFull
+			if midLine {
+				midLine = capped
+				continue // still inside the over-long line: drop
+			}
+			midLine = capped
 			return string(line), true
 		}
-		return "", false
 	}
 }
 
@@ -147,8 +163,7 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	procs.start(st, proc)
 
 	if !control.stop.IsSet() {
-		started := time.Now()
-		var lastPersist time.Time
+		var firstData, lastPersist time.Time
 		nextLine := boundedLines(outR)
 		for rec := range protocol.IterRecords(nextLine) {
 			if control.stop.IsSet() {
@@ -159,7 +174,10 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 				continue
 			}
 			now := time.Now()
-			if now.Sub(started) >= backoffResetAfter {
+			if firstData.IsZero() {
+				firstData = now
+			}
+			if now.Sub(firstData) >= backoffResetAfter {
 				backoff = InitialBackoff
 			}
 			st.ClearFatalOnData()

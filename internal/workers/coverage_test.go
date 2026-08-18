@@ -115,25 +115,24 @@ func TestCov_BoundedLines(t *testing.T) {
 		t.Fatal("expected EOF after two lines")
 	}
 
-	// A newline-free run longer than maxLine is split into <=maxLine chunks,
-	// losslessly (the first chunk is exactly maxLine).
-	long := strings.Repeat("a", maxLine+4464)
+	// A newline-free run longer than maxLine yields only its FIRST chunk (the
+	// true line start); continuation chunks are dropped, so a 64KB chunk
+	// boundary can never fabricate a line start (e.g. a "@@s" landing exactly
+	// there opening a fake record section). The next real line still arrives.
+	long := strings.Repeat("a", 2*maxLine+4464) + "\n@@x not-a-section\nreal\n"
 	next = boundedLines(strings.NewReader(long))
 	first, ok := next()
 	if !ok || len(first) != maxLine {
 		t.Fatalf("first chunk len=%d want %d", len(first), maxLine)
 	}
-	var total strings.Builder
-	total.WriteString(first)
-	for {
-		s, more := next()
-		if !more {
-			break
-		}
-		total.WriteString(s)
+	if s, ok := next(); !ok || s != "@@x not-a-section\n" {
+		t.Fatalf("after over-long line = %q,%v want the next real line", s, ok)
 	}
-	if total.String() != long {
-		t.Fatalf("reassembled %d bytes, want %d", len(total.String()), len(long))
+	if s, ok := next(); !ok || s != "real\n" {
+		t.Fatalf("following line = %q,%v", s, ok)
+	}
+	if _, ok := next(); ok {
+		t.Fatal("expected EOF after the tail lines")
 	}
 }
 

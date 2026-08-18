@@ -60,7 +60,7 @@ case "$ir" in
     case "$r" in *" dev "*) dv=${r#* dev }; dv=${dv%% *};; esac;;
 esac;
 [ -z "$dv" ] && dv=eth0;
-mac=; read -r mac < /sys/class/net/$dv/address 2>/dev/null;
+mac=; read -r mac 2>/dev/null < /sys/class/net/$dv/address;
 ip=$(ip -o -4 addr show $dv 2>/dev/null); ip=${ip#*inet }; ip=${ip%%/*};
 net=eth; sp=; dx=; ss=; fq=; rt=;
 if [ -d /sys/class/net/$dv/wireless ]; then
@@ -69,8 +69,8 @@ if [ -d /sys/class/net/$dv/wireless ]; then
   case "$wl" in *"freq: "*) fq=${wl#*freq: }; fq=${fq%%"$nl"*}; fq=${fq%% *};; esac;
   case "$wl" in *"tx bitrate: "*) rt=${wl#*tx bitrate: }; rt=${rt%%"$nl"*}; rt=${rt%% *};; esac;
 else
-  read -r sp < /sys/class/net/$dv/speed 2>/dev/null;
-  read -r dx < /sys/class/net/$dv/duplex 2>/dev/null;
+  read -r sp 2>/dev/null < /sys/class/net/$dv/speed;
+  read -r dx 2>/dev/null < /sys/class/net/$dv/duplex;
 fi;
 
 # ── build/app/platform from fwVersion.conf (quoted values) ──
@@ -81,13 +81,13 @@ while IFS= read -r ln; do
     *app_svn_version*\"*) ap=${ln#*\"}; ap=${ap%%\"*};;
     *platform*\"*) pf=${ln#*\"}; pf=${pf%%\"*};;
   esac;
-done < /etc/fwVersion.conf 2>/dev/null;
+done 2>/dev/null < /etc/fwVersion.conf;
 
 # ── resolver + /lsync usage, then emit the @@i key=value block ──
 dns=;
 while read -r dk dvv drest; do
   case "$dk" in nameserver) dns=$dvv; break;; esac;
-done < /etc/resolv.conf 2>/dev/null;
+done 2>/dev/null < /etc/resolv.conf;
 set -- $(df -k /lsync 2>/dev/null | tail -1);
 echo @@i;
 printf 'net=%s\n' "$net";
@@ -167,21 +167,21 @@ while :; do
       case "$k" in MemTotal:) mt=$v;; MemAvailable:) ma=$v; break;; esac;
     done < /proc/meminfo;
     read -r up r3 < /proc/uptime;
-    tp=; read -r tp < /sys/class/thermal/thermal_zone0/temp 2>/dev/null;
-    rxb=; read -r rxb < /sys/class/net/$dv/statistics/rx_bytes 2>/dev/null;
-    txb=; read -r txb < /sys/class/net/$dv/statistics/tx_bytes 2>/dev/null;
+    tp=; read -r tp 2>/dev/null < /sys/class/thermal/thermal_zone0/temp;
+    rxb=; read -r rxb 2>/dev/null < /sys/class/net/$dv/statistics/rx_bytes;
+    txb=; read -r txb 2>/dev/null < /sys/class/net/$dv/statistics/tx_bytes;
     # cumulative error/drop counters (the laptop shows session deltas, so the
     # powerline link's boot-lifetime noise never reads as a live fault)
-    rxe=; read -r rxe < /sys/class/net/$dv/statistics/rx_errors 2>/dev/null;
-    txe=; read -r txe < /sys/class/net/$dv/statistics/tx_errors 2>/dev/null;
-    rxd=; read -r rxd < /sys/class/net/$dv/statistics/rx_dropped 2>/dev/null;
-    txd=; read -r txd < /sys/class/net/$dv/statistics/tx_dropped 2>/dev/null;
+    rxe=; read -r rxe 2>/dev/null < /sys/class/net/$dv/statistics/rx_errors;
+    txe=; read -r txe 2>/dev/null < /sys/class/net/$dv/statistics/tx_errors;
+    rxd=; read -r rxd 2>/dev/null < /sys/class/net/$dv/statistics/rx_dropped;
+    txd=; read -r txd 2>/dev/null < /sys/class/net/$dv/statistics/tx_dropped;
     # Wi-Fi signal / link-quality / noise from /proc/net/wireless (the active iface)
     sg=-; lq=-; ns=-;
     if [ "$net" = wifi ]; then
       while read -r wf qa ql lv nz rest; do
         case "$wf" in "$dv:") lq=${ql%.}; sg=${lv%.}; ns=${nz%.}; break;; esac;
-      done < /proc/net/wireless 2>/dev/null;
+      done 2>/dev/null < /proc/net/wireless;
     fi;
     # ALSA chain: walk each playback sub for state/avail (status) + rate/fmt/ch/buf
     # (hw_params); colon may be attached (rate:) or detached (rate :) — handle both.
@@ -190,13 +190,13 @@ while :; do
       while read -r ak av ar2; do
         k=${ak%:}; [ "$av" = ":" ] && av=$ar2;
         case "$k" in state) as=$av;; avail) ab=$av;; esac;
-      done < "$ad/status" 2>/dev/null;
+      done 2>/dev/null < "$ad/status";
       while read -r ak av ar2; do
         k=${ak%:}; [ "$av" = ":" ] && av=$ar2;
         case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac;
-      done < "$ad/hw_params" 2>/dev/null;
+      done 2>/dev/null < "$ad/hw_params";
     done;
-    cf=-; read -r cf < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null;
+    cf=-; read -r cf 2>/dev/null < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq;
     # three ping RTTs (laptop / gateway / internet) gated to every 3rd @@s (pgc) so a
     # dead target can't stall every tick; skipped ticks emit "-" (parser folds as gap).
     # The internet target self-pins to its resolved IP after the first success (pg's

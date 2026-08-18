@@ -113,10 +113,11 @@ func TestDashboardRenders(t *testing.T) {
 	}
 }
 
-func TestEQUnknownValuesAreNoops(t *testing.T) {
+func TestEQUnknownValuesQueryNotSet(t *testing.T) {
 	// Nothing reported yet (no snapshot, tunnel not seeded): nudging or toggling
-	// must send nothing. Fabricating a 0 baseline and sending it would hard-cap
-	// the speaker's output when the focused control is MXV.
+	// must never send a value — fabricating a 0 baseline would hard-cap the
+	// speaker's output when the focused control is MXV. Instead each keypress
+	// re-queries the control so a lost seed reply self-heals.
 	st := protocol.NewState()
 	eqcmds := make(chan workers.EQCommand, 16)
 	m := newModel(st, defaultCfg(), make(chan *protocol.Command, 8), eqcmds)
@@ -125,12 +126,17 @@ func TestEQUnknownValuesAreNoops(t *testing.T) {
 	m.key(kr('e'))
 	m.eqFocus = len(eqOrder) - 1 // Max Vol: slider shows "—"
 	m.key(ke(kLeft))
-	m.key(ke(kRight))
 	m.eqFocus = 0 // EQS toggle, also unknown
 	m.key(ke(kEnter))
 
+	for _, want := range []string{"MXV", "EQS"} {
+		cmd := <-eqcmds
+		if !cmd.Query || cmd.Code != want || cmd.TS.IsZero() {
+			t.Errorf("queued cmd=%+v want a %s query", cmd, want)
+		}
+	}
 	if n := len(eqcmds); n != 0 {
-		t.Fatalf("%d commands queued from unknown values, want 0", n)
+		t.Fatalf("%d extra commands queued from unknown values, want 0", n)
 	}
 	if _, known := st.EQValue("MXV"); known {
 		t.Error("MXV must stay unknown (no optimistic local write)")
@@ -140,7 +146,7 @@ func TestEQUnknownValuesAreNoops(t *testing.T) {
 	st.ApplyTunnel("MXV", 40)
 	m.eqFocus = len(eqOrder) - 1
 	m.key(ke(kLeft))
-	if cmd := <-eqcmds; cmd.Code != "MXV" || cmd.Val != 35 {
+	if cmd := <-eqcmds; cmd.Code != "MXV" || cmd.Val != 35 || cmd.Query {
 		t.Errorf("queued cmd=%+v want {MXV 35}", cmd)
 	}
 }

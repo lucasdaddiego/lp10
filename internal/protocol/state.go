@@ -370,16 +370,24 @@ func (st *State) StartConnection() {
 	st.attempts++
 }
 
+// staleDeathAfter mirrors the workers' LiveSessionTimeout: a connection whose
+// death follows data this recent was healthy to the end (clean EOF, device
+// reboot), so its successor keeps the young-spawn write grace. A staler death —
+// the watchdog killing a session that went silent mid-outage — arms the streak
+// immediately, so even the FIRST respawn of an outage refuses the grace. A var
+// so tests can shrink it.
+var staleDeathAfter = 8 * time.Second
+
 // Disconnect marks the player connection dead (idempotent). A connection that
-// dies without ever delivering player data extends the dataless-death streak
-// that withholds WriterLive's young-spawn grace.
+// dies without recent player data extends the dataless-death streak that
+// withholds WriterLive's young-spawn grace.
 func (st *State) Disconnect() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.connected = false
 	if !st.deathCounted {
 		st.deathCounted = true
-		if st.lastData.IsZero() {
+		if st.lastData.IsZero() || time.Since(st.lastData) > staleDeathAfter {
 			st.datalessDeaths++
 		}
 	}

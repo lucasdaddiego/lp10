@@ -38,11 +38,13 @@ const (
 
 // EQCommand is a queued control write for the :2018 tunnel: a wire code, value,
 // and enqueue time. The worker validates the code, clamps the value, and drops
-// stale intent at the wire boundary.
+// stale intent at the wire boundary. Query asks the device to re-broadcast the
+// control's current value instead of setting one (the seed-loss self-heal).
 type EQCommand struct {
-	Code string
-	Val  int
-	TS   time.Time
+	Code  string
+	Val   int
+	Query bool
+	TS    time.Time
 }
 
 // tunnelAddr resolves the control-tunnel address; LP10_TUNNEL_ADDR overrides it
@@ -66,6 +68,10 @@ func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, 
 			defer func() {
 				if r := recover(); r != nil {
 					st.Note(fmt.Sprintf("tunnel worker: %v", r))
+					// The panic pre-empted the carry hand-back, so its delivery
+					// state is unknown: drop it rather than risk re-applying a
+					// possibly-delivered (now stale) value next connection.
+					carry = nil
 					control.stop.Wait(time.Second)
 				}
 			}()
@@ -201,7 +207,10 @@ func eqCommandWire(cmd EQCommand, now time.Time) (wire string, stale bool) {
 		return "", false
 	}
 	if !cmd.TS.IsZero() && now.Sub(cmd.TS) > EQCommandDeadline {
-		return "", true
+		return "", !cmd.Query // an expired refresh isn't lost user intent: drop silently
+	}
+	if cmd.Query {
+		return tunnel.Query(cmd.Code), false
 	}
 	return tunnel.Set(cmd.Code, cmd.Val), false
 }

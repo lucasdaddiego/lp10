@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ type harness struct {
 	control *runControl
 	fakeSSH string
 	tmp     string
+	wg      sync.WaitGroup
 }
 
 func newHarness(t *testing.T) *harness {
@@ -56,6 +58,15 @@ func newHarness(t *testing.T) *harness {
 				proc.Cmd.Process.Kill()
 			}
 			proc.waitTimeout(3 * time.Second)
+		}
+		// Join the worker goroutines: a worker leaked past its test races with
+		// the next test's package-var writes (classify, backoffResetAfter).
+		done := make(chan struct{})
+		go func() { h.wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("harness workers did not exit after stop")
 		}
 	})
 	return h
@@ -80,13 +91,13 @@ func (h *harness) start(scenario string, opts startOpts) *protocol.State {
 		h.t.Cleanup(func() { classify = orig })
 	}
 	cfg := config.Load()
-	go streamWorker(h.st, cfg, opts.snapshot, h.procs, h.control)
+	h.wg.Go(func() { streamWorker(h.st, cfg, opts.snapshot, h.procs, h.control) })
 	if opts.watchdog != nil {
 		w := opts.watchdog
 		if w.dataless == 0 {
 			w.dataless = DatalessAfter
 		}
-		go watchdog(h.st, h.procs, h.control, w.silent, w.connect, w.dataless)
+		h.wg.Go(func() { watchdog(h.st, h.procs, h.control, w.silent, w.connect, w.dataless) })
 	}
 	return h.st
 }
