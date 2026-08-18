@@ -97,3 +97,97 @@ func readUntilContains(t *testing.T, conn net.Conn, want string) string {
 		}
 	}
 }
+
+// TestTunnelSend: a failed write hands the command back for the next connection;
+// stale intent notes and drops; unknown codes never reach the wire.
+func TestTunnelSend(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close() // a locally-closed conn fails its next Write deterministically
+
+	st := protocol.NewState()
+	carry, dead := tunnelSend(st, conn, EQCommand{Code: "BAS", Val: 5, TS: time.Now()})
+	if carry == nil || !dead || carry.Code != "BAS" || carry.Val != 5 {
+		t.Errorf("failed write = (%+v, %v), want the command carried and dead=true", carry, dead)
+	}
+
+	st2 := protocol.NewState()
+	carry, dead = tunnelSend(st2, conn, EQCommand{
+		Code: "BAS", Val: 5, TS: time.Now().Add(-EQCommandDeadline - time.Second),
+	})
+	if carry != nil || dead {
+		t.Errorf("stale command = (%+v, %v), want dropped without killing the conn", carry, dead)
+	}
+	if e := st2.Snap().Error; !strings.Contains(e, "command not delivered") {
+		t.Errorf("stale note = %q, want 'command not delivered'", e)
+	}
+
+	if carry, dead = tunnelSend(st, conn, EQCommand{Code: "NOPE", Val: 1, TS: time.Now()}); carry != nil || dead {
+		t.Errorf("unknown code = (%+v, %v), want silently dropped", carry, dead)
+	}
+}
+
+// TestTunnelCarryStaleDroppedWhileDown: a carried command ages out visibly even
+// while the tunnel stays unreachable, instead of applying minutes later.
+func TestTunnelCarryStaleDroppedWhileDown(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // nothing listening -> dial fails fast
+	t.Setenv("LP10_TUNNEL_ADDR", addr)
+
+	st := protocol.NewState()
+	control := newRunControl()
+	control.stop.Set() // waits return immediately
+	stale := &EQCommand{Code: "MXV", Val: 40, TS: time.Now().Add(-EQCommandDeadline - time.Second)}
+	_, carry := tunnelOnceContext(context.Background(), control, st, config.Config{Host: "unused"}, make(chan EQCommand), InitialBackoff, stale)
+	if carry != nil {
+		t.Errorf("carry = %+v, want dropped as stale", carry)
+	}
+	if e := st.Snap().Error; !strings.Contains(e, "command not delivered") {
+		t.Errorf("note = %q, want 'command not delivered'", e)
+	}
+}
+
+// TestTunnelCarryDeliveredOnNextConnection: a command carried from a dead
+// connection is written (clamped) once the next connection is up.
+func TestTunnelCarryDeliveredOnNextConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
+
+	st := protocol.NewState()
+	control := newRunControl()
+	done := make(chan *EQCommand, 1)
+	go func() {
+		_, carry := tunnelOnceContext(context.Background(), control, st, config.Config{Host: "unused"},
+			make(chan EQCommand), InitialBackoff, &EQCommand{Code: "BAS", Val: 99, TS: time.Now()})
+		done <- carry
+	}()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	defer conn.Close()
+	if got := readUntilContains(t, conn, "BAS:10;"); !strings.Contains(got, "BAS:10;") {
+		t.Errorf("server received %q, want the carried command (clamped) after the seed", got)
+	}
+
+	control.stop.Set()
+	if carry := <-done; carry != nil {
+		t.Errorf("carry = %+v, want consumed after delivery", carry)
+	}
+}

@@ -112,3 +112,35 @@ func TestDashboardRenders(t *testing.T) {
 		}
 	}
 }
+
+func TestEQUnknownValuesAreNoops(t *testing.T) {
+	// Nothing reported yet (no snapshot, tunnel not seeded): nudging or toggling
+	// must send nothing. Fabricating a 0 baseline and sending it would hard-cap
+	// the speaker's output when the focused control is MXV.
+	st := protocol.NewState()
+	eqcmds := make(chan workers.EQCommand, 16)
+	m := newModel(st, defaultCfg(), make(chan *protocol.Command, 8), eqcmds)
+	m.rows, m.cols = 24, 80
+
+	m.key(kr('e'))
+	m.eqFocus = len(eqOrder) - 1 // Max Vol: slider shows "—"
+	m.key(ke(kLeft))
+	m.key(ke(kRight))
+	m.eqFocus = 0 // EQS toggle, also unknown
+	m.key(ke(kEnter))
+
+	if n := len(eqcmds); n != 0 {
+		t.Fatalf("%d commands queued from unknown values, want 0", n)
+	}
+	if _, known := st.EQValue("MXV"); known {
+		t.Error("MXV must stay unknown (no optimistic local write)")
+	}
+
+	// Once the device reports a value the nudge works again.
+	st.ApplyTunnel("MXV", 40)
+	m.eqFocus = len(eqOrder) - 1
+	m.key(ke(kLeft))
+	if cmd := <-eqcmds; cmd.Code != "MXV" || cmd.Val != 35 {
+		t.Errorf("queued cmd=%+v want {MXV 35}", cmd)
+	}
+}

@@ -433,7 +433,7 @@ func TestApplyOldShortStatsLine(t *testing.T) {
 	for rec := range IterRecords(feeder(splitLines(old))) {
 		ApplyRecord(st, rec)
 	}
-	_, _, _, si := st.DiagView()
+	si := st.DiagnosticView(time.Now()).SysInfo
 	if si == nil || si.Up != "100.0" || si.NCPU != "2" {
 		t.Fatalf("short @@s should still parse base fields: %+v", si)
 	}
@@ -605,7 +605,7 @@ func TestDevInfoAndSysinfoExtras(t *testing.T) {
 	for _, rec := range recordsFrom(splitLines(feed)) {
 		ApplyRecord(st, rec)
 	}
-	di := st.DevInfoView()
+	di := st.DiagnosticView(time.Now()).DevInfo
 	if di == nil || di.Net != "eth" || di.Iface != "eth0" || di.IP != "192.168.1.13" || di.Speed != "100" || di.Duplex != "full" || di.Platform != "LS8" || di.DataUsed != "11424" || di.DataTotal != "232924" {
 		t.Errorf("devinfo = %+v", di)
 	}
@@ -628,7 +628,7 @@ func TestDevInfoWifiPath(t *testing.T) {
 	for _, rec := range recordsFrom(splitLines(feed)) {
 		ApplyRecord(st, rec)
 	}
-	di := st.DevInfoView()
+	di := st.DiagnosticView(time.Now()).DevInfo
 	if di == nil || di.Net != "wifi" || di.Iface != "wlan0" || di.SSID != "MyWiFi 5G" || di.Freq != "5180" || di.Rate != "780" {
 		t.Errorf("wifi devinfo = %+v", di)
 	}
@@ -707,7 +707,7 @@ func TestNetThroughputAndLatency(t *testing.T) {
 	st := NewState()
 	t0 := time.Now()
 	st.updateNet(&SysInfo{RxBytes: "1000", TxBytes: "500", PingGw: "14"}, t0)
-	n := st.NetView()
+	n := st.DiagnosticView(time.Now()).Net
 	if n.RatesOK {
 		t.Error("rates must wait for a second sample")
 	}
@@ -716,7 +716,7 @@ func TestNetThroughputAndLatency(t *testing.T) {
 	}
 	// +8000 rx, +2000 tx over 2s -> 4000 / 1000 B/s
 	st.updateNet(&SysInfo{RxBytes: "9000", TxBytes: "2500", PingGw: "20"}, t0.Add(2*time.Second))
-	n = st.NetView()
+	n = st.DiagnosticView(time.Now()).Net
 	if !n.RatesOK || n.RxRate != 4000 || n.TxRate != 1000 {
 		t.Errorf("rates = %v / %v, want 4000 / 1000", n.RxRate, n.TxRate)
 	}
@@ -728,7 +728,7 @@ func TestNetThroughputAndLatency(t *testing.T) {
 	}
 	// Invalid/non-finite samples must not poison the rolling math.
 	st.updateNet(&SysInfo{RxBytes: "-1", TxBytes: "5", PingGw: "NaN", PingNet: "-3"}, t0.Add(3*time.Second))
-	n = st.NetView()
+	n = st.DiagnosticView(time.Now()).Net
 	if g := n.Ping[1]; g.Avg != 17 || g.Peak != 20 {
 		t.Errorf("non-finite ping should be ignored, got %+v", g)
 	}
@@ -737,12 +737,12 @@ func TestNetThroughputAndLatency(t *testing.T) {
 	}
 	// a counter reset (reboot / interface flap) must not spike the rate
 	st.updateNet(&SysInfo{RxBytes: "10", TxBytes: "5"}, t0.Add(4*time.Second))
-	if n := st.NetView(); n.RxRate != 4000 {
+	if n := st.DiagnosticView(time.Now()).Net; n.RxRate != 4000 {
 		t.Errorf("counter reset should skip the rate, got %v", n.RxRate)
 	}
 	// a reconnect clears the latency rings and the throughput baseline
 	st.StartConnection()
-	if n := st.NetView(); n.RatesOK || n.Ping[1].OK {
+	if n := st.DiagnosticView(time.Now()).Net; n.RatesOK || n.Ping[1].OK {
 		t.Errorf("reconnect should reset net stats, got %+v", n)
 	}
 }
@@ -760,7 +760,7 @@ func TestDeviceRecordFixtureParses(t *testing.T) {
 	for _, rec := range records("device_record.txt") {
 		ApplyRecord(st, rec)
 	}
-	di := st.DevInfoView()
+	di := st.DiagnosticView(time.Now()).DevInfo
 	if di == nil || di.Net != "eth" || di.Iface != "eth0" || di.IP != "192.168.1.13" || di.Speed != "100" || di.Duplex != "full" ||
 		di.DataUsed != "1258291" || di.DataTotal != "7340032" {
 		t.Errorf("devinfo = %+v", di)

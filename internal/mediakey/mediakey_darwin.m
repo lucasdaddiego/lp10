@@ -27,19 +27,22 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type,
     if (type != NX_SYSDEFINED) {
         return event;
     }
-    NSEvent *e = [NSEvent eventWithCGEvent:event];
-    if (e == nil || [e subtype] != NX_SUBTYPE_AUX_CONTROL_BUTTONS) {
-        return event;
+    // The tap thread runs a bare CFRunLoop with no enclosing autorelease pool,
+    // so the NSEvent (and the CGEvent it retains) would otherwise accumulate
+    // until thread exit — one leak per NX_SYSDEFINED event system-wide.
+    BOOL consume = NO;
+    @autoreleasepool {
+        NSEvent *e = [NSEvent eventWithCGEvent:event];
+        if (e != nil && [e subtype] == NX_SUBTYPE_AUX_CONTROL_BUTTONS) {
+            long data1   = [e data1];
+            int  keyCode = (int)((data1 & 0xFFFF0000) >> 16);
+            int  keyState = (int)((data1 & 0x0000FF00) >> 8);
+            // goMediaKey applies the shared classify/decide logic (Go) and
+            // returns 1 to consume the event, 0 to pass it through.
+            consume = goMediaKey(keyCode, keyState) != 0;
+        }
     }
-    long data1   = [e data1];
-    int  keyCode = (int)((data1 & 0xFFFF0000) >> 16);
-    int  keyState = (int)((data1 & 0x0000FF00) >> 8);
-    // goMediaKey applies the shared classify/decide logic (Go) and returns 1 to
-    // consume the event, 0 to pass it through.
-    if (goMediaKey(keyCode, keyState) != 0) {
-        return NULL;
-    }
-    return event;
+    return consume ? NULL : event;
 }
 
 int lp10InstallTap(void) {

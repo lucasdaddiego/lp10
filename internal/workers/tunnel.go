@@ -60,6 +60,7 @@ func tunnelAddr(cfg config.Config) string {
 // tunnel only disables the EQ panel; the ssh player stream is unaffected.
 func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand) {
 	backoff := InitialBackoff
+	var carry *EQCommand // a command whose write failed, retried on the next connection
 	for !control.stop.IsSet() && ctx.Err() == nil {
 		func() {
 			defer func() {
@@ -68,17 +69,27 @@ func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, 
 					control.stop.Wait(time.Second)
 				}
 			}()
-			backoff = tunnelOnceContext(ctx, control, st, cfg, eqcmds, backoff)
+			backoff, carry = tunnelOnceContext(ctx, control, st, cfg, eqcmds, backoff, carry)
 		}()
 	}
 }
 
 // tunnelOnce is one connection lifecycle, returning the next reconnect backoff.
 func tunnelOnce(control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration) time.Duration {
-	return tunnelOnceContext(context.Background(), control, st, cfg, eqcmds, backoff)
+	next, _ := tunnelOnceContext(context.Background(), control, st, cfg, eqcmds, backoff, nil)
+	return next
 }
 
-func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration) time.Duration {
+func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration, carry *EQCommand) (time.Duration, *EQCommand) {
+	// A command carried from a dead connection ages like any queued one; while
+	// the tunnel stays down, expired intent is dropped visibly here rather than
+	// applying minutes later on a reconnect.
+	if carry != nil {
+		if _, stale := eqCommandWire(*carry, time.Now()); stale {
+			st.Note("command not delivered")
+			carry = nil
+		}
+	}
 	dialer := net.Dialer{
 		Timeout: tunnelDialTimeout,
 		KeepAliveConfig: net.KeepAliveConfig{
@@ -92,9 +103,9 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 	if err != nil {
 		st.SetEQConnected(false)
 		if ctx.Err() != nil {
-			return backoff
+			return backoff, carry
 		}
-		return waitBackoff(control, backoff)
+		return waitBackoff(control, backoff), carry
 	}
 	st.SetEQConnected(true)
 
@@ -126,6 +137,13 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		}
 	}
 
+	// A carried command gets first claim on the fresh connection, ahead of the
+	// queue it was consumed from.
+	if !dead && carry != nil {
+		cmd := *carry
+		carry, dead = tunnelSend(st, conn, cmd)
+	}
+
 	// Write loop: drain queued commands until the connection dies or we stop. One
 	// ticker (not a fresh time.After each iteration) gives the periodic wake that
 	// lets us notice Stop with no commands in flight, without churning timers.
@@ -141,17 +159,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 				eqcmds = nil // disable this select arm; a closed channel is always ready
 				continue
 			}
-			wire, stale := eqCommandWire(cmd, time.Now())
-			if stale {
-				st.Note("command not delivered")
-				continue
-			}
-			if wire == "" { // unknown code: never put an unallowlisted frame on the wire
-				continue
-			}
-			if _, werr := conn.Write([]byte(wire)); werr != nil {
-				dead = true
-			}
+			carry, dead = tunnelSend(st, conn, cmd)
 		case <-poll.C:
 		}
 	}
@@ -161,9 +169,27 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 	st.SetEQConnected(false)
 
 	if control.stop.IsSet() || ctx.Err() != nil {
-		return backoff
+		return backoff, carry
 	}
-	return waitBackoff(control, backoff)
+	return waitBackoff(control, backoff), carry
+}
+
+// tunnelSend validates, ages, and writes one EQ command. A write failure hands
+// the command back for the next connection (the EQ analog of the player queue's
+// pending carry-over) instead of silently dropping user intent.
+func tunnelSend(st *protocol.State, conn net.Conn, cmd EQCommand) (carry *EQCommand, dead bool) {
+	wire, stale := eqCommandWire(cmd, time.Now())
+	if stale {
+		st.Note("command not delivered")
+		return nil, false
+	}
+	if wire == "" { // unknown code: never put an unallowlisted frame on the wire
+		return nil, false
+	}
+	if _, err := conn.Write([]byte(wire)); err != nil {
+		return &cmd, true
+	}
+	return nil, false
 }
 
 // eqCommandWire validates and ages one queued EQ command. A zero timestamp is

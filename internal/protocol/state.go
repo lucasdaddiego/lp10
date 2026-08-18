@@ -46,6 +46,13 @@ type State struct {
 	attempts  int
 	retryBase int // attempts at last successful connect
 
+	// datalessDeaths counts consecutive connections that died without any
+	// player data (reset by the next data record); deathCounted keeps a repeat
+	// Disconnect from double-counting one connection. A running streak withholds
+	// WriterLive's young-spawn grace — see WriterLive.
+	datalessDeaths int
+	deathCounted   bool
+
 	// network throughput + latency for the diagnostics overlay, over the active
 	// interface. Rates derive from the cumulative byte counters against the prior
 	// @@s; the ping rings hold recent RTTs (ms) for laptop/gateway/internet.
@@ -359,14 +366,23 @@ func (st *State) StartConnection() {
 	st.netRatesOK = false
 	st.pingRing = [3][]float64{}
 	st.errsOK = false // error counters re-baseline on the next sample
+	st.deathCounted = false
 	st.attempts++
 }
 
-// Disconnect marks the player connection dead (idempotent).
+// Disconnect marks the player connection dead (idempotent). A connection that
+// dies without ever delivering player data extends the dataless-death streak
+// that withholds WriterLive's young-spawn grace.
 func (st *State) Disconnect() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.connected = false
+	if !st.deathCounted {
+		st.deathCounted = true
+		if st.lastData.IsZero() {
+			st.datalessDeaths++
+		}
+	}
 }
 
 // LivenessView snapshots the fields the watchdog needs in one locked read.
@@ -378,12 +394,17 @@ func (st *State) LivenessView() (lastRx, lastData time.Time, got bool) {
 
 // WriterLive reports whether a process spawned at spawned is live enough to
 // accept a command: a young connection may still be handshaking (ssh buffers
-// stdin), while a session that went data-silent is treated as wedged.
+// stdin), while a session that went data-silent is treated as wedged. The
+// young-spawn grace is withheld while a dataless-death streak is running:
+// during an outage every respawn is young, and the grace would keep swallowing
+// commands into a doomed stdin pipe with no "command not delivered" note.
 func (st *State) WriterLive(now, spawned time.Time, liveTimeout time.Duration) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return (!st.lastData.IsZero() && now.Sub(st.lastData) <= liveTimeout) ||
-		now.Sub(spawned) <= liveTimeout
+	if !st.lastData.IsZero() && now.Sub(st.lastData) <= liveTimeout {
+		return true
+	}
+	return st.datalessDeaths == 0 && now.Sub(spawned) <= liveTimeout
 }
 
 // ---- diagnostics views ----
@@ -409,22 +430,6 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 	}
 }
 
-// DiagView snapshots the fields the diagnostics overlay reads in one lock. The
-// overlay's error line comes from Snap (Error/ErrorAt/Fatal), not from here.
-func (st *State) DiagView() (lastRx, lastData time.Time, attempts int, sysinfo *SysInfo) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.lastRx, st.lastData, st.attempts, st.sysinfo
-}
-
-// DevInfoView returns the static device/network info (or nil before the first
-// @@i block arrives).
-func (st *State) DevInfoView() *DevInfo {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.devinfo
-}
-
 // ConfView returns the streaming-capability state (or nil before the first @@c
 // block arrives). The returned ConfInfo is owned by the caller's read: the worker
 // only ever replaces st.confinfo wholesale (never mutates a published map), so the
@@ -433,22 +438,6 @@ func (st *State) ConfView() *ConfInfo {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.confinfo
-}
-
-// DetailsView returns the device-details readout (or nil before the first @@d
-// block arrives). Replaced wholesale like the other one-shot blocks.
-func (st *State) DetailsView() *DevDetails {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.details
-}
-
-// MultiroomView returns the multiroom-group readout (or nil before the first
-// @@g block arrives).
-func (st *State) MultiroomView() *Multiroom {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.mroom
 }
 
 // ---- preload / optimistic UI ----

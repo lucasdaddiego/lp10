@@ -34,28 +34,32 @@ const (
 // eqSpec returns the tunnel.Spec for the focused EQ-strip position.
 func (m *model) eqSpec() tunnel.Spec { return tunnel.Specs[eqOrder[m.eqFocus]] }
 
-// eqCur is a control's last-known value (0 until the device has reported it).
-func (m *model) eqCur(code string) int {
-	if v, ok := m.st.EQValue(code); ok {
-		return v
-	}
-	return 0
-}
-
 // eqAdjust nudges the focused control by dir*step, clamps it, and sends it.
+// A control the device hasn't reported yet (slider shows "—") is left alone:
+// nudging would fabricate a 0 baseline and send it — for MXV that hard-caps
+// the speaker's output at 0/5%.
 func (m *model) eqAdjust(dir int) {
 	sp := m.eqSpec()
-	m.sendEQ(sp.Code, tunnel.Clamp(sp.Code, m.eqCur(sp.Code)+dir*sp.Step))
+	cur, known := m.st.EQValue(sp.Code)
+	if !known {
+		return
+	}
+	m.sendEQ(sp.Code, tunnel.Clamp(sp.Code, cur+dir*sp.Step))
 }
 
-// eqToggleFocused flips a focused on/off control (no-op on ranged controls).
+// eqToggleFocused flips a focused on/off control (no-op on ranged controls and
+// on a toggle whose state is still unknown).
 func (m *model) eqToggleFocused() {
 	sp := m.eqSpec()
 	if sp.Kind != tunnel.Toggle {
 		return
 	}
+	cur, known := m.st.EQValue(sp.Code)
+	if !known {
+		return
+	}
 	v := 0
-	if m.eqCur(sp.Code) == 0 {
+	if cur == 0 {
 		v = 1
 	}
 	m.sendEQ(sp.Code, v)

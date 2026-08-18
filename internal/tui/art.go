@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"image"
 	"strings"
 
 	"github.com/lucasdaddiego/lp10/internal/artwork"
@@ -97,24 +98,34 @@ func (m *model) artColumn(s protocol.Snapshot, w, h int) []string {
 	}
 	key := artKey{s.CoverURL, w, h, m.cellW, m.cellH, mode}
 	if m.artBlk == nil || m.artKey != key {
-		var built []string
-		switch mode {
-		case artKitty:
-			if transmit, lines := artwork.KittyImage(s.Art, w, h, kittyImageID, w*m.cellW, h*m.cellH); len(lines) > 0 {
-				m.kittyTx += transmit // flushed out-of-band by Update; the cells then composite it
-				built = lines
-			} else if m.sty.trueColor {
-				built = artwork.HalfBlock(s.Art, w, h) // encode failed: degrade in place
-			}
-		case artHalf:
-			built = artwork.HalfBlock(s.Art, w, h)
-		}
+		built := m.buildArt(s.Art, w, h, kittyImageID, mode)
 		if built == nil {
 			return m.motif(w, h) // give up to the motif without poisoning the cache
 		}
 		m.artBlk, m.artKey = built, key
 	}
 	return m.artBlk
+}
+
+// buildArt renders img through the kitty → half-block degrade switch shared by
+// the live cover and the ghost: kitty stashes its transmit on m.kittyTx for
+// Update's out-of-band flush (the cells then composite it), and a failed encode
+// degrades to half-block cells on truecolor terminals. Returns nil when nothing
+// could be built.
+func (m *model) buildArt(img image.Image, w, h, imgID int, mode artRender) []string {
+	switch mode {
+	case artKitty:
+		if transmit, lines := artwork.KittyImage(img, w, h, imgID, w*m.cellW, h*m.cellH); len(lines) > 0 {
+			m.kittyTx += transmit
+			return lines
+		}
+		if m.sty.trueColor {
+			return artwork.HalfBlock(img, w, h)
+		}
+	case artHalf:
+		return artwork.HalfBlock(img, w, h)
+	}
+	return nil
 }
 
 // noteMotif is the small beamed-pair glyph drawn in the idle cover slot — two
@@ -168,19 +179,7 @@ func (m *model) ghostCover(s protocol.Snapshot, w, h int) []string {
 	}
 	key := artKey{url: "ghost:" + s.LastCoverURL, w: w, h: h, cw: m.cellW, ch: m.cellH, mode: mode}
 	if m.ghostBlk == nil || m.ghostKey != key {
-		img := artwork.Ghost(s.LastArt)
-		var built []string
-		switch mode {
-		case artKitty:
-			if transmit, lines := artwork.KittyImage(img, w, h, kittyGhostID, w*m.cellW, h*m.cellH); len(lines) > 0 {
-				m.kittyTx += transmit // flushed out-of-band by Update, like the live cover's
-				built = lines
-			} else if m.sty.trueColor {
-				built = artwork.HalfBlock(img, w, h)
-			}
-		case artHalf:
-			built = artwork.HalfBlock(img, w, h)
-		}
+		built := m.buildArt(artwork.Ghost(s.LastArt), w, h, kittyGhostID, mode)
 		if built == nil {
 			return nil
 		}

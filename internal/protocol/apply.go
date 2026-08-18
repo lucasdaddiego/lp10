@@ -233,6 +233,7 @@ func ApplyRecord(st *State, rec Record) bool {
 	}
 	if p.hadData {
 		st.lastData = now
+		st.datalessDeaths = 0 // data proves the device reachable again
 		if !st.connected {
 			st.retryBase = st.attempts // badge counts per-outage
 		}

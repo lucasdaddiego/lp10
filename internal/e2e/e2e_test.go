@@ -95,6 +95,12 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 	}
 	s := &tuiSession{cmd: cmd, ptmx: ptmx, mu: &sync.Mutex{}, buf: &bytes.Buffer{}}
 	go func() {
+		// answer the terminal queries termenv/bubbletea block on. pending
+		// carries unmatched bytes across reads so a query straddling two Read
+		// calls still gets its reply (else bubbletea blocks to the 5s timeout);
+		// each match is consumed so no query is ever answered twice.
+		cpr, bg := []byte("\x1b[6n"), []byte("\x1b]11;?")
+		var pending []byte
 		b := make([]byte, 4096)
 		for {
 			n, e := ptmx.Read(b)
@@ -103,12 +109,23 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 				s.mu.Lock()
 				s.buf.Write(chunk)
 				s.mu.Unlock()
-				// answer the terminal queries termenv/bubbletea block on
-				if bytes.Contains(chunk, []byte("\x1b[6n")) {
-					ptmx.Write([]byte("\x1b[1;1R"))
+				pending = append(pending, chunk...)
+				for {
+					i6, i11 := bytes.Index(pending, cpr), bytes.Index(pending, bg)
+					switch {
+					case i6 >= 0 && (i11 < 0 || i6 < i11): // earliest match first
+						ptmx.Write([]byte("\x1b[1;1R"))
+						pending = pending[i6+len(cpr):]
+						continue
+					case i11 >= 0:
+						ptmx.Write([]byte("\x1b]11;rgb:0000/0000/0000\x1b\\"))
+						pending = pending[i11+len(bg):]
+						continue
+					}
+					break
 				}
-				if bytes.Contains(chunk, []byte("\x1b]11;?")) {
-					ptmx.Write([]byte("\x1b]11;rgb:0000/0000/0000\x1b\\"))
+				if keep := 32; len(pending) > keep { // bound the carry, > either query
+					pending = pending[len(pending)-keep:]
 				}
 			}
 			if e != nil {

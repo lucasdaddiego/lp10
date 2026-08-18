@@ -449,9 +449,10 @@ func TestCov_KeyPanes(t *testing.T) {
 	if m.eqFocus != 1 {
 		t.Errorf("EQ down: eqFocus = %d, want 1", m.eqFocus)
 	}
-	m.key(ke(kLeft))  // eqAdjust(-1)
-	m.key(ke(kRight)) // eqAdjust(+1)
-	m.eqFocus = 0     // EQS (toggle)
+	m.key(ke(kLeft))           // eqAdjust(-1)
+	m.key(ke(kRight))          // eqAdjust(+1)
+	m.eqFocus = 0              // EQS (toggle)
+	m.st.ApplyTunnel("EQS", 0) // toggling needs a known value (unknown is a no-op)
 	before, _ := m.st.EQValue("EQS")
 	m.key(ke(kEnter)) // toggle EQS
 	after, _ := m.st.EQValue("EQS")
@@ -545,20 +546,13 @@ func TestCov_doResumeAndUnmute(t *testing.T) {
 	}
 }
 
-func TestCov_eqCurAndToggleNoop(t *testing.T) {
+func TestCov_eqToggleNoop(t *testing.T) {
 	m, st, _ := modelWith(protocol.NewState())
-	if m.eqCur("MXV") != 0 {
-		t.Error("eqCur unknown should be 0")
-	}
-	st.ApplyTunnel("MXV", 40)
-	if m.eqCur("MXV") != 40 {
-		t.Error("eqCur known should report the value")
-	}
 	// eqToggleFocused is a no-op on a ranged control
+	st.ApplyTunnel("TRE", 3)
 	m.pane, m.eqFocus = paneEQ, 1 // TRE (ranged)
-	v, _ := st.EQValue("TRE")
 	m.eqToggleFocused()
-	if nv, _ := st.EQValue("TRE"); nv != v {
+	if nv, _ := st.EQValue("TRE"); nv != 3 {
 		t.Error("eqToggleFocused on a ranged band must be a no-op")
 	}
 }
@@ -1344,7 +1338,7 @@ func TestCov_diagCardsSilentHeader(t *testing.T) {
 	m, st := richDiag(t, "5180", nil)
 	m.sty = newTheme()
 	m.rows = 44
-	_, dData, _, _ := st.DiagView()
+	dData := st.DiagnosticView(time.Now()).LastData
 	if dData.IsZero() {
 		t.Fatal("setup: expected a last-data stamp")
 	}

@@ -77,13 +77,13 @@ func TestApplyRecordRoutesDetailsGroupAndName(t *testing.T) {
 	for rec := range IterRecords(next) {
 		ApplyRecord(st, rec)
 	}
-	if dt := st.DetailsView(); dt == nil || dt.Serial != "RKARYLLP100000000000" {
+	if dt := st.DiagnosticView(time.Now()).Details; dt == nil || dt.Serial != "RKARYLLP100000000000" {
 		t.Errorf("DetailsView = %+v", dt)
 	}
-	if mr := st.MultiroomView(); mr == nil || mr.Devices != 0 {
+	if mr := st.DiagnosticView(time.Now()).Multiroom; mr == nil || mr.Devices != 0 {
 		t.Errorf("MultiroomView = %+v", mr)
 	}
-	if dev := st.DevInfoView(); dev == nil || dev.Name != "Living" {
+	if dev := st.DiagnosticView(time.Now()).DevInfo; dev == nil || dev.Name != "Living" {
 		t.Errorf("DevInfoView.Name = %+v", dev)
 	}
 }
@@ -98,24 +98,24 @@ func TestErrCounterSessionDeltas(t *testing.T) {
 		return &SysInfo{RxErrs: rxe, TxErrs: txe, RxDrop: rxd, TxDrop: txd}
 	}
 	st.updateNet(si("0", "0", "256", "0"), t0)
-	if n := st.NetView(); !n.ErrsOK || n.Drops != 0 {
+	if n := st.DiagnosticView(time.Now()).Net; !n.ErrsOK || n.Drops != 0 {
 		t.Errorf("first sample = %+v, want ErrsOK with zero deltas (boot noise baselined)", n)
 	}
 	st.updateNet(si("1", "0", "259", "0"), t0.Add(time.Second))
-	if n := st.NetView(); n.RxErrs != 1 || n.Drops != 3 {
+	if n := st.DiagnosticView(time.Now()).Net; n.RxErrs != 1 || n.Drops != 3 {
 		t.Errorf("growth = %+v, want rx 1 / drops 3", n)
 	}
 	st.updateNet(si("0", "0", "2", "0"), t0.Add(2*time.Second)) // reboot: counters shrank
-	if n := st.NetView(); n.RxErrs != 0 || n.Drops != 0 {
+	if n := st.DiagnosticView(time.Now()).Net; n.RxErrs != 0 || n.Drops != 0 {
 		t.Errorf("counter reset = %+v, want re-baselined zeros", n)
 	}
 	st.StartConnection()
-	if n := st.NetView(); n.ErrsOK {
+	if n := st.DiagnosticView(time.Now()).Net; n.ErrsOK {
 		t.Error("a reconnect should clear ErrsOK until the next sample")
 	}
 	// a sample with missing counters (older loop) never sets ErrsOK
 	st.updateNet(si("", "", "", ""), t0.Add(3*time.Second))
-	if n := st.NetView(); n.ErrsOK {
+	if n := st.DiagnosticView(time.Now()).Net; n.ErrsOK {
 		t.Error("absent counters should leave ErrsOK false")
 	}
 }

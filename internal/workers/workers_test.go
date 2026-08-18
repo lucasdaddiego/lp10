@@ -484,3 +484,30 @@ func readFile(path string) string {
 	b, _ := os.ReadFile(path)
 	return string(b)
 }
+
+// TestStreamBackoffResetNeedsSustainedSession: a session that emits one record
+// and exits (fakessh "eof") must not reset the reconnect backoff — resetting on
+// the first record produced constant-cadence ssh churn against the device's
+// lockout-prone sshd. Only a session older than backoffResetAfter resets.
+func TestStreamBackoffResetNeedsSustainedSession(t *testing.T) {
+	testutil.Isolate(t)
+	t.Setenv("LP10_SSH", testutil.FakeSSH(t))
+	t.Setenv("LP10_FAKE_SCENARIO", "eof")
+
+	// Young session: escalation continues (1600ms doubles and caps).
+	st := protocol.NewState()
+	if next := streamOnce(st, config.Config{}, 1600*time.Millisecond, newRunControl()); next != MaxBackoff {
+		t.Errorf("young session: backoff=%v want %v", next, MaxBackoff)
+	}
+	if s := st.Snap(); s.Track == nil {
+		t.Fatal("the eof scenario should have delivered one playing record")
+	}
+
+	// With the sustain threshold shortened to zero, the same session resets.
+	orig := backoffResetAfter
+	backoffResetAfter = 0
+	defer func() { backoffResetAfter = orig }()
+	if next := streamOnce(protocol.NewState(), config.Config{}, 1600*time.Millisecond, newRunControl()); next != 2*InitialBackoff {
+		t.Errorf("sustained session: backoff=%v want %v", next, 2*InitialBackoff)
+	}
+}

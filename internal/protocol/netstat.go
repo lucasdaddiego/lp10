@@ -94,14 +94,8 @@ func errCounters(si *SysInfo) (out [4]int64, ok bool) {
 	return out, true
 }
 
-// NetView returns the computed throughput + error + latency readout for the overlay.
-func (st *State) NetView() NetStat {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.netViewLocked()
-}
-
-// netViewLocked returns the computed network readout. The caller holds st.mu.
+// netViewLocked returns the computed network readout for the overlay's
+// DiagnosticSnapshot. The caller holds st.mu.
 func (st *State) netViewLocked() NetStat {
 	ns := NetStat{RxRate: st.netRxRate, TxRate: st.netTxRate, RatesOK: st.netRatesOK}
 	if st.errsOK {

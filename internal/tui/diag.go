@@ -464,9 +464,11 @@ func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now tim
 	}
 }
 
-func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, w int) []string {
+// identityFacts is the present-only identity list both diag layouts render, so
+// the stacked and cards views can't drift apart.
+func identityFacts(d protocol.DiagnosticSnapshot) []kv {
 	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
-	facts := presentKVs([]kv{
+	return presentKVs([]kv{
 		{"bt", id.bt},
 		{"build", id.build},
 		{"firmware", id.fw},
@@ -476,6 +478,10 @@ func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, w int) []st
 		{"os", id.os},
 		{"serial", id.serial},
 	})
+}
+
+func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, w int) []string {
+	facts := identityFacts(d)
 	rows := make([]string, 0, (len(facts)+1)/2)
 	for i := 0; i < len(facts); i += 2 {
 		k2, v2 := "", ""
@@ -508,10 +514,16 @@ func (m *model) diagStackedSignalRow(d protocol.DiagnosticSnapshot, w, gaugeW in
 	pen := m.sevPen(float64(-dbm), thrSignal)
 	detail := ""
 	if dev.Rate != "" {
-		detail = "   " + dev.Rate + " Mbit/s"
+		detail = dev.Rate + " Mbit/s"
 	}
 	if link, e := strconv.Atoi(si.LinkQ); e == nil && link > 0 {
-		detail += fmt.Sprintf("  · link %d/70", link)
+		if detail != "" {
+			detail += "  · "
+		}
+		detail += fmt.Sprintf("link %d/70", link)
+	}
+	if detail != "" {
+		detail = "   " + detail
 	}
 	value := fmt.Sprintf("%d dBm", dbm)
 	return m.diagGauge("signal", m.sty.gaugeBar(float64(dbm+90)/60, gaugeW, pen),
@@ -719,17 +731,7 @@ func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, no
 }
 
 func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, f diagCardFmt) []string {
-	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
-	facts := presentKVs([]kv{
-		{"bt", id.bt},
-		{"build", id.build},
-		{"firmware", id.fw},
-		{"mcu", id.mcu},
-		{"model", id.model},
-		{"name", id.name},
-		{"os", id.os},
-		{"serial", id.serial},
-	})
+	facts := identityFacts(d)
 	rows := make([]string, 0, len(facts))
 	for _, fact := range facts {
 		rows = append(rows, f.plain(fact.k, fact.v, m.sty.sTxt))

@@ -722,7 +722,7 @@ func TestDiagSilentToleratesIdleCadence(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.sty = newTheme() // normally set on first View()
 	m.rows, m.cols = 44, 100
-	_, dData, _, _ := st.DiagView()
+	dData := st.DiagnosticView(time.Now()).LastData
 	snap := st.Snap()
 	if !snap.Connected || dData.IsZero() {
 		t.Fatal("setup: expected connected with a last_data stamp")

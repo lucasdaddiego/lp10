@@ -43,6 +43,13 @@ const (
 // fast_fatal monkeypatch of workers.classify_stderr).
 var classify = transport.ClassifyStderr
 
+// backoffResetAfter is how long a session must have been up before a data
+// record resets the reconnect backoff. Resetting on the first record let a
+// session that dies right after one tick reconnect at InitialBackoff forever —
+// sustained ssh churn the device's sshd punishes with a lockout. (The tunnel's
+// analog: a completed seed with a live reader.) A var so tests can shorten it.
+var backoffResetAfter = 8 * time.Second
+
 // boundedLines yields lines from r, each at most maxLine bytes (mirroring
 // readline(_MAX_LINE)): a line ends at '\n' or once the cap is hit. Returns
 // ("", false) at EOF with nothing buffered. ReadSlice serves a whole line from
@@ -140,6 +147,7 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	procs.start(st, proc)
 
 	if !control.stop.IsSet() {
+		started := time.Now()
 		var lastPersist time.Time
 		nextLine := boundedLines(outR)
 		for rec := range protocol.IterRecords(nextLine) {
@@ -150,9 +158,11 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 			if !ok || !hadData {
 				continue
 			}
-			backoff = InitialBackoff
-			st.ClearFatalOnData()
 			now := time.Now()
+			if now.Sub(started) >= backoffResetAfter {
+				backoff = InitialBackoff
+			}
+			st.ClearFatalOnData()
 			if snapshotPath != "" && now.Sub(lastPersist) > SnapshotPersistInterval && !control.stop.IsSet() {
 				config.SaveSnapshot(snapshotPath, selfSnap(st))
 				lastPersist = now

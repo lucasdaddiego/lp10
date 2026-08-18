@@ -230,11 +230,11 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) computeTitle(s protocol.Snapshot) string {
-	var text string
+	text := m.cfg.Name
 	if s.Track != nil {
-		text = GL["note"] + " " + s.Track.TrackName + " — " + s.Track.Artist
-	} else {
-		text = m.cfg.Name
+		if tt := trackTitle(s.Track); tt != "" {
+			text = GL["note"] + " " + tt
+		}
 	}
 	var b strings.Builder
 	n := 0

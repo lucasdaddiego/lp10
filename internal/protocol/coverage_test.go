@@ -140,7 +140,7 @@ func TestCov_ApplyRecordDevInfoSkipsNonKVLine(t *testing.T) {
 	for _, rec := range recordsFrom(splitLines(feed)) {
 		ApplyRecord(st, rec)
 	}
-	di := st.DevInfoView()
+	di := st.DiagnosticView(time.Now()).DevInfo
 	if di == nil || di.Net != "eth" || di.IP != "10.0.0.5" {
 		t.Errorf("devinfo = %+v, want Net=eth IP=10.0.0.5 (junk line skipped)", di)
 	}
@@ -364,7 +364,7 @@ func TestCov_UpdateNetRingTrim(t *testing.T) {
 	for i := range 35 {
 		st.updateNet(&SysInfo{PingClient: strconv.Itoa(i)}, t0.Add(time.Duration(i)*time.Second))
 	}
-	ps := st.NetView().Ping[0]
+	ps := st.DiagnosticView(time.Now()).Net.Ping[0]
 	// 35 pushed (0..34), the newest pingRingMax (30) retained -> 5..34: the
 	// average proves the trim (untrimmed 0..34 would read 17), the peak the tail.
 	if want := 19.5; ps.Avg != want {
@@ -372,5 +372,34 @@ func TestCov_UpdateNetRingTrim(t *testing.T) {
 	}
 	if ps.Peak != 34 {
 		t.Errorf("Peak = %v, want 34", ps.Peak)
+	}
+}
+
+// TestCov_WriterLiveDatalessStreak: during an outage every respawn is young, so
+// the young-spawn grace must lapse once a connection dies dataless — otherwise
+// commands are swallowed into a doomed stdin pipe with no "not delivered" note.
+func TestCov_WriterLiveDatalessStreak(t *testing.T) {
+	st := NewState()
+	st.StartConnection()
+	if !st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+		t.Fatal("first young spawn should have the handshake grace")
+	}
+	st.Disconnect() // died without data
+	st.Disconnect() // idempotent: must not double-count the same connection
+	st.StartConnection()
+	if st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+		t.Error("young-spawn grace should be withheld while the dataless streak runs")
+	}
+
+	// Data clears the streak: the writer is live again, and after a later
+	// (data-ful) death the next young spawn gets the grace back.
+	ApplyRecord(st, Record{"v": {"Data:44"}})
+	if !st.WriterLive(time.Now(), time.Time{}, 5*time.Second) {
+		t.Error("fresh data should make the writer live")
+	}
+	st.Disconnect()
+	st.StartConnection()
+	if !st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+		t.Error("a young spawn after a data-ful session should have the grace")
 	}
 }

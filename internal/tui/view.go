@@ -110,6 +110,20 @@ func (m *model) frameLines(lines []string, W int) string {
 	return b.String()
 }
 
+// trackTitle joins track name and artist with the em-dash separator, omitting
+// whichever side is missing so partial metadata (Bluetooth/AirPlay sources)
+// never renders a dangling " — ".
+func trackTitle(t *protocol.Track) string {
+	switch {
+	case t.TrackName == "":
+		return t.Artist
+	case t.Artist == "":
+		return t.TrackName
+	default:
+		return t.TrackName + " — " + t.Artist
+	}
+}
+
 func (m *model) renderMini(s protocol.Snapshot) string {
 	ps := m.sty.pens()
 	t, cols := s.Track, m.cols
@@ -121,7 +135,7 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 		if s.Playing != 0 {
 			glyph = GL["pause"]
 		}
-		line := fmt.Sprintf("%s %s — %s  %s/%s  %d%%", glyph, t.TrackName, t.Artist,
+		line := fmt.Sprintf("%s %s  %s/%s  %d%%", glyph, trackTitle(t),
 			FmtMs(s.Pos), m.fmtRight(t.TotalTime, s.Pos), s.Vol)
 		return ps.txt.render(Clip(line, cols-1))
 	default:
@@ -344,10 +358,9 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 		if room >= 8 {
 			var qStyled string
 			var qW int
-			if name := SourceName(s.Track); DispW(q) <= room && name != "" && strings.HasPrefix(q, name) {
+			if DispW(q) <= room {
 				// fits fully: tint the source name in its brand colour, dim the format
-				qStyled = ps.brandPen(name).render(name) + ps.dmr.render(strings.TrimPrefix(q, name))
-				qW = DispW(q)
+				qStyled, qW = m.brandSource(q, SourceName(s.Track)), DispW(q)
 			} else {
 				c := Clip(q, room)
 				qStyled, qW = ps.dmr.render(c), DispW(c)
@@ -594,11 +607,18 @@ func (m *model) fullSourceLine(s protocol.Snapshot, w int) string {
 		return ps.dmr.render(Clip(plain, w))
 	}
 	bp := ps.brandPen(SourceName(t))
-	body := ps.dmr.render(q)
-	if name := SourceName(t); name != "" && strings.HasPrefix(q, name) {
-		body = bp.render(name) + ps.dmr.render(strings.TrimPrefix(q, name))
+	return bp.render("●") + " " + m.brandSource(q, SourceName(t))
+}
+
+// brandSource renders a source/format string with the leading source name in
+// its brand colour and the remainder dimmed — all-dim when the name isn't the
+// prefix. Shared by the header and the full-meta source line.
+func (m *model) brandSource(q, name string) string {
+	ps := m.sty.pens()
+	if name != "" && strings.HasPrefix(q, name) {
+		return ps.brandPen(name).render(name) + ps.dmr.render(strings.TrimPrefix(q, name))
 	}
-	return bp.render("●") + " " + body
+	return ps.dmr.render(q)
 }
 
 // volRailKey identifies a cached volume-rail block: everything the rail's
