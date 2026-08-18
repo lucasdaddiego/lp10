@@ -44,7 +44,7 @@ func FuzzIterRecordsApply(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data string) {
 		st := NewState()
 		eCount := 0
-		for _, l := range strings.Split(data, "\n") {
+		for l := range strings.SplitSeq(data, "\n") {
 			l = strings.TrimRight(l, "\n")
 			if strings.HasPrefix(l, "@@") && len(l) >= 3 && l[2] == 'E' {
 				eCount++
