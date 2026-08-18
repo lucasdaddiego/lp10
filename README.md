@@ -93,6 +93,13 @@ app, no browser, no background daemon: run `lp10`, get one screen.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
+- **macOS media keys** — the keyboard's play/pause / next / previous transport
+  keys drive the device **system-wide**, even when the terminal isn't focused.
+  While lp10 is connected they're consumed (so Music/Spotify on the laptop don't
+  also react); disconnected, they pass through untouched. Needs **Accessibility**
+  permission granted to the terminal app (System Settings → Privacy & Security);
+  without it lp10 quietly retries and arms the tap the moment it's granted.
+  No-op on Linux.
 - **Adapts to the terminal** — the full dashboard, a compact frame, or a
   one-line mini view, by size.
 - **Light on both ends** — one ssh connection, a single executable, and an
@@ -148,6 +155,11 @@ the arrow keys.
 > On Spotify, `p` (previous) first restarts the current track — that's the
 > device's own MID-40 `PREV` behaviour, not lp10's; press it twice to actually
 > skip back.
+
+On macOS the keyboard's **media transport keys** (play/pause, next, previous —
+the F7–F9 glyphs or their touch-bar equivalents) also work, from any app, while
+lp10 is connected — see the media-keys bullet under [Features](#features) for
+the Accessibility grant this needs.
 
 The view adapts to the terminal size: the full **dashboard** (now-playing with
 album-motif art, a vertical volume slider, and the graphic equalizer) at ≥ 25
@@ -394,6 +406,8 @@ internal/discovery/     one-shot mDNS query to find the LP10 on the LAN
 internal/workers/       owned processes, persistence, stream / command / watchdog / EQ / art runtime
 internal/tunnel/        the :2018 plain-text EQ/control protocol
 internal/artwork/       album-cover fetch/cache + half-block & Kitty rasterizers
+internal/mediakey/      macOS media-key event tap (play/next/prev system-wide)
+internal/atomicfile/    temp-sibling + fsync + rename writes for the persisted state
 internal/tui/           Bubble Tea model, rendering, input dispatch, helpers
 internal/fixtures/      embedded wire-record fixtures (shared by tests + fake)
 cmd/fakessh/            fake ssh transport for tests (substituted via LP10_SSH)
