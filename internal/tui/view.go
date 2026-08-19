@@ -690,7 +690,28 @@ func (m *model) seekRow(s protocol.Snapshot, W int) string {
 	}
 	cur := FmtMs(pos)
 	rem := m.fmtRight(total, pos)
-	cells := max(W-(statusW+1+DispW(cur)+1+1+DispW(rem)), 1)
+	// The row must never exceed W: the meter absorbs the slack, and when the
+	// fixed parts leave it no room (a narrow middle column plus >100-minute
+	// times) the elapsed, then the remaining readout, are dropped — a 1-cell
+	// meter floor here once pushed every frame line 1–2 cells wide and wrapped
+	// the whole UI.
+	meterW := func() int {
+		w := W - statusW - 1 // status column and its trailing space
+		if cur != "" {
+			w -= DispW(cur) + 1
+		}
+		if rem != "" {
+			w -= DispW(rem) + 1
+		}
+		return w
+	}
+	if meterW() < 1 {
+		cur = ""
+	}
+	if meterW() < 1 {
+		rem = ""
+	}
+	cells := max(meterW(), 1)
 	frac := 0.0
 	if total > 0 {
 		frac = float64(pos) / float64(total)
@@ -700,8 +721,17 @@ func (m *model) seekRow(s protocol.Snapshot, W int) string {
 		m.amb.ensure() // the seek bar wears the album's colour
 		fillCells, headCell = m.amb.mFill, m.amb.mHead
 	}
-	return status + " " + ps.dim.render(cur) + " " +
-		lineMeterCells(frac, cells, fillCells, headCell, ps.mTrack) + " " + ps.dim.render(rem)
+	row := status + " "
+	if cur != "" {
+		row += ps.dim.render(cur) + " "
+	}
+	row += lineMeterCells(frac, cells, fillCells, headCell, ps.mTrack)
+	if rem != "" {
+		row += " " + ps.dim.render(rem)
+	}
+	// Backstop for a sub-minimal W (status alone wider than the column): an
+	// over-wide row wraps the whole frame, a clipped one degrades one row.
+	return clipStyled(row, W)
 }
 
 func (m *model) controlsRow(s protocol.Snapshot, now time.Time, W int, withVol bool) string {

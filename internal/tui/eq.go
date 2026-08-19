@@ -47,7 +47,18 @@ func (m *model) eqAdjust(dir int) {
 		m.queryEQ(sp.Code)
 		return
 	}
-	m.sendEQ(sp.Code, tunnel.Clamp(sp.Code, cur+dir*sp.Step))
+	// cur is the device's raw readback (inbound values are deliberately not
+	// clamped), so the addition must not wrap: a hostile MaxInt readback plus
+	// a positive step would otherwise clamp to Min — for MXV a hard 0% cap.
+	step := dir * sp.Step
+	target := cur + step
+	switch {
+	case step > 0 && target < cur:
+		target = sp.Max
+	case step < 0 && target > cur:
+		target = sp.Min
+	}
+	m.sendEQ(sp.Code, tunnel.Clamp(sp.Code, target))
 }
 
 // eqToggleFocused flips a focused on/off control (no-op on ranged controls; an

@@ -92,8 +92,12 @@ func RemoteLoop(pingHost string) string {
 }
 
 // sanitizeHost keeps only hostname/IP-safe characters so a user-supplied
-// ping_host can be embedded in the device loop without shell escaping; an empty
-// or fully-stripped value falls back to the default target.
+// ping_host can be embedded in the device loop without shell escaping. A value
+// that needed ANY stripping falls back to the default target, not the stripped
+// remainder: that remainder is a different, almost certainly bogus name — an
+// IPv6 literal "2606:4700::1111" would become "260647001111" and fail every
+// gated ping with no indication why — and a working default beats a silently
+// mangled target.
 func sanitizeHost(h string) string {
 	var b strings.Builder
 	for _, r := range h {
@@ -101,8 +105,8 @@ func sanitizeHost(h string) string {
 			b.WriteRune(r)
 		}
 	}
-	if b.Len() == 0 {
+	if h == "" || b.String() != h {
 		return "spotify.com"
 	}
-	return b.String()
+	return h
 }

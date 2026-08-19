@@ -57,47 +57,116 @@ var ErrUndecodable = errors.New("art: undecodable image")
 
 // allowHostKey carries the one host exempt from the SSRF block (the configured
 // device, which legitimately serves AirPlay/DLNA covers on a private IP) into
-// the redirect check, which is otherwise per-client not per-request.
+// the vetting dialer, which is otherwise per-client not per-request.
 type ctxKey int
 
 const allowHostKey ctxKey = iota
 
+// httpClient enforces the SSRF policy at DIAL time (dialVetted): the hostname
+// is resolved once and the connection goes to the exact vetted IP, so a
+// rebinding resolver (public A record at check time, 127.0.0.1 at dial time)
+// has nothing left to race, and every redirect hop is vetted the same way —
+// each dials through this transport with the request context carrying
+// allowHost. The env proxy is disabled: a proxied request would dial only the
+// proxy and sail past the policy. The client Timeout is defense in depth — the
+// art worker bounds each fetch with a deadline ctx, but a future caller
+// without one must still not hang forever on a tarpit endpoint (the byte cap
+// bounds size, not time). Redirects use the default 10-hop cap.
 var httpClient = &http.Client{
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return errors.New("art: stopped after 10 redirects")
-		}
-		allow, _ := req.Context().Value(allowHostKey).(string)
-		return checkFetchHost(req.URL.Hostname(), allow)
-	},
+	Timeout: 30 * time.Second,
+	Transport: func() *http.Transport {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.Proxy = nil
+		t.DialContext = dialVetted
+		return t
+	}(),
 }
 
-// checkFetchHost blocks a cover fetch that resolves to a loopback / private /
-// link-local address — a device-supplied CoverArtUrl pointing at the laptop's
-// own internal network (SSRF: a blind GET / port probe from a host that may
-// reach more than the speaker can). The configured device host is exempt, since
-// its own covers live on a private IP. Best-effort against the resolver's TOCTOU
-// (a rebinding attacker could still race the subsequent dial); a custom
-// DialContext validating the connected IP would close that, at more cost than
-// this home-LAN threat warrants.
-func checkFetchHost(host, allowHost string) error {
-	if host == "" {
-		return fmt.Errorf("%w: empty host", ErrUndecodable)
-	}
-	if allowHost != "" && host == allowHost {
-		return nil
-	}
-	ips, err := net.LookupIP(host)
+// blockedNets are the non-public IPv4 ranges the stdlib IP predicates miss.
+var blockedNets = []*net.IPNet{
+	cidr("100.64.0.0/10"), // CGNAT — also the Tailscale range: a blind GET into the tailnet
+	cidr("198.18.0.0/15"), // benchmarking
+	cidr("192.0.0.0/24"),  // IETF protocol assignments
+}
+
+// nat64Net is the NAT64/DNS64 well-known prefix; its last four bytes embed an
+// IPv4 address.
+var nat64Net = cidr("64:ff9b::/96")
+
+func cidr(s string) *net.IPNet {
+	_, n, err := net.ParseCIDR(s)
 	if err != nil {
-		return fmt.Errorf("%w: resolve %s: %v", ErrUndecodable, host, err)
+		panic(err) // the literals above are compile-time constants in spirit
 	}
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-			ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("%w: blocked non-public host %s (%s)", ErrUndecodable, host, ip)
+	return n
+}
+
+// blockedIP reports whether ip is non-public: a device-supplied CoverArtUrl
+// resolving here would be a blind GET / port probe from a host that may reach
+// more than the speaker can (loopback, RFC1918, link-local, CGNAT/tailnet). A
+// NAT64-mapped address is judged by its embedded IPv4 — DNS64 synthesizes
+// 64:ff9b:: addresses for every v4-only host, so blocking the whole prefix
+// would break art on a NAT64 network, while 64:ff9b::c0a8:101 must still count
+// as the 192.168.1.1 it reaches.
+func blockedIP(ip net.IP) bool {
+	if nat64Net.Contains(ip) {
+		ip = net.IP(ip.To16()[12:16])
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	for _, n := range blockedNets {
+		if n.Contains(ip) {
+			return true
 		}
 	}
-	return nil
+	return false
+}
+
+// dialVetted is the transport's DialContext: resolve the hostname, filter every
+// candidate address through blockedIP, and dial only a vetted IP. The configured
+// device (allowHost, via the request context) is exempt — matched by
+// case-insensitive hostname OR by resolved address, so the device reporting its
+// own covers by IP while the config holds a hostname (or the reverse) still
+// renders instead of latching ErrUndecodable for the whole session.
+func dialVetted(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("%w: address %q: %v", ErrUndecodable, addr, err)
+	}
+	var d net.Dialer
+	allow, _ := ctx.Value(allowHostKey).(string)
+	if allow != "" && strings.EqualFold(host, allow) {
+		return d.DialContext(ctx, network, addr)
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolve %s: %v", ErrUndecodable, host, err)
+	}
+	var allowIPs []net.IP // resolved lazily: only a blocked candidate needs it
+	allowLooked := false
+	var dialErr error
+	for _, ip := range ips {
+		if blockedIP(ip) {
+			if !allowLooked && allow != "" {
+				allowIPs, _ = net.DefaultResolver.LookupIP(ctx, "ip", allow)
+				allowLooked = true
+			}
+			if !slices.ContainsFunc(allowIPs, ip.Equal) {
+				continue
+			}
+		}
+		conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		dialErr = err
+	}
+	if dialErr != nil {
+		return nil, dialErr // vetted addresses existed but none connected: transient
+	}
+	return nil, fmt.Errorf("%w: blocked non-public host %s", ErrUndecodable, host)
 }
 
 // Get returns the decoded cover for url. It serves from the on-disk cache under
@@ -157,15 +226,8 @@ func decode(raw []byte) (image.Image, error) {
 }
 
 func fetch(ctx context.Context, rawurl, allowHost string) ([]byte, error) {
-	// Validate the initial host up front (CheckRedirect only guards later hops),
-	// and stash allowHost so the redirect check can re-apply the same rule.
-	u, err := url.Parse(rawurl)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUndecodable, err)
-	}
-	if err := checkFetchHost(u.Hostname(), allowHost); err != nil {
-		return nil, err
-	}
+	// The SSRF policy runs at dial time (dialVetted) — for the initial request
+	// and every redirect hop alike; the ctx carries the exemption there.
 	ctx = context.WithValue(ctx, allowHostKey, allowHost)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
 	if err != nil {

@@ -213,10 +213,20 @@ func ApplyRecord(st *State, rec Record) bool {
 		switch {
 		case p.track != nil:
 			st.track, st.trackAt = p.track, now
+			st.garbageBs = 0
 		case p.idle:
 			st.track = nil // definitive idle: clear now
-		case st.track == nil || now.Sub(st.trackAt) > DebounceWindow:
-			st.track = nil // garbage B: debounced clear
+			st.garbageBs = 0
+		default:
+			// Garbage B (unparseable reg-42 read). The loop ships @@B on
+			// change, so mid-song trackAt is stale and the time debounce alone
+			// cannot tell one corrupt read from a real stop — a single bad
+			// read must not blank now-playing. Clear only on the second
+			// consecutive garbage B, and never inside the post-change window.
+			st.garbageBs++
+			if st.garbageBs >= 2 && (st.track == nil || now.Sub(st.trackAt) > DebounceWindow) {
+				st.track = nil
+			}
 		}
 	}
 	if p.posOK {
@@ -329,6 +339,11 @@ func parseDevInfo(lines []string) *DevInfo {
 			di.DNS = v
 		}
 	}
+	// An all-junk block (lines present, nothing recognisable) must not wipe a
+	// previously good once-per-connection readout — same guard as parseDevDetails.
+	if *di == (DevInfo{}) {
+		return nil
+	}
 	return di
 }
 
@@ -343,6 +358,10 @@ func parseConfInfo(lines []string) *ConfInfo {
 		if k, v, ok := strings.Cut(printable(ln), "="); ok && confKeys[k] {
 			ci.Svc[k] = v
 		}
+	}
+	// Same all-junk guard as parseDevInfo/parseDevDetails.
+	if len(ci.Svc) == 0 {
+		return nil
 	}
 	return ci
 }

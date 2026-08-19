@@ -96,6 +96,13 @@ func Run(cfg config.Config) (int, error) {
 	finalModel, runErr := p.Run()
 	close(stopSig)
 	<-sigDone
+	// Restore default signal dispositions BEFORE teardown: with the handler
+	// goroutine retired, a SIGINT during a slow background.Close (a wedged ssh
+	// child riding out the ~4s kill ladder) would otherwise land in the unread
+	// channel and be swallowed — leaving Ctrl-C unable to abort the teardown.
+	// The terminal is already restored (p.Run returned), and an orphaned child
+	// self-heals via fd-close → remote-loop EOF.
+	signal.Stop(sigCh)
 	stopKeys()
 
 	background.Close(workers.DrainTimeout)

@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <pthread.h>
 #import "mediakey_darwin.h"
 #import "_cgo_export.h"
 
@@ -8,9 +9,14 @@
 #define NX_SYSDEFINED 14
 #define NX_SUBTYPE_AUX_CONTROL_BUTTONS 8
 
-// A single process-wide tap. Written on the run-loop thread before it blocks;
-// gLoop is read by lp10StopTap from another thread (CFRunLoopStop is safe cross-
-// thread).
+// A single process-wide tap. gMu orders the run-loop thread's writes (install)
+// against lp10StopTap reading them from another thread; gStop makes stop
+// requests durable — CFRunLoopStop on a loop that is not yet running is a
+// no-op, so lp10RunLoop re-checks the flag before every run slice instead of
+// trusting the wakeup alone. tapCallback reads gTap without the mutex: it runs
+// on the install thread itself, after install completed.
+static pthread_mutex_t    gMu   = PTHREAD_MUTEX_INITIALIZER;
+static int                gStop = 0;
 static CFMachPortRef      gTap  = NULL;
 static CFRunLoopSourceRef gSrc  = NULL;
 static CFRunLoopRef       gLoop = NULL;
@@ -47,23 +53,46 @@ static CGEventRef tapCallback(CGEventTapProxy proxy, CGEventType type,
 
 int lp10InstallTap(void) {
     CGEventMask mask = CGEventMaskBit(NX_SYSDEFINED);
-    gTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap,
-                            kCGEventTapOptionDefault, mask, tapCallback, NULL);
-    if (gTap == NULL) {
+    CFMachPortRef tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap,
+                                         kCGEventTapOptionDefault, mask, tapCallback, NULL);
+    if (tap == NULL) {
         return 0; // almost always: Accessibility permission not granted
     }
-    gSrc  = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, gTap, 0);
-    gLoop = CFRunLoopGetCurrent();
-    CFRunLoopAddSource(gLoop, gSrc, kCFRunLoopCommonModes);
-    CGEventTapEnable(gTap, true);
+    CFRunLoopSourceRef src  = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
+    CFRunLoopRef       loop = CFRunLoopGetCurrent();
+    CFRunLoopAddSource(loop, src, kCFRunLoopCommonModes);
+    CGEventTapEnable(tap, true);
+    pthread_mutex_lock(&gMu);
+    gTap  = tap;
+    gSrc  = src;
+    gLoop = loop;
+    pthread_mutex_unlock(&gMu);
     return 1;
 }
 
 void lp10RunLoop(void) {
-    CFRunLoopRun(); // blocks until CFRunLoopStop (lp10StopTap)
+    // Bounded slices, re-checking the stop flag before each: a stop that landed
+    // between the caller's pre-check and entry here was a no-op CFRunLoopStop
+    // on a not-yet-running loop, and CFRunLoopRun would then block this locked
+    // thread forever. A stop mid-slice wakes the loop early (RunInMode returns
+    // stopped) and the next flag check exits.
+    for (;;) {
+        pthread_mutex_lock(&gMu);
+        int stopped = gStop;
+        pthread_mutex_unlock(&gMu);
+        if (stopped) {
+            return;
+        }
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.5, false);
+    }
 }
 
 void lp10StopTap(void) {
-    if (gTap)  CGEventTapEnable(gTap, false);
-    if (gLoop) CFRunLoopStop(gLoop);
+    pthread_mutex_lock(&gMu);
+    gStop = 1;
+    CFMachPortRef tap  = gTap;
+    CFRunLoopRef  loop = gLoop;
+    pthread_mutex_unlock(&gMu);
+    if (tap)  CGEventTapEnable(tap, false);
+    if (loop) CFRunLoopStop(loop);
 }

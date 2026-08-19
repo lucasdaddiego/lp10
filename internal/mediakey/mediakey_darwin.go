@@ -40,6 +40,14 @@ const nxKeyDown = 0x0A
 //export goMediaKey
 func goMediaKey(keyCode C.int, keyState C.int) C.int {
 	k := classify(int(keyCode))
+	if k == KeyNone {
+		// Not a transport key. Volume/brightness ride the same NX_SYSDEFINED
+		// mask, so this path sits on the event-delivery latency of every aux
+		// button system-wide — return before connected() takes the State lock
+		// and allocates a snapshot for an event we always pass through
+		// (decide(KeyNone, …) is unconditionally act=false, swallow=false).
+		return 0
+	}
 	conn := false
 	if connected != nil {
 		conn = connected()
@@ -86,8 +94,11 @@ func Start(cfg Config) (func(), error) {
 				if attempts > 0 && cfg.OnActive != nil {
 					cfg.OnActive() // re-armed after an earlier denial
 				}
-				// Guard the rare stop-before-run race: if stop was already
-				// requested, don't enter (and never leave) the run loop.
+				// Fast path for a stop that already landed. The authoritative
+				// guard is the C-side stop flag: lp10RunLoop re-checks it
+				// before every run slice, so a stop landing between this
+				// select and the run-loop entry (where CFRunLoopStop is a
+				// no-op on a not-yet-running loop) still exits promptly.
 				select {
 				case <-stop:
 					C.lp10StopTap()

@@ -88,7 +88,12 @@ dns=;
 while read -r dk dvv drest; do
   case "$dk" in nameserver) dns=$dvv; break;; esac;
 done 2>/dev/null < /etc/resolv.conf;
+# BusyBox df wraps a >20-char device name onto its own line, leaving a 5-field
+# stats-only last line (total used avail use% mount) instead of 6 — pick the
+# used/total columns by field count so a long mount source can't silently swap
+# the data= reading into avail/used.
 set -- $(df -k /lsync 2>/dev/null | tail -1);
+if [ $# -ge 6 ]; then duk=$3; dtk=$2; elif [ $# -eq 5 ]; then duk=$2; dtk=$1; else duk=; dtk=; fi;
 echo @@i;
 printf 'net=%s\n' "$net";
 printf 'iface=%s\n' "$dv";
@@ -104,7 +109,7 @@ printf 'build=%s\n' "$bd";
 printf 'app=%s\n' "$ap";
 printf 'platform=%s\n' "$pf";
 printf 'name=%s\n' "$fn";
-printf 'data=%s %s\n' "$3" "$2";
+printf 'data=%s %s\n' "$duk" "$dtk";
 printf 'dns=%s\n' "$dns";
 echo @@E;
 
@@ -200,9 +205,12 @@ while :; do
     # three ping RTTs (laptop / gateway / internet) gated to every 3rd @@s (pgc) so a
     # dead target can't stall every tick; skipped ticks emit "-" (parser folds as gap).
     # The internet target self-pins to its resolved IP after the first success (pg's
-    # $oip), so every later tick skips DNS entirely.
+    # $oip), so every later tick skips DNS entirely. The pin is gated on the RTT
+    # parse succeeding, not just resolution: BusyBox ping prints the "PING host
+    # (ip):" header even at 100% loss, and pinning a captive-portal / ICMP-dead
+    # answer would hold a dead IP for the whole connection while DNS recovers.
     pgc=$((pgc-1));
-    if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o; pg "$gw"; pgw=$o; pg "$ph"; pnt=$o; [ -n "$oip" ] && ph=$oip; pgc=3; else pcl=-; pgw=-; pnt=-; fi;
+    if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o; pg "$gw"; pgw=$o; pg "$ph"; pnt=$o; [ "$o" != - ] && [ -n "$oip" ] && ph=$oip; pgc=3; else pcl=-; pgw=-; pnt=-; fi;
     echo @@s;
     echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--}";
   fi;

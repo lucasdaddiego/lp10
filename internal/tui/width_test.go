@@ -2,17 +2,22 @@ package tui
 
 import (
 	"testing"
+	"unicode"
 
 	"golang.org/x/text/width"
 )
 
-// charW short-circuits every rune below U+1100 to width 1 instead of consulting
-// the Unicode table — the claim being that the first East Asian Wide/Fullwidth
-// block starts there. Sweep the whole fast-path range plus a margin above it
-// against the table so a future x/text update that widened something lower down
-// fails here rather than silently tearing the layout by a column.
+// charW short-circuits every rune below U+0300 to width 1 instead of consulting
+// any table (no combining block below it, and the first East Asian
+// Wide/Fullwidth block starts at U+1100); Mn/Me combining marks measure 0 like
+// ansi.StringWidth. Sweep the whole fast-path range plus a margin above it
+// against the same rules so a future x/text update that widened something lower
+// down fails here rather than silently tearing the layout by a column.
 func TestCharWFastPathMatchesTable(t *testing.T) {
 	table := func(r rune) int {
+		if unicode.In(r, unicode.Mn, unicode.Me) {
+			return 0
+		}
 		switch width.LookupRune(r).Kind() {
 		case width.EastAsianWide, width.EastAsianFullwidth:
 			return 2

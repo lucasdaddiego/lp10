@@ -134,6 +134,13 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = transport.SpawnEnv()
 	cmd.Stderr = errf
+	// New session: detach ssh from the controlling terminal so it can never
+	// open /dev/tty for a password prompt. SSH_ASKPASS_REQUIRE=force achieves
+	// that on OpenSSH ≥ 8.4 (2020), but an older ssh ignores the variable and
+	// would prompt invisibly under the alt screen — hanging every attempt with
+	// a transient-looking stderr. Teardown signalling is direct-to-process
+	// (Signal/Kill on the Cmd), so no group semantics change.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	// Manual pipes (not Std*Pipe): keep a single owner of Cmd.Wait() and keep
 	// reads safe from Wait closing the pipe out from under them.
@@ -162,7 +169,17 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	}()
 	procs.start(st, proc)
 
-	if !control.stop.IsSet() {
+	// The read loop runs under a deferred reap: every call inside it is
+	// panic-fenced today, but the enclosing worker recovers and RESPAWNS — an
+	// unfenced panic here with a plain post-loop reap would orphan the live ssh
+	// child (holding one of the device's scarce sshd slots) for the rest of the
+	// process. The defer keeps the reap-before-stderr-read ordering: the child
+	// must be dead before the residual is read as complete.
+	func() {
+		defer reap(st, procs, proc)
+		if control.stop.IsSet() {
+			return
+		}
 		var firstData, lastPersist time.Time
 		nextLine := boundedLines(outR)
 		for rec := range protocol.IterRecords(nextLine) {
@@ -186,8 +203,7 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 				lastPersist = now
 			}
 		}
-	}
-	reap(st, procs, proc)
+	}()
 
 	if control.stop.IsSet() {
 		return backoff

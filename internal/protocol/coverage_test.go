@@ -349,6 +349,55 @@ func TestCov_ToggleOptimistic(t *testing.T) {
 	}
 }
 
+// Pausing folds the extrapolated elapsed into posMs, so the display doesn't
+// step back to the last device tick (up to one tick of visible regression).
+func TestCov_ToggleOptimisticFoldsElapsedOnPause(t *testing.T) {
+	st := NewState()
+	st.mu.Lock()
+	st.playing = 0
+	st.connected = true
+	st.track = &Track{TrackName: "x", TotalTime: 300000}
+	st.posMs = 10000
+	st.posAt = time.Now().Add(-900 * time.Millisecond)
+	st.mu.Unlock()
+	st.ToggleOptimistic() // pause
+	if pos := st.RawPos(); pos < 10800 || pos > 11500 {
+		t.Errorf("posMs after pause = %d, want ~10900 (elapsed folded in)", pos)
+	}
+	// The overflow guard saturates instead of wrapping.
+	st.mu.Lock()
+	st.playing = 0
+	st.posMs = math.MaxInt - 10
+	st.posAt = time.Now().Add(-time.Second)
+	st.mu.Unlock()
+	st.ToggleOptimistic()
+	if pos := st.RawPos(); pos != math.MaxInt {
+		t.Errorf("posMs after overflowing pause = %d, want MaxInt", pos)
+	}
+}
+
+// ---- satAdd64 ---------------------------------------------------------------
+
+// Hostile @@s counters can put both drop deltas near MaxInt64; the sum must
+// saturate rather than wrap into a negative on-screen drop count.
+func TestCov_DropsSumSaturates(t *testing.T) {
+	if got := satAdd64(math.MaxInt64, math.MaxInt64); got != math.MaxInt64 {
+		t.Errorf("satAdd64(max, max) = %d, want MaxInt64", got)
+	}
+	if got := satAdd64(2, 3); got != 5 {
+		t.Errorf("satAdd64(2, 3) = %d, want 5", got)
+	}
+	st := NewState()
+	st.updateNet(&SysInfo{RxErrs: "0", TxErrs: "0", RxDrop: "0", TxDrop: "0"}, time.Now())
+	st.updateNet(&SysInfo{
+		RxErrs: "0", TxErrs: "0",
+		RxDrop: "9223372036854775807", TxDrop: "9223372036854775807",
+	}, time.Now())
+	if n := st.DiagnosticView(time.Now()).Net; !n.ErrsOK || n.Drops != math.MaxInt64 {
+		t.Errorf("Drops = %d (ok=%v), want saturated MaxInt64", n.Drops, n.ErrsOK)
+	}
+}
+
 // ---- pingStat decreasing-sample (jitter abs) --------------------------------
 
 func TestCov_PingStatNegativeDelta(t *testing.T) {

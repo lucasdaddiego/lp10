@@ -31,9 +31,13 @@ const (
 // Spec describes one control: its wire code, kind, and value bounds. Bounds are
 // the UI's working range; the device clamps authoritatively and echoes the
 // applied value back, so a slightly-off Max here only limits the slider, it
-// can't push an invalid value (the readback corrects the display). The display
-// label is NOT here: the equalizer's column is narrow, so the UI owns its own
-// short labels (tui.eqShort) and this stays a pure wire description.
+// can't push an invalid value (the readback corrects the display). Outbound
+// writes are clamped to these bounds; inbound readbacks are NOT (ParseFrames
+// returns the device's real value), so a value set out-of-range by another
+// client displays truthfully instead of hiding a multi-step jump behind the
+// next relative keypress. The display label is NOT here: the equalizer's
+// column is narrow, so the UI owns its own short labels (tui.eqShort) and this
+// stays a pure wire description.
 type Spec struct {
 	Code     string
 	Kind     Kind
@@ -134,5 +138,5 @@ func parseFrame(frame string) (code string, val int, ok bool) {
 	if err != nil {
 		return "", 0, false
 	}
-	return code, Clamp(code, n), true
+	return code, n, true // raw: the readback must report what the device holds
 }

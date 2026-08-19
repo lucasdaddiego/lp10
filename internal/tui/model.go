@@ -53,11 +53,12 @@ const (
 )
 
 // miniMode reports whether the terminal is too small for the dashboard, so only
-// the one-line mini view renders (no EQ pane). Mirrors viewContent's threshold,
-// including its rows==0||cols==0 "no size yet" guard: before the first
-// WindowSizeMsg nothing is drawn and this is not mini.
+// the one-line mini view renders (no EQ pane). Only key dispatch consults this
+// (the view has its own rows==0 guard), so before the first WindowSizeMsg it
+// reports mini: nothing is drawn yet, and scripted input racing startup (`tmux
+// send-keys "e" Left`) must not adjust an invisible equalizer through the gap.
 func (m *model) miniMode() bool {
-	return m.rows > 0 && m.cols > 0 && (m.rows < MiniRows || m.cols < MiniCols)
+	return m.rows < MiniRows || m.cols < MiniCols
 }
 
 // model is the Bubble Tea model: controller logic plus render state.

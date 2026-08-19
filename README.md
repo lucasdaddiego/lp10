@@ -183,9 +183,9 @@ These ride a separate plain-text control connection to the device on TCP
 stream — so a dead tunnel only greys out the equalizer, it never disturbs
 playback, and the last-known values are restored instantly from cache on launch.
 
-> **Heads-up:** a low **Max Volume** is what makes the IR remote and Spotify
-> seem unable to turn the volume up (they hit the cap). Set it to 100 for the
-> full range.
+> **Heads-up:** a low **Max Volume** is what makes the Bluetooth remote and
+> Spotify seem unable to turn the volume up (they hit the cap). Set it to 100
+> for the full range.
 
 ## Diagnostics
 

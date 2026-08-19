@@ -55,7 +55,10 @@ func resolveDevice(cfg config.Config, find func(string, time.Duration) (discover
 		hint = cfg.Name
 	}
 	if dev, ok := find(hint, discoverTimeout); ok {
-		cfg.Host, cfg.Discovered = dev.Addr(), true
+		// Addr() can fall back to the raw SRV target when no A record arrived,
+		// which is as attacker-controllable as the label below — strip it the
+		// same way (it reaches the diag overlay's host readout).
+		cfg.Host, cfg.Discovered = protocol.Printable(dev.Addr()), true
 		// Label the UI with the device's own advertised name ("LP10 · Living")
 		// when the user hasn't set a custom name — so no room name is hardcoded.
 		// The mDNS label is attacker-controllable and reaches the header

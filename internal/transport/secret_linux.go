@@ -25,7 +25,10 @@ func secretLookupArgv() []string {
 // secretNotFound reports the no-such-item case (consulted only when the lookup
 // exited non-zero): secret-tool exits non-zero with nothing on stderr. A locked
 // keyring or a D-Bus failure writes a diagnostic there instead, which we treat as
-// "locked" rather than "no item".
+// "locked" rather than "no item". A negative rc is a signal-killed lookup
+// (segfault/OOM) — often also silent on stderr, but it says nothing about the
+// item, so it must not advise "run: secret-tool store" for a password that may
+// well exist; it falls to the locked/broken class instead.
 func secretNotFound(o secOutcome) bool {
-	return strings.TrimSpace(o.stderr) == ""
+	return o.rc > 0 && strings.TrimSpace(o.stderr) == ""
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"golang.org/x/text/width"
@@ -76,12 +77,24 @@ func FmtMs(ms int) string {
 // with lipgloss and tore the layout by a column. Glyph *selection* still adapts
 // to a CJK locale via `localeAmb` / the GL ASCII fallbacks (defensive for terminals
 // configured to render ambiguous double-width); only measurement is fixed at 1.
+// Nonspacing/enclosing combining marks (Mn/Me) measure 0, agreeing with
+// ansi.StringWidth: the sanitizer NFC-composes device strings, but marks with
+// no precomposed form (Thai tone stacks, U+20E3 keycaps) legitimately remain,
+// and counting them as 1 clipped a fitting line one column early and could
+// start the marquee on a line that actually fits.
 func charW(r rune) int {
-	// Fast path: the first East Asian Wide/Fullwidth block is Hangul Jamo at
-	// U+1100, so everything below it is width 1 without consulting the table.
-	// That covers every rune the UI itself draws and almost all track metadata;
-	// DispW runs dozens of times per rendered frame. TestCharWFastPath sweeps the
-	// boundary against the table to keep the two in agreement.
+	// Fast path: no combining block below U+0300 and the first East Asian
+	// Wide/Fullwidth block is Hangul Jamo at U+1100, so everything below
+	// U+0300 is width 1 without consulting any table. That covers every rune
+	// the UI itself draws and almost all track metadata; DispW runs dozens of
+	// times per rendered frame. TestCharWFastPath sweeps the boundary against
+	// the table to keep the two in agreement.
+	if r < 0x300 {
+		return 1
+	}
+	if unicode.In(r, unicode.Mn, unicode.Me) {
+		return 0
+	}
 	if r < 0x1100 {
 		return 1
 	}

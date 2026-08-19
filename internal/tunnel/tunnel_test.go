@@ -97,10 +97,13 @@ func TestParseFramesSkipsJunk(t *testing.T) {
 	}
 }
 
-func TestParseFramesClampsDeviceValues(t *testing.T) {
+// Inbound readbacks are deliberately NOT clamped: the display must report what
+// the device actually holds (another client can set values past the UI's
+// conservative bounds), and only outbound writes clamp (see Set).
+func TestParseFramesKeepsRawDeviceValues(t *testing.T) {
 	got, rest := ParseFrames("MXV:999;BAS:-99;VBS:8;")
-	want := []Update{{"MXV", 100}, {"BAS", -10}, {"VBS", 1}}
+	want := []Update{{"MXV", 999}, {"BAS", -99}, {"VBS", 8}}
 	if !reflect.DeepEqual(got, want) || rest != "" {
-		t.Errorf("ParseFrames out-of-range = %v, %q; want %v, empty", got, rest, want)
+		t.Errorf("ParseFrames out-of-range = %v, %q; want raw %v, empty", got, rest, want)
 	}
 }

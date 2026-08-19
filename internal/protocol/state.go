@@ -22,6 +22,7 @@ type State struct {
 	connected bool
 	track     *Track
 	trackAt   time.Time
+	garbageBs int // consecutive content-free, non-idle @@B sections (see ApplyRecord)
 	sysinfo   *SysInfo
 	devinfo   *DevInfo    // static device/network info (@@i, once per connection)
 	confinfo  *ConfInfo   // streaming-capability state (@@c, once per connection)
@@ -457,12 +458,14 @@ func (st *State) ConfView() *ConfInfo {
 
 // Preload seeds the cached track/pos/vol for an instant first paint. The clock
 // never resumes from a cached position, so playing starts at 2 (not playing)
-// and trackAt is the zero time (any garbage B immediately clears a stale track).
+// and trackAt is the zero time; garbageBs starts at 1 so the FIRST live garbage
+// B already clears a stale cached track (live tracks need two consecutive).
 func (st *State) Preload(track *Track, pos, vol int) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.track = track
 	st.trackAt = time.Time{}
+	st.garbageBs = 1
 	st.posMs = max(0, pos)
 	st.playing = 2
 	st.vol = clamp100(vol)
@@ -475,12 +478,25 @@ func (st *State) ToggleOptimistic() bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	playing := st.playing == 0
+	now := time.Now()
 	if playing {
+		// Fold the extrapolated elapsed into posMs before stopping the clock —
+		// under the same conditions snapLocked extrapolates — so pausing doesn't
+		// step the display back to the last device tick. The next @@p replaces
+		// posMs, keeping the device authoritative.
+		if st.track != nil && st.connected {
+			if elapsed := now.Sub(st.posAt).Milliseconds(); elapsed > 0 {
+				if elapsed > int64(math.MaxInt-st.posMs) {
+					st.posMs = math.MaxInt
+				} else {
+					st.posMs += int(elapsed)
+				}
+			}
+		}
 		st.playing = 2
 	} else {
 		st.playing = 0
 	}
-	now := time.Now()
 	st.playHold = now.Add(PlayHoldDuration)
 	st.posAt = now
 	return playing

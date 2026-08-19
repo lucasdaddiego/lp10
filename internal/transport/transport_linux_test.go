@@ -38,6 +38,17 @@ func TestKeychainPasswordDBusErrorMeansLocked(t *testing.T) {
 	}
 }
 
+// A signal-killed secret-tool (ExitCode -1: segfault/OOM) is usually silent on
+// stderr too, but says nothing about the item — it must classify as locked/
+// broken, never advise re-storing a password that may well exist.
+func TestKeychainPasswordSignalKilledMeansLocked(t *testing.T) {
+	withRunSecurity(t, func() secOutcome { return secOutcome{rc: -1} })
+	_, err := KeychainPassword()
+	if err == nil || !strings.Contains(err.Error(), MarkerLocked) {
+		t.Fatalf("err = %v, want %s (signal-killed lookup is not no-item)", err, MarkerLocked)
+	}
+}
+
 // The store hint must prompt interactively and never embed the secret in argv.
 func TestStoreHintIsInteractiveSecretToolCommand(t *testing.T) {
 	if !strings.HasPrefix(StoreHint, "secret-tool store") {

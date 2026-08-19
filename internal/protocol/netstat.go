@@ -101,13 +101,23 @@ func (st *State) netViewLocked() NetStat {
 	if st.errsOK {
 		ns.RxErrs = st.errCur[0] - st.errBase[0]
 		ns.TxErrs = st.errCur[1] - st.errBase[1]
-		ns.Drops = (st.errCur[2] - st.errBase[2]) + (st.errCur[3] - st.errBase[3])
+		ns.Drops = satAdd64(st.errCur[2]-st.errBase[2], st.errCur[3]-st.errBase[3])
 		ns.ErrsOK = true
 	}
 	for i := range st.pingRing {
 		ns.Ping[i] = pingStat(st.pingRing[i])
 	}
 	return ns
+}
+
+// satAdd64 adds two non-negative counter deltas, saturating at MaxInt64: the
+// re-baseline logic keeps each delta ≥ 0, but a hostile @@s can put both near
+// MaxInt64 and a wrapped sum would render as a negative drop count.
+func satAdd64(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // pingStat reduces a latency ring to an average and a jitter (the mean absolute

@@ -28,6 +28,35 @@ func TestEmbeddedLoopMatchesSource(t *testing.T) {
 		len(got), len(remoteLoopScript), i, window(got, i), window(remoteLoopScript, i))
 }
 
+// The whole loop rides one ssh exec-request string; dropbear rejects requests
+// longer than MAX_CMD_LEN (9000 by default) with a connection-fatal error whose
+// stderr classifies as transient — a silent infinite reconnect loop. Guard the
+// headroom so growth is caught here, not on the device.
+func TestRemoteLoopFitsDropbearCmdLen(t *testing.T) {
+	if n := len(RemoteLoop("a-hostname-of-plausible-length.example.com")); n >= 8500 {
+		t.Errorf("RemoteLoop is %d bytes — within 500 of dropbear's MAX_CMD_LEN (9000); trim the loop", n)
+	}
+}
+
+// A ping_host that sanitizeHost would have to mangle falls back to the default
+// target whole — a stripped remainder is a bogus hostname that fails every
+// gated ping with no indication why (an IPv6 literal was the concrete case).
+func TestSanitizeHostFallsBackWhenStripped(t *testing.T) {
+	cases := map[string]string{
+		"":                  "spotify.com",
+		"2606:4700::1111":   "spotify.com", // IPv6 literal: colons are not embeddable
+		"bad host'; rm -rf": "spotify.com", // quote breakout attempt
+		"spotify.com":       "spotify.com",
+		"1.1.1.1":           "1.1.1.1",
+		"my-host.example":   "my-host.example",
+	}
+	for in, want := range cases {
+		if got := sanitizeHost(in); got != want {
+			t.Errorf("sanitizeHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // firstDiff returns the index of the first differing byte, or -1 if equal.
 func firstDiff(a, b string) int {
 	n := min(len(a), len(b))

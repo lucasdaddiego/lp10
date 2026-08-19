@@ -11,6 +11,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -313,21 +314,92 @@ func TestCov_KittyImageEncodeFailureDegrades(t *testing.T) {
 	}
 }
 
-// TestCov_CheckFetchHost pins the SSRF host rule directly (IP literals so
-// LookupIP never hits the network): private/loopback/link-local/unspecified are
-// blocked, a public IP passes, and the configured device host is exempt.
-func TestCov_CheckFetchHost(t *testing.T) {
-	blocked := []string{"127.0.0.1", "10.0.0.5", "192.168.1.40", "169.254.1.1", "0.0.0.0", ""}
+// TestCov_BlockedIP pins the SSRF address rule: private/loopback/link-local/
+// unspecified plus the ranges the stdlib predicates miss (CGNAT — the
+// Tailscale space — benchmarking, IETF assignments) are blocked, a NAT64
+// address is judged by its embedded IPv4, and public addresses pass.
+func TestCov_BlockedIP(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1", "10.0.0.5", "192.168.1.40", "169.254.1.1", "0.0.0.0",
+		"100.100.1.2", // CGNAT / tailnet
+		"198.19.7.7",  // benchmarking
+		"192.0.0.170", // IETF protocol assignments
+		"::1", "fe80::1", "fd00::1",
+		"64:ff9b::c0a8:101", // NAT64-mapped 192.168.1.1
+		"::ffff:10.0.0.5",   // IPv4-mapped private
+	}
 	for _, h := range blocked {
-		if err := checkFetchHost(h, ""); !errors.Is(err, ErrUndecodable) {
-			t.Errorf("checkFetchHost(%q, \"\") = %v, want blocked", h, err)
+		if !blockedIP(net.ParseIP(h)) {
+			t.Errorf("blockedIP(%q) = false, want blocked", h)
 		}
 	}
-	if err := checkFetchHost("8.8.8.8", ""); err != nil {
-		t.Errorf("public IP literal should pass: %v", err)
+	public := []string{"8.8.8.8", "2606:4700::1111", "64:ff9b::808:808" /* NAT64-mapped 8.8.8.8 */}
+	for _, h := range public {
+		if blockedIP(net.ParseIP(h)) {
+			t.Errorf("blockedIP(%q) = true, want public", h)
+		}
 	}
-	if err := checkFetchHost("192.168.1.40", "192.168.1.40"); err != nil {
-		t.Errorf("configured device host should be exempt: %v", err)
+}
+
+// cidr's panic branch is a compile-time-literal guard; prove it fires.
+func TestCov_CidrPanicsOnBadLiteral(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("cidr with a bad literal should panic")
+		}
+	}()
+	cidr("not-a-cidr")
+}
+
+// TestCov_DialVetted pins the dialer policy without touching the network: a
+// blocked literal errors ErrUndecodable, the allow exemption matches the
+// hostname case-insensitively AND by resolved address (the device reporting
+// its cover by IP while the config holds a hostname must not latch the cover
+// undecodable for the session), and a garbage address errors.
+func TestCov_DialVetted(t *testing.T) {
+	ctx := context.Background()
+	if _, err := dialVetted(ctx, "tcp", "10.0.0.5:80"); !errors.Is(err, ErrUndecodable) {
+		t.Errorf("blocked literal = %v, want ErrUndecodable", err)
+	}
+	if _, err := dialVetted(ctx, "tcp", "no-port"); !errors.Is(err, ErrUndecodable) {
+		t.Errorf("garbage address = %v, want ErrUndecodable", err)
+	}
+	// An invalid domain name fails resolution locally (no network round-trip)
+	// and classifies permanent — deterministic for the url, like a blocked host.
+	if _, err := dialVetted(ctx, "tcp", "bad host:80"); !errors.Is(err, ErrUndecodable) {
+		t.Errorf("unresolvable host = %v, want ErrUndecodable", err)
+	}
+	// A vetted (public) address whose dial itself fails is transient, NOT
+	// ErrUndecodable: the cancelled context makes the dial fail immediately
+	// without touching the network (203.0.113.0/24 is TEST-NET-3).
+	cctx, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := dialVetted(cctx, "tcp", "203.0.113.1:9"); err == nil || errors.Is(err, ErrUndecodable) {
+		t.Errorf("failed dial of a vetted address = %v, want a transient error", err)
+	}
+	// The by-address exemption: allow "LOCALHOST" (a hostname), dial its IP —
+	// the candidate 127.0.0.1 is blocked but equals a resolved allow address,
+	// so the dial proceeds (and fails fast on a closed port, which is a plain
+	// transient error, not ErrUndecodable).
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	allowCtx := context.WithValue(ctx, allowHostKey, "LOCALHOST")
+	conn, err := dialVetted(allowCtx, "tcp", l.Addr().String())
+	if err != nil {
+		t.Errorf("device-by-IP with hostname allow = %v, want connected", err)
+	} else {
+		conn.Close()
+	}
+	// And the hostname exemption is case-insensitive.
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	conn, err = dialVetted(allowCtx, "tcp", net.JoinHostPort("localhost", port))
+	if err != nil {
+		t.Errorf("case-folded hostname allow = %v, want connected", err)
+	} else {
+		conn.Close()
 	}
 }
 

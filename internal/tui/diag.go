@@ -125,17 +125,17 @@ func (m *model) hostReadout(dev *protocol.DevInfo) string {
 // sshReadout is the connection section's stream line: how fresh the framed
 // records are, plus the connect-attempt count.
 func (m *model) sshReadout(ls diagLinkStatus, att int) string {
-	tail := m.sty.sTxt.Render(fmt.Sprintf(" · %d %s", att, ls.attWord))
+	tail := m.sty.pens().txt.render(fmt.Sprintf(" · %d %s", att, ls.attWord))
 	if ls.rxTxt == "—" { // nothing framed yet — say so instead of "rx — ago"
-		return m.sty.sDim.Render("no data yet") + tail
+		return m.sty.pens().dim.render("no data yet") + tail
 	}
-	return m.sty.sTxt.Render("rx ") + ls.rxPen.Render(ls.rxTxt) + m.sty.sTxt.Render(" ago") + tail
+	return m.sty.pens().txt.render("rx ") + ls.rxPen.Render(ls.rxTxt) + m.sty.pens().txt.render(" ago") + tail
 }
 
 // tunnelReadout is the connection section's :2018 line (the EQ / Max-Vol
 // control tunnel): the port and its live/down state.
 func (m *model) tunnelReadout(ls diagLinkStatus) string {
-	return m.sty.sTxt.Render(":2018 · ") + ls.tunPen.Render(ls.tunTxt)
+	return m.sty.pens().txt.render(":2018 · ") + ls.tunPen.Render(ls.tunTxt)
 }
 
 // errReadout renders the interface error/drop counters as session deltas:
@@ -146,23 +146,23 @@ func (m *model) errReadout(ns protocol.NetStat) string {
 		if v > 0 {
 			pen = stWarn
 		}
-		return m.sty.sDim.Render(label+" ") + pen.Render(strconv.FormatInt(v, 10))
+		return m.sty.pens().dim.render(label+" ") + pen.Render(strconv.FormatInt(v, 10))
 	}
-	sep := m.sty.sDmr.Render(" · ")
+	sep := m.sty.pens().dmr.render(" · ")
 	return cell("rx", ns.RxErrs) + sep + cell("tx", ns.TxErrs) + sep + cell("drop", ns.Drops) +
-		m.sty.sDmr.Render(" · session")
+		m.sty.pens().dmr.render(" · session")
 }
 
 // multiroomReadout renders the group state: "solo", or the linked device count.
 func (m *model) multiroomReadout(mr *protocol.Multiroom) string {
 	if mr.Devices == 0 {
-		return m.sty.sTxt.Render("solo")
+		return m.sty.pens().txt.render("solo")
 	}
 	word := "devices"
 	if mr.Devices == 1 {
 		word = "device"
 	}
-	return m.sty.sAcc.Render(fmt.Sprintf("linked · %d %s", mr.Devices, word))
+	return m.sty.pens().acc.render(fmt.Sprintf("linked · %d %s", mr.Devices, word))
 }
 
 // diagVitals is the parsed live-numeric readout shared by both layouts: raw
@@ -277,7 +277,7 @@ func (m *model) diagStatus(connected bool, dData, now time.Time) (hr string, hrW
 	case !dData.IsZero() && now.Sub(dData) > workers.SilentAfter:
 		return stWarn.Render("● LUCI silent · " + clock), DispW("● LUCI silent · " + clock), true
 	default:
-		return m.sty.sAcc.Render("●") + m.sty.sDim.Render(" "+clock), DispW("● " + clock), false
+		return m.sty.pens().acc.render("●") + m.sty.pens().dim.render(" "+clock), DispW("● " + clock), false
 	}
 }
 
@@ -375,9 +375,9 @@ func (m *model) dacReadout(si *protocol.SysInfo, playing bool) string {
 	if si.DacCh != "" {
 		parts = append(parts, si.DacCh+"ch")
 	}
-	out := m.sty.sTxt.Render(strings.Join(parts, " · "))
+	out := m.sty.pens().txt.render(strings.Join(parts, " · "))
 	if playing {
-		out += m.sty.sAcc.Render(" ● live")
+		out += m.sty.pens().acc.render(" ● live")
 	}
 	return out
 }
@@ -392,8 +392,8 @@ func (m *model) tasksReadout(si *protocol.SysInfo) string {
 	if !ok {
 		return ""
 	}
-	return m.sty.sTxt.Render(run) + m.sty.sDim.Render(" running · ") +
-		m.sty.sTxt.Render(tot) + m.sty.sDim.Render(" total")
+	return m.sty.pens().txt.render(run) + m.sty.pens().dim.render(" running · ") +
+		m.sty.pens().txt.render(tot) + m.sty.pens().dim.render(" total")
 }
 
 // latencyPeakPen flags a genuine spike (peak well past the average), not
@@ -452,13 +452,13 @@ func (m *model) diagStackedAudioRows(d protocol.DiagnosticSnapshot, v diagVitals
 	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
 		rows = append(rows, m.diagLine("dac", dac))
 	}
-	return append(rows, m.diagLine("stream", t.sTxt.Render(diagFormat(d.Snapshot.Track))))
+	return append(rows, m.diagLine("stream", t.pens().txt.render(diagFormat(d.Snapshot.Track))))
 }
 
 func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now time.Time) []string {
 	status := m.linkStatus(d.LastRx, now, d.ConnectAttempts, d.EQConnected)
 	return []string{
-		m.diagLine("host", m.sty.sTxt.Render(m.hostReadout(d.DevInfo))),
+		m.diagLine("host", m.sty.pens().txt.render(m.hostReadout(d.DevInfo))),
 		m.diagLine("ssh", m.sshReadout(status, d.ConnectAttempts)),
 		m.diagLine("tunnel", m.tunnelReadout(status)),
 	}
@@ -497,7 +497,7 @@ func (m *model) diagStackedHardwareRows(w int) []string {
 	rows := make([]string, 0, len(confHardware))
 	for _, item := range confHardware {
 		rows = append(rows, m.diagLine(item.k,
-			m.sty.sTxt.Render(Clip(item.v, max(1, w-diagLabelW)))))
+			m.sty.pens().txt.render(Clip(item.v, max(1, w-diagLabelW)))))
 	}
 	return rows
 }
@@ -535,9 +535,9 @@ func (m *model) diagStackedNetworkRows(d protocol.DiagnosticSnapshot, w, gaugeW 
 	haveDev := dev != nil && (dev.IP != "" || dev.Net != "")
 	var rows []string
 	if haveDev {
-		rows = append(rows, m.diagLine("address", t.sTxt.Render(orDash(dev.IP))+t.sDim.Render(" · gw "+orDash(dev.Gateway))))
+		rows = append(rows, m.diagLine("address", t.pens().txt.render(orDash(dev.IP))+t.pens().dim.render(" · gw "+orDash(dev.Gateway))))
 		if dev.DNS != "" {
-			rows = append(rows, m.diagLine("dns", t.sTxt.Render(dev.DNS)))
+			rows = append(rows, m.diagLine("dns", t.pens().txt.render(dev.DNS)))
 		}
 	}
 	if netv.ErrsOK {
@@ -550,14 +550,14 @@ func (m *model) diagStackedNetworkRows(d protocol.DiagnosticSnapshot, w, gaugeW 
 			label = ""
 		}
 		if dev.Net == "wifi" {
-			rows = append(rows, m.diagLine("link", t.sBri.Render("wi-fi")+t.sDim.Render(" · ")+
-				t.sTxt.Render(orDash(dev.SSID))+t.sDim.Render(wifiBand(dev.Freq))))
+			rows = append(rows, m.diagLine("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+
+				t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))))
 		} else {
-			rows = append(rows, m.diagLine("link", t.sBri.Render("ethernet")+
-				t.sDim.Render(ethDetail(dev.Speed, dev.Duplex))))
+			rows = append(rows, m.diagLine("link", t.pens().bri.render("ethernet")+
+				t.pens().dim.render(ethDetail(dev.Speed, dev.Duplex))))
 		}
 		if dev.MAC != "" {
-			rows = append(rows, m.diagLine("mac", t.sTxt.Render(dev.MAC)))
+			rows = append(rows, m.diagLine("mac", t.pens().txt.render(dev.MAC)))
 		}
 	}
 	if d.Multiroom != nil {
@@ -567,8 +567,8 @@ func (m *model) diagStackedNetworkRows(d protocol.DiagnosticSnapshot, w, gaugeW 
 		rows = append(rows, signal)
 	}
 	if haveDev && netv.RatesOK {
-		rows = append(rows, m.diagLine("traffic", t.sDim.Render("rx ")+t.sTxt.Render(fmtRate(netv.RxRate))+
-			t.sDim.Render(" · tx ")+t.sTxt.Render(fmtRate(netv.TxRate))))
+		rows = append(rows, m.diagLine("traffic", t.pens().dim.render("rx ")+t.pens().txt.render(fmtRate(netv.RxRate))+
+			t.pens().dim.render(" · tx ")+t.pens().txt.render(fmtRate(netv.TxRate))))
 	}
 	return rows
 }
@@ -607,7 +607,7 @@ func (m *model) diagStackedResourceRows(d protocol.DiagnosticSnapshot, v diagVit
 	}
 	if d.SysInfo != nil {
 		if up := fmtUptime(d.SysInfo.Up); up != "—" {
-			rows = append(rows, m.diagLine("uptime", t.sTxt.Render(up)))
+			rows = append(rows, m.diagLine("uptime", t.pens().txt.render(up)))
 		}
 	}
 	return rows
@@ -615,7 +615,14 @@ func (m *model) diagStackedResourceRows(d protocol.DiagnosticSnapshot, v diagVit
 
 func (m *model) appendDiagStackedSection(lines []string, title string, rows []string, w int) []string {
 	lines = append(lines, m.dividerRow(title, w))
-	return append(lines, rows...)
+	// Clip every row to the body width — the stacked counterpart of the cards
+	// section() clip: one long device-supplied value (an SSID, the configured
+	// host, an IPv6 address) must degrade to a clipped row, not size contentW
+	// past the terminal and wrap every overlay line.
+	for _, row := range rows {
+		lines = append(lines, clipStyled(row, w))
+	}
+	return lines
 }
 
 func (m *model) diagStackedContent(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w, gaugeW int) []string {
@@ -654,21 +661,21 @@ type diagCardFmt struct {
 
 func (f diagCardFmt) plain(label, value string, pen lipgloss.Style) string {
 	t := f.m.sty
-	return t.sDim.Render(label) + labelGap(label, diagLabelW) +
+	return t.pens().dim.render(label) + labelGap(label, diagLabelW) +
 		pen.Render(Clip(value, max(1, f.inner-diagLabelW)))
 }
 
 func (f diagCardFmt) styled(label, value string) string {
-	return f.m.sty.sDim.Render(label) + labelGap(label, diagLabelW) + value
+	return f.m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + value
 }
 
 func (f diagCardFmt) gauge(label, value string, frac float64, pen lipgloss.Style, detail string) string {
 	t := f.m.sty
-	out := t.sDim.Render(label) + labelGap(label, diagLabelW) +
+	out := t.pens().dim.render(label) + labelGap(label, diagLabelW) +
 		t.gaugeBar(frac, diagCardsGaugeW, pen) + "  " + pen.Render(value)
 	if detail != "" {
 		if d := Clip(detail, f.inner-(diagLabelW+diagCardsGaugeW+2+DispW(value))-1); d != "" {
-			out += " " + t.sDmr.Render(d)
+			out += " " + t.pens().dmr.render(d)
 		}
 	}
 	return out
@@ -677,8 +684,8 @@ func (f diagCardFmt) gauge(label, value string, frac float64, pen lipgloss.Style
 func (f diagCardFmt) section(sec diagSection, w int) []string {
 	t := f.m.sty
 	fill := max(w-3-DispW(sec.title), 0) // "─ " + title + " "
-	head := t.sDmr.Render("─ ") + t.sAcc.Bold(true).Render(sec.title) +
-		t.sDmr.Render(" "+strings.Repeat("─", fill))
+	head := t.pens().dmr.render("─ ") + t.sAcc.Bold(true).Render(sec.title) +
+		t.pens().dmr.render(" "+strings.Repeat("─", fill))
 	out := make([]string, 0, len(sec.rows)+1)
 	out = append(out, head)
 	for _, row := range sec.rows {
@@ -772,7 +779,7 @@ func (m *model) diagCardNetworkRows(d protocol.DiagnosticSnapshot, f diagCardFmt
 	haveDev := dev != nil && (dev.IP != "" || dev.Net != "")
 	var rows []string
 	if haveDev {
-		rows = append(rows, f.styled("address", t.sTxt.Render(orDash(dev.IP))+t.sDim.Render(" · gw "+orDash(dev.Gateway))))
+		rows = append(rows, f.styled("address", t.pens().txt.render(orDash(dev.IP))+t.pens().dim.render(" · gw "+orDash(dev.Gateway))))
 		if dev.DNS != "" {
 			rows = append(rows, f.plain("dns", dev.DNS, t.sTxt))
 		}
@@ -782,9 +789,9 @@ func (m *model) diagCardNetworkRows(d protocol.DiagnosticSnapshot, f diagCardFmt
 	}
 	if haveDev {
 		if dev.Net == "wifi" {
-			rows = append(rows, f.styled("link", t.sBri.Render("wi-fi")+t.sDim.Render(" · ")+t.sTxt.Render(orDash(dev.SSID))+t.sDim.Render(wifiBand(dev.Freq))))
+			rows = append(rows, f.styled("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))))
 		} else {
-			rows = append(rows, f.styled("link", t.sBri.Render("ethernet")+t.sDim.Render(ethDetail(dev.Speed, dev.Duplex))))
+			rows = append(rows, f.styled("link", t.pens().bri.render("ethernet")+t.pens().dim.render(ethDetail(dev.Speed, dev.Duplex))))
 		}
 		if dev.MAC != "" {
 			rows = append(rows, f.plain("mac", dev.MAC, t.sTxt))
@@ -802,8 +809,8 @@ func (m *model) diagCardNetworkRows(d protocol.DiagnosticSnapshot, f diagCardFmt
 		}
 	}
 	if haveDev && netv.RatesOK {
-		rows = append(rows, f.styled("traffic", t.sDim.Render("rx ")+t.sTxt.Render(fmtRate(netv.RxRate))+
-			t.sDim.Render(" · tx ")+t.sTxt.Render(fmtRate(netv.TxRate))))
+		rows = append(rows, f.styled("traffic", t.pens().dim.render("rx ")+t.pens().txt.render(fmtRate(netv.RxRate))+
+			t.pens().dim.render(" · tx ")+t.pens().txt.render(fmtRate(netv.TxRate))))
 	}
 	return rows
 }
@@ -959,12 +966,12 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 	if line, ok := diagErrLine(s, now, W); ok {
 		tail = append(tail, line, "")
 	}
-	tail = append(tail, t.sDmr.Render(diagFooter))
+	tail = append(tail, t.pens().dmr.render(diagFooter))
 
 	// on a too-short pane, trim the read-out from the bottom and flag it
 	if room := m.rows - 2 - len(tail); room > 2 && len(L) > room {
 		L = L[:room]
-		L[room-1] = t.sDmr.Render("… resize for more")
+		L[room-1] = t.pens().dmr.render("… resize for more")
 	}
 	return frameBody(L, tail, m.rows-2, false) // top-aligned: read-out hugs the top, footer stays pinned below
 }
@@ -997,7 +1004,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 	masthead := m.diagCardMasthead(d, vit, now, W)
 
 	// ---- compose: the status line, a heavy rule, then the zipped columns ----
-	content := []string{masthead, t.sDmr.Render(strings.Repeat("━", W))}
+	content := []string{masthead, t.pens().dmr.render(strings.Repeat("━", W))}
 	gut := strings.Repeat(" ", diagCardsGutter)
 	blankR := strings.Repeat(" ", rightW)
 	for i := 0; i < max(len(left2), len(right2)); i++ {
@@ -1013,12 +1020,12 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 	}
 
 	// footer + a small colour legend so the verdict/ribbon hues decode at a glance.
-	legend := t.sAcc.Render("●") + t.sDmr.Render(" good   ") + stWarn.Render("●") + t.sDmr.Render(" warn   ") + stRed.Render("●") + t.sDmr.Render(" fault")
+	legend := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") + t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
 	var tail []string
 	if line, ok := diagErrLine(s, now, W); ok {
 		tail = append(tail, line, "")
 	}
-	tail = append(tail, between(t.sDmr.Render(diagFooter), DispW(diagFooter), legend, DispW("● good   ● warn   ● fault"), W))
+	tail = append(tail, between(t.pens().dmr.render(diagFooter), DispW(diagFooter), legend, DispW("● good   ● warn   ● fault"), W))
 	return frameBody(content, tail, m.rows-2, false)
 }
 
@@ -1075,19 +1082,19 @@ func (m *model) serviceStrip(w int) []string {
 
 func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 	if cv == nil {
-		return []string{clipStyled(m.sty.sDmr.Render("reading from device…"), w)}
+		return []string{clipStyled(m.sty.pens().dmr.render("reading from device…"), w)}
 	}
 	var on, off []string
 	for _, sv := range confServices {
 		if cv.Svc[sv.id] == "on" {
-			on = append(on, m.sty.sAcc.Render("●")+" "+m.sty.sTxt.Render(sv.label))
+			on = append(on, m.sty.pens().acc.render("●")+" "+m.sty.pens().txt.render(sv.label))
 		} else {
-			off = append(off, m.sty.sDmr.Render("○")+" "+m.sty.sDim.Render(sv.label))
+			off = append(off, m.sty.pens().dmr.render("○")+" "+m.sty.pens().dim.render(sv.label))
 		}
 	}
 	rows := m.flowGroup("on", on, w)
 	rows = append(rows, m.flowGroup("off", off, w)...)
-	rows = append(rows, m.sty.sDmr.Render("env-gated · toggle in the Arylic app"))
+	rows = append(rows, m.sty.pens().dmr.render("env-gated · toggle in the Arylic app"))
 	// Budget every row to w (visible cols) — after the wrap this only bites on a
 	// single item wider than the whole column, or the note at a tiny width.
 	for i, r := range rows {
@@ -1106,7 +1113,7 @@ func (m *model) flowGroup(label string, items []string, w int) []string {
 	}
 	const indent = 4
 	var out []string
-	line, lineW := m.sty.sDim.Render(label)+strings.Repeat(" ", indent-len(label)), indent
+	line, lineW := m.sty.pens().dim.render(label)+strings.Repeat(" ", indent-len(label)), indent
 	for _, it := range items {
 		itW := lipgloss.Width(it)
 		if lineW > indent && lineW+1+itW > w { // +1: the separating space
@@ -1159,7 +1166,7 @@ func (m *model) gridRow(k1, v1, k2, v2 string, W int) string {
 func (m *model) cellKV(k, v string, w int) string {
 	const labW = 9
 	vv := Clip(v, w-labW)
-	out := m.sty.sDim.Render(k) + labelGap(k, labW) + m.sty.sTxt.Render(vv)
+	out := m.sty.pens().dim.render(k) + labelGap(k, labW) + m.sty.pens().txt.render(vv)
 	if vis := labW + DispW(vv); vis < w {
 		out += strings.Repeat(" ", w-vis)
 	}
@@ -1168,7 +1175,7 @@ func (m *model) cellKV(k, v string, w int) string {
 
 // diagLine renders "label  value" with a fixed dim label column.
 func (m *model) diagLine(label, value string) string {
-	return m.sty.sDim.Render(label) + labelGap(label, diagLabelW) + value
+	return m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + value
 }
 
 // diagGauge renders "label  [gauge]  value detail", clipping the dim detail to the
@@ -1176,9 +1183,9 @@ func (m *model) diagLine(label, value string) string {
 // can't size the row past the frame — the stacked counterpart to the cards cg()
 // detail clip. Pass detail="" for a gauge with no trailing note.
 func (m *model) diagGauge(label, gauge, value, detail string, w int) string {
-	row := m.sty.sDim.Render(label) + labelGap(label, diagLabelW) + gauge + "  " + value
+	row := m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + gauge + "  " + value
 	if detail != "" {
-		row += m.sty.sDmr.Render(Clip(detail, w-lipgloss.Width(row))) // Clip("",<=0)→""
+		row += m.sty.pens().dmr.render(Clip(detail, w-lipgloss.Width(row))) // Clip("",<=0)→""
 	}
 	return clipStyled(row, w) // never exceed the body width (a no-op when it fits)
 }
@@ -1224,9 +1231,9 @@ func fmtLatencyMs(ms float64) string {
 // ragged block glyphs on fonts whose block elements don't fill the cell.
 func (m *model) latencyRow(name string, ps protocol.PingStat) string {
 	t := m.sty
-	return t.sDim.Render(padDisp(name, latNameW)) +
-		t.sTxt.Render(rpadDisp(fmtLatencyMs(ps.Avg), latAvgW)+latAvgUnit) + " " +
-		t.sDmr.Render(padDisp("±"+fmtLatencyMs(ps.Jitter), latJitW)) + " " +
+	return t.pens().dim.render(padDisp(name, latNameW)) +
+		t.pens().txt.render(rpadDisp(fmtLatencyMs(ps.Avg), latAvgW)+latAvgUnit) + " " +
+		t.pens().dmr.render(padDisp("±"+fmtLatencyMs(ps.Jitter), latJitW)) + " " +
 		m.latencyPeakPen(ps).Render("max "+fmtLatencyMs(ps.Peak))
 }
 

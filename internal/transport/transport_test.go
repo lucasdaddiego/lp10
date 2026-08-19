@@ -129,9 +129,10 @@ func TestRemoteLoopInjectsSanitizedPingHost(t *testing.T) {
 	if !strings.Contains(RemoteLoop("open.spotify.com"), `ph='open.spotify.com';`) {
 		t.Error("ping host should be injected as ph")
 	}
-	// metacharacters must not escape the single-quoted assignment
-	if got := RemoteLoop("evil';reboot;'"); !strings.Contains(got, `ph='evilreboot';`) {
-		t.Errorf("ping host not sanitized: missing clean ph in %q", got[:40])
+	// metacharacters must not escape the single-quoted assignment — a value
+	// that needed stripping is replaced by the default whole
+	if got := RemoteLoop("evil';reboot;'"); !strings.Contains(got, `ph='spotify.com';`) {
+		t.Errorf("ping host not sanitized: missing default ph in %q", got[:40])
 	}
 	// an empty / fully-stripped host falls back to the default target
 	if !strings.Contains(RemoteLoop(""), `ph='spotify.com';`) {
@@ -140,9 +141,11 @@ func TestRemoteLoopInjectsSanitizedPingHost(t *testing.T) {
 }
 
 func TestSanitizeHost(t *testing.T) {
+	// Anything that needed stripping falls back to the default whole — the
+	// stripped remainder would be a bogus target (see sanitizeHost).
 	cases := map[string]string{
 		"spotify.com": "spotify.com", "1.1.1.1": "1.1.1.1",
-		"a b;c": "abc", "": "spotify.com", "$(reboot)": "reboot", ";|&": "spotify.com",
+		"a b;c": "spotify.com", "": "spotify.com", "$(reboot)": "spotify.com", ";|&": "spotify.com",
 	}
 	for in, want := range cases {
 		if got := sanitizeHost(in); got != want {

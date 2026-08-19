@@ -62,6 +62,10 @@ func modelWith(st *protocol.State) (*model, *protocol.State, func() []protocol.C
 	cmds := make(chan *protocol.Command, 64)
 	m := newModel(st, defaultCfg(), cmds, nil)
 	m.premutePath = "" // unit models must not read or write the user's state dir
+	// A sized model: before the first WindowSizeMsg miniMode() gates the EQ
+	// keys shut, and most tests exercise full-dashboard behaviour. Tests for
+	// the mini/unsized paths set their own rows/cols.
+	m.rows, m.cols = FullRows, FullCols
 	collect := func() []protocol.Command {
 		var out []protocol.Command
 		for {

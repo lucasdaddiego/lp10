@@ -358,6 +358,60 @@ func TestPrintableMatchesCPythonCategories(t *testing.T) {
 	}
 }
 
+func TestPrintableNormalizesNFC(t *testing.T) {
+	// NFD "Cafe\u0301" (e + combining acute) composes to the form the terminal
+	// displays, so DispW/ansi width agree with what is actually rendered.
+	if got := printable("Cafe\u0301"); got != "Caf\u00e9" {
+		t.Errorf("printable(NFD) = %q, want composed %q", got, "Caf\u00e9")
+	}
+}
+
+func TestPrintableCapsCombiningMarkFloods(t *testing.T) {
+	// A zalgo run is ONE grapheme cluster — ansi.Truncate can never clip it —
+	// so the flood must be bounded here at the parse boundary. NFC folds the
+	// first mark into the base (A+0301 = \u00c1); the cap keeps maxMarkRun more.
+	flood := "A" + strings.Repeat("\u0301", 10000)
+	want := "\u00c1" + strings.Repeat("\u0301", maxMarkRun)
+	if got := printable(flood); got != want {
+		t.Errorf("printable(flood) kept %d runes, want composed base + %d marks",
+			len([]rune(got)), maxMarkRun)
+	}
+	// Legit stacks under the cap survive whole: Thai vowel + tone mark
+	// (U+0E49 is category Mn), and a keycap sequence (VS16 U+FE0F Mn +
+	// combining enclosing keycap U+20E3 Me).
+	for _, s := range []string{"\u0e19\u0e49\u0e33", "1\ufe0f\u20e3"} {
+		if got := printable(s); got != s {
+			t.Errorf("printable(%q) = %q, want unchanged", s, got)
+		}
+	}
+	// A non-mark resets the run: marks in separate words don't pool into one cap.
+	sep := "\u00e1\u0301 \u00e1\u0301"
+	if got := printable(sep); got != sep {
+		t.Errorf("printable(%q) = %q, want unchanged", sep, got)
+	}
+}
+
+func TestPrintableKeepsZWJInsideEmojiSequences(t *testing.T) {
+	family := "\U0001f468\u200d\U0001f469\u200d\U0001f466" // family: man+ZWJ+woman+ZWJ+boy
+	if got := printable(family); got != family {
+		t.Errorf("printable(family emoji) = %q, want unchanged", got)
+	}
+	// Outside a joined pair the ZWJ stays stripped (leading, trailing, and
+	// runs collapse): it is still an invisible Cf character everywhere else.
+	if got := printable("\u200da\u200d"); got != "a" {
+		t.Errorf("printable = %q, want %q (bare ZWJs stripped)", got, "a")
+	}
+	if got := printable("a\u200d\u200d\u200db"); got != "a\u200db" {
+		t.Errorf("printable = %q, want single ZWJ kept (run collapses)", got)
+	}
+	// A stripped control between the ZWJ and the next rune unarms the join:
+	// in "a ZWJ ESC b" the ZWJ joined a and the ESC, and keeping it would
+	// fabricate an a-b join that was never in the input.
+	if got := printable("a\u200d\x1bb"); got != "ab" {
+		t.Errorf("printable = %q, want %q (stripped rune unarms the join)", got, "ab")
+	}
+}
+
 func TestIntNonfiniteFloats(t *testing.T) {
 	posInf := 1.0
 	for range 400 {
@@ -540,8 +594,38 @@ func TestGarbageBClearsAfterDebounceWindow(t *testing.T) {
 	st.trackAt = time.Now().Add(-4 * time.Second)
 	st.mu.Unlock()
 	ApplyRecord(st, recordsFrom(splitLines("@@B\nnot json\n@@E\n"))[0])
+	if st.Snap().Track == nil {
+		t.Error("one garbage B must not clear an established track")
+	}
+	ApplyRecord(st, recordsFrom(splitLines("@@B\nnot json\n@@E\n"))[0])
 	if st.Snap().Track != nil {
-		t.Error("track should be cleared after the debounce window")
+		t.Error("track should be cleared on the second consecutive garbage B")
+	}
+}
+
+func TestGoodBResetsGarbageStreak(t *testing.T) {
+	st := NewState()
+	ApplyRecord(st, records("playing_record.txt")[0])
+	st.mu.Lock()
+	st.trackAt = time.Now().Add(-4 * time.Second)
+	st.mu.Unlock()
+	ApplyRecord(st, recordsFrom(splitLines("@@B\nnot json\n@@E\n"))[0])
+	ApplyRecord(st, records("playing_record.txt")[0]) // good B: streak resets
+	st.mu.Lock()
+	st.trackAt = time.Now().Add(-4 * time.Second)
+	st.mu.Unlock()
+	ApplyRecord(st, recordsFrom(splitLines("@@B\nnot json\n@@E\n"))[0])
+	if st.Snap().Track == nil {
+		t.Error("a good B between two garbage Bs must reset the streak")
+	}
+}
+
+func TestPreloadedTrackClearsOnFirstGarbageB(t *testing.T) {
+	st := NewState()
+	st.Preload(&Track{TrackName: "cached"}, 0, 10)
+	ApplyRecord(st, recordsFrom(splitLines("@@B\nnot json\n@@E\n"))[0])
+	if st.Snap().Track != nil {
+		t.Error("a stale cached track should clear on the first live garbage B")
 	}
 }
 
@@ -700,6 +784,27 @@ func TestConfInfoMalformedAndDuplicateLines(t *testing.T) {
 	}
 	if len(cv.Svc) != 2 { // spotify + bt only
 		t.Errorf("want 2 parsed keys (spotify, bt), got %d: %+v", len(cv.Svc), cv.Svc)
+	}
+}
+
+// An all-junk once-per-connection block (lines present, nothing recognisable)
+// must not wipe a previously good readout — the guard parseDevDetails always
+// had, mirrored onto @@i and @@c.
+func TestAllJunkInfoBlocksDoNotWipeGoodState(t *testing.T) {
+	st := NewState()
+	feed := "@@i\nnet=eth\nip=192.168.1.13\n@@E\n" +
+		"@@c\nspotify=on\n@@E\n" +
+		"@@i\ngarbage\n@@E\n" +
+		"@@c\ngarbage-no-equals\nnotakey=on\n@@E\n"
+	for _, rec := range recordsFrom(splitLines(feed)) {
+		ApplyRecord(st, rec)
+	}
+	d := st.DiagnosticView(time.Now())
+	if d.DevInfo == nil || d.DevInfo.IP != "192.168.1.13" {
+		t.Errorf("DevInfo = %+v, want the earlier good @@i kept", d.DevInfo)
+	}
+	if d.ConfInfo == nil || d.ConfInfo.Svc["spotify"] != "on" {
+		t.Errorf("ConfInfo = %+v, want the earlier good @@c kept", d.ConfInfo)
 	}
 }
 

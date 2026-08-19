@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -86,6 +87,46 @@ func TestEQClampsAtMin(t *testing.T) {
 	}
 	if cmd := <-eqcmds; cmd.Val != 0 {
 		t.Errorf("queued val=%d want 0", cmd.Val)
+	}
+}
+
+// Inbound tunnel values are raw (deliberately unclamped), so the nudge math
+// must not wrap: MaxInt + step would clamp to Min and send MXV:0 — a hard 0%
+// cap on the speaker's output.
+func TestEQAdjustOverflowSaturates(t *testing.T) {
+	m, st, eqcmds := eqModel(t)
+	st.ApplyTunnel("MXV", math.MaxInt)
+	m.key(kr('e'))
+	m.eqFocus = len(eqOrder) - 1 // Max Vol
+	m.key(ke(kRight))
+	if cmd := <-eqcmds; cmd.Val != 100 {
+		t.Errorf("queued val=%d want 100 (saturated at Max, not wrapped to Min)", cmd.Val)
+	}
+	st.ApplyTunnel("BAS", math.MinInt)
+	m.eqFocus = 3 // Bass
+	m.key(ke(kLeft))
+	if cmd := <-eqcmds; cmd.Val != -10 {
+		t.Errorf("queued val=%d want -10 (saturated at Min, not wrapped to Max)", cmd.Val)
+	}
+}
+
+// Closing the diag overlay consumes the rest of the same event batch: pasting
+// "nq" with the overlay open must only dismiss it — the 'n' would otherwise
+// skip the track and the 'q' would quit the app.
+func TestDiagCloseSwallowsRestOfBatch(t *testing.T) {
+	m, _, collect := makeModel(t)
+	m.diag = true
+	if m.dispatchKeys(runeEvents("nq")) {
+		t.Fatal("a swallowed batch must not quit")
+	}
+	if m.diag {
+		t.Error("the first event should close the overlay")
+	}
+	if cmds := collect(); len(cmds) != 0 {
+		t.Errorf("events after the overlay close leaked through: %v", cmds)
+	}
+	if !m.dispatchKeys(runeEvents("q")) {
+		t.Error("q outside the overlay should still quit")
 	}
 }
 

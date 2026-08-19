@@ -15,10 +15,14 @@ import (
 // Files are created 0600 (every caller persists private per-user state). The
 // data is fsynced before the rename so a crash right after a save can't leave a
 // journaled rename pointing at unwritten blocks (a zero-byte file behind the new
-// name); the directory entry itself stays best-effort. On any failure the
-// temporary file is removed and an existing target is left untouched.
+// name), and the directory is fsynced after it so the new name itself survives a
+// crash (that sync's failure is ignored: the write is already durable-or-clean,
+// and a filesystem that rejects directory fsync — some network mounts — should
+// not fail an otherwise good save). On any failure the temporary file is removed
+// and an existing target is left untouched.
 func Write(path string, data []byte) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return err
 	}
@@ -43,6 +47,10 @@ func Write(path string, data []byte) error {
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

@@ -117,6 +117,22 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 
 	done := make(chan struct{})
 	go tunnelReader(st, conn, done)
+	// closeConn tears the connection down exactly once. It runs inline before
+	// the backoff wait (the dead conn must not linger, nor the panel read
+	// "connected", through a wait), and is ALSO deferred: the enclosing worker
+	// recovers and reconnects, so a panic anywhere in this lifecycle would
+	// otherwise leak the conn and its reader goroutine for the process's life.
+	closed := false
+	closeConn := func() {
+		if closed {
+			return
+		}
+		closed = true
+		conn.Close()
+		<-done // reader exits once the closed conn fails its Read
+		st.SetEQConnected(false)
+	}
+	defer closeConn()
 
 	// Seed: query each control so the panel shows the device's current values.
 	dead := false
@@ -170,9 +186,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		}
 	}
 
-	conn.Close()
-	<-done // reader exits once the closed conn fails its Read
-	st.SetEQConnected(false)
+	closeConn()
 
 	if control.stop.IsSet() || ctx.Err() != nil {
 		return backoff, carry

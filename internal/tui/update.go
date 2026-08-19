@@ -4,7 +4,6 @@
 package tui
 
 import (
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -211,14 +210,14 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.interrupted = true
 			return m, tea.Quit
 		}
-		if slices.ContainsFunc(translateAll(msg), m.key) {
+		if m.dispatchKeys(translateAll(msg)) {
 			return m, tea.Quit
 		}
 		return m, nil
 	case tea.PasteMsg:
 		// Bracketed paste: drive the hotkeys with the pasted text, exactly like
 		// the same characters typed (see runeEvents).
-		if slices.ContainsFunc(runeEvents(msg.Content), m.key) {
+		if m.dispatchKeys(runeEvents(msg.Content)) {
 			return m, tea.Quit
 		}
 		return m, nil
@@ -227,6 +226,24 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// dispatchKeys runs a batch of key events in order, reporting whether any asked
+// to quit. An event that closes the diag overlay consumes the REST of its batch:
+// a paste landing while the overlay is open should only dismiss it, not keep
+// driving the dashboard underneath (a stray 'n' later in the same paste would
+// skip the track; a 'q' would quit the app).
+func (m *model) dispatchKeys(evs []keyEvent) (quit bool) {
+	for _, ev := range evs {
+		wasDiag := m.diag
+		if m.key(ev) {
+			return true
+		}
+		if wasDiag && !m.diag {
+			return false
+		}
+	}
+	return false
 }
 
 func (m *model) computeTitle(s protocol.Snapshot) string {

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Track is the typed, sanitized now-playing schema. JSON tags deliberately
@@ -111,17 +113,62 @@ func floatInt(f float64) (int, bool) {
 // stderr notes) that the @@-section parsers don't already cover.
 func Printable(s string) string { return printable(s) }
 
+// maxMarkRun caps consecutive combining marks (category M) kept by printable.
+// Marks are neither C nor Z, so a "zalgo" flood (one base rune + tens of
+// thousands of U+0301) would otherwise pass the strip whole — and because a
+// mark run is a single grapheme cluster, ansi.Truncate can never clip it, so
+// one hostile device string would dump the entire run into the terminal on
+// every frame. Three consecutive marks accommodate real orthographies (Thai
+// vowel + tone stacks, emoji VS16 + keycap) while bounding the flood.
+const maxMarkRun = 3
+
+// zwj is U+200D ZERO WIDTH JOINER — category Cf, so Python's isprintable
+// rejects it, but stripping it decomposes emoji ZWJ sequences (a family emoji
+// renders as its member emoji), which real Spotify metadata carries.
+const zwj = '\u200d'
+
 // printable strips control/separator characters the way CPython's
 // str.isprintable does: non-printable == category Other (C*) or Separator (Z*),
 // except the ASCII space. Using the category test (rather than Go's
 // unicode.IsPrint) keeps characters that are assigned in a newer Unicode version
 // than Go's tables, matching Python more closely.
+//
+// Three deliberate deviations from the plain Python semantics, all at the
+// same trust boundary:
+//   - the input is NFC-normalized first, so decomposed metadata (NFD "Café"
+//     from macOS/AirPlay sources) reaches the width math in the same form the
+//     terminal displays;
+//   - runs of combining marks are capped at maxMarkRun (zalgo flood);
+//   - a ZWJ is kept when (and only when) it sits between two kept runes, so
+//     emoji ZWJ sequences survive while the invisible-character class stays
+//     stripped everywhere else.
 func printable(s string) string {
+	s = norm.NFC.String(s)
 	var b strings.Builder
+	marks := 0         // consecutive combining marks kept
+	joinArmed := false // a ZWJ waiting for a kept rune on its right
 	for _, c := range s {
-		if c == ' ' || !unicode.In(c, unicode.C, unicode.Z) {
-			b.WriteRune(c)
+		if c == zwj {
+			joinArmed = b.Len() > 0
+			continue
 		}
+		if c != ' ' && unicode.In(c, unicode.C, unicode.Z) {
+			joinArmed = false
+			continue
+		}
+		if unicode.In(c, unicode.M) {
+			marks++
+			if marks > maxMarkRun {
+				continue
+			}
+		} else {
+			marks = 0
+		}
+		if joinArmed {
+			b.WriteRune(zwj)
+			joinArmed = false
+		}
+		b.WriteRune(c)
 	}
 	return b.String()
 }

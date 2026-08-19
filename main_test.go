@@ -72,4 +72,14 @@ func TestResolveDevice(t *testing.T) {
 	if cfg = resolveDevice(base, evil); cfg.Name != "LP10 · Den]8;;http://evilx" {
 		t.Errorf("device name must strip the ESC/BEL, got %q", cfg.Name)
 	}
+
+	// The host gets the same strip: with no A record, Addr() falls back to the
+	// raw SRV target — as attacker-controllable as the label — and it reaches
+	// the diag overlay's host readout.
+	evilHost := func(string, time.Duration) (discovery.Device, bool) {
+		return discovery.Device{Name: "Den", Model: "LP10", Host: "own\x1b]0;x\x07ed.local."}, true
+	}
+	if cfg = resolveDevice(base, evilHost); cfg.Host != "own]0;xed.local" {
+		t.Errorf("discovered host must strip the ESC/BEL, got %q", cfg.Host)
+	}
 }

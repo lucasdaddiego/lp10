@@ -28,12 +28,10 @@ func FuzzParseFrames(f *testing.F) {
 			t.Fatalf("%d updates from %d frames", len(out), n)
 		}
 		for _, u := range out {
-			s, ok := Lookup(u.Code)
-			if !ok {
+			// Values are raw (readbacks report what the device holds); only
+			// the code whitelist is an invariant here.
+			if _, ok := Lookup(u.Code); !ok {
 				t.Fatalf("unknown code emitted: %q", u.Code)
-			}
-			if u.Val < s.Min || u.Val > s.Max {
-				t.Fatalf("out-of-bounds value emitted: %s=%d (bounds %d..%d)", u.Code, u.Val, s.Min, s.Max)
 			}
 		}
 		// Stream consistency: any split point with the partial carried into the
