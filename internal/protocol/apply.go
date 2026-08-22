@@ -141,6 +141,8 @@ type parsedRecord struct {
 	confinfo *ConfInfo
 	details  *DevDetails
 	mroom    *Multiroom
+
+	night, nightOK bool // @@n: the multi-band DRC enable readback
 }
 
 // regInt extracts the integer register value from a section's joined lines
@@ -179,7 +181,29 @@ func parseRecord(rec Record) parsedRecord {
 	p.confinfo = parseConfInfo(rec["c"])
 	p.details = parseDevDetails(rec["d"])
 	p.mroom = parseMultiroom(rec["g"])
+	p.night, p.nightOK = parseNight(rec["n"])
 	return p
+}
+
+// parseNight decodes the @@n section — the raw `amixer cget` output for the
+// multi-band DRC enable — into on/off. Only an explicit `values=on` /
+// `values=off` line counts; an absent section, a failed read (no such
+// control, amixer missing) or anything else is "unknown" so the UI never
+// paints a state the device didn't report.
+func parseNight(lines []string) (on, ok bool) {
+	for _, ln := range lines {
+		_, after, found := strings.Cut(printable(ln), "values=")
+		if !found {
+			continue
+		}
+		switch strings.TrimSpace(after) {
+		case "on":
+			return true, true
+		case "off":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // ApplyRecord applies one framed record under the State lock and reports whether
@@ -208,6 +232,16 @@ func ApplyRecord(st *State, rec Record) bool {
 	}
 	if p.mroom != nil {
 		st.mroom = p.mroom
+	}
+	if p.nightOK {
+		st.night, st.nightKnown = p.night, true
+		if !st.nightOrigKnown {
+			// The first readback of the State's lifetime is the value to put
+			// back on quit. Later @@n sections are echoes of lp10's own sets
+			// (or a reconnect's re-read of a value lp10 already changed), so
+			// they must not move the baseline.
+			st.nightOrig, st.nightOrigKnown = p.night, true
+		}
 	}
 	if p.hasB {
 		switch {

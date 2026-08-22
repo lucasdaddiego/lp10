@@ -50,10 +50,11 @@ func TestArgvContractExits2(t *testing.T) {
 // tuiSession boots the lp10 binary in a pty against the fake transport, draws
 // for a beat, and returns the running command plus a snapshot of what it drew.
 type tuiSession struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
-	mu   *sync.Mutex
-	buf  *bytes.Buffer
+	cmd    *exec.Cmd
+	ptmx   *os.File
+	mu     *sync.Mutex
+	buf    *bytes.Buffer
+	cmdlog string // every stdin line the fake ssh received (delivery assertions)
 }
 
 func bootTUI(t *testing.T) *tuiSession { return bootTUISetup(t, nil) }
@@ -70,11 +71,13 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 	if setup != nil {
 		setup(cfgDir, stateDir)
 	}
+	cmdlog := filepath.Join(tmp, "cmdlog")
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"LP10_SSH="+fake,
 		"LP10_FAKE_SCENARIO=normal",
+		"LP10_FAKE_CMDLOG="+cmdlog,
 		"LP10_ASKPASS=",
 		// A non-empty LP10_HOST keeps the run hermetic: main skips mDNS
 		// discovery (which would otherwise find a real LP10 on the developer's
@@ -93,7 +96,7 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 	if err != nil {
 		t.Fatalf("pty start: %v", err)
 	}
-	s := &tuiSession{cmd: cmd, ptmx: ptmx, mu: &sync.Mutex{}, buf: &bytes.Buffer{}}
+	s := &tuiSession{cmd: cmd, ptmx: ptmx, mu: &sync.Mutex{}, buf: &bytes.Buffer{}, cmdlog: cmdlog}
 	go func() {
 		// answer the terminal queries termenv/bubbletea block on. pending
 		// carries unmatched bytes across reads so a query straddling two Read
@@ -185,6 +188,43 @@ func TestTUISmokeUnderPTY(t *testing.T) {
 	}
 	if out := s.output(); strings.Contains(out, "panic:") || strings.Contains(out, "goroutine ") {
 		t.Errorf("crash detected in output:\n%s", out)
+	}
+}
+
+// commands returns what the fake ssh has received on stdin so far.
+func (s *tuiSession) commands() string {
+	b, _ := os.ReadFile(s.cmdlog)
+	return string(b)
+}
+
+// waitForCommand waits for a line to reach the fake ssh's stdin.
+func (s *tuiSession) waitForCommand(t *testing.T, line string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(s.commands(), line) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q on the device stdin; got %q", line, s.commands())
+}
+
+// Night mode is session-scoped: the device reported "off" at connect (the
+// fixture's @@n), 'd' switches it on, and quitting puts it back — the restore
+// rides the teardown drain, so it must reach the device BEFORE stdin closes.
+func TestNightModeRestoredOnQuit(t *testing.T) {
+	s := bootTUI(t)
+	s.ptmx.Write([]byte("d"))
+	s.waitForCommand(t, "91 1\n")
+	s.waitForOutput(t, "night") // the header badge follows the optimistic flip
+	s.ptmx.Write([]byte("q"))
+	if code := s.waitExit(t); code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	got := s.commands()
+	if i, j := strings.Index(got, "91 1\n"), strings.LastIndex(got, "91 0\n"); i < 0 || j < i {
+		t.Errorf("device stdin = %q, want the 91 1 set followed by the 91 0 restore on quit", got)
 	}
 }
 

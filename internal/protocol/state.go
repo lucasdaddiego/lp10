@@ -75,6 +75,12 @@ type State struct {
 	eqVals      map[string]int       // wire code -> last-known value
 	eqHold      map[string]time.Time // wire code -> echo-suppression deadline
 
+	// night mode: the device's multi-band DRC enable as last read back (@@n),
+	// and the value seen first this process, which quit restores. Known flags
+	// distinguish "off" from "never reported".
+	night, nightKnown         bool
+	nightOrig, nightOrigKnown bool
+
 	// album art: the decoded cover and the CoverArtUrl it was loaded for, set
 	// by the art worker. Snap exposes the image only while artURL still matches
 	// the playing track, so a stale cover never lingers across a track change.
@@ -115,6 +121,10 @@ type Snapshot struct {
 	// before the cover loads. Valid only while Art is non-nil.
 	Dominant   color.RGBA
 	DominantOK bool
+
+	// Night is the device's multi-band DRC enable (night mode) as last read
+	// back; NightKnown is false until the device has reported it.
+	Night, NightKnown bool
 
 	// LastArt is the most-recently-decoded cover and the URL it came from,
 	// retained across idle so the idle screen can show a dimmed "ghost" of the
@@ -186,7 +196,28 @@ func (st *State) snapLocked(now time.Time) Snapshot {
 		DominantOK:   domOK,
 		LastArt:      st.artImg,
 		LastCoverURL: st.artURL,
+		Night:        st.night,
+		NightKnown:   st.nightKnown,
 	}
+}
+
+// ---- night mode (multi-band DRC) ----
+
+// SetNightLocal records the state lp10 just asked for, so the header flips at
+// once; the device's @@n readback that follows the set confirms or corrects it.
+func (st *State) SetNightLocal(on bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.night, st.nightKnown = on, true
+}
+
+// NightRestore reports the value quit should put back — the first readback of
+// this process — and whether restoring is needed at all (the device reported a
+// baseline and the current state differs from it).
+func (st *State) NightRestore() (orig bool, needed bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.nightOrig, st.nightOrigKnown && st.nightKnown && st.night != st.nightOrig
 }
 
 // DiagnosticSnapshot is the complete, point-in-time state consumed by the

@@ -30,9 +30,10 @@ func ReduceCommands(cmds []Command) []Command {
 	out := make([]Command, 0, len(cmds))
 	for _, c := range cmds {
 		switch {
-		case c.Mid == 64 || c.Mid == 90:
-			// last value wins for volume (64) and the stats toggle (90):
-			// drop any earlier command with the same mid, keep this one
+		case c.Mid == 64 || c.Mid == 90 || c.Mid == 91:
+			// last value wins for volume (64), the stats toggle (90), and the
+			// night-mode toggle (91): drop any earlier command with the same
+			// mid, keep this one
 			out = append(slices.DeleteFunc(out, func(cc Command) bool { return cc.Mid == c.Mid }), c)
 		case c.Mid == 40 && (c.Data == "PAUSE" || c.Data == "RESUME") &&
 			len(out) > 0 && out[len(out)-1].Mid == 40 &&
@@ -47,7 +48,9 @@ func ReduceCommands(cmds []Command) []Command {
 
 // ValidatePayload whitelists what may be written to the device's stdin. MID 90
 // is the diagnostics-stats toggle (1 = overlay open, send @@s; 0 = closed): it
-// only ever flips a flag on the device, never reaches LUCI_local.
+// only ever flips a flag on the device, never reaches LUCI_local. MID 91 is the
+// night-mode toggle: the loop sets the SoC's multi-band DRC enable (an ALSA
+// boolean) and answers with an @@n readback; like 90 it never reaches LUCI_local.
 func ValidatePayload(mid int, data string) bool {
 	switch mid {
 	case 40:
@@ -58,7 +61,7 @@ func ValidatePayload(mid int, data string) bool {
 		}
 		n, _ := strconv.Atoi(data)
 		return n <= 100
-	case 90:
+	case 90, 91:
 		return data == "0" || data == "1"
 	}
 	return false

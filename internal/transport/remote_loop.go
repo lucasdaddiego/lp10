@@ -43,6 +43,10 @@ import (
 //     connection, so the TUI re-asserts while the overlay is open. Off the
 //     overlay each tick does zero /proc stat reads. The toggle never reaches
 //     LUCI_local and skips the per-keypress track re-read.
+//   - night mode (the AED multi-band DRC enable, the one host-writable audio
+//     effect on the box) is a MID-91 message (1 = on, 0 = off) on the same
+//     channel: the loop sets the ALSA boolean and answers with an @@n readback.
+//     It is also read once at connect, so the TUI knows the value to restore.
 //   - per tick the only forks are the LUCI_local device-API reads, and even
 //     those are trimmed: play-state (-r 51) and volume (-r 64) stay per-tick
 //     (they're data-bearing for the watchdog and must reflect external changes
@@ -83,7 +87,7 @@ var remoteLoopScript string
 // substituted first: sanitizeHost strips quotes and underscores, so a hostile
 // value can neither break out of the single-quoted ph assignment nor forge the
 // __MIDS__ token. The command-id whitelist is the fixed "40|64" (transport +
-// volume) — MID 90, the stats toggle, has its own arm in the script outside
+// volume) — MIDs 90 (stats toggle) and 91 (night mode) have their own arms in the script outside
 // the whitelist, so the alternation never needs to vary. Each placeholder
 // occurs once.
 func RemoteLoop(pingHost string) string {

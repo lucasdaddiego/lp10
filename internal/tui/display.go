@@ -40,14 +40,14 @@ func glyphs(amb int) map[string]string {
 	if amb == 2 {
 		return map[string]string{
 			"play": ">", "pause": "#", "rew": "<<", "ff": ">>", "note": "*", "warn": "!",
-			"sleep": "z", "fill": "=", "track": "-",
+			"sleep": "z", "night": "N", "fill": "=", "track": "-",
 			"tl": "+", "tr": "+", "bl": "+", "br": "+", "h": "-", "v": "|",
 			"ell": "...",
 		}
 	}
 	return map[string]string{
 		"play": "▶", "pause": "⏸", "rew": "◀◀", "ff": "▶▶", "note": "♪", "warn": "⚠",
-		"sleep": "☾", "fill": "━", "track": "─",
+		"sleep": "☾", "night": "◐", "fill": "━", "track": "─",
 		"tl": "╭", "tr": "╮", "bl": "╰", "br": "╯", "h": "─", "v": "│",
 		"ell": "…",
 	}

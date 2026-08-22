@@ -140,6 +140,9 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 		if lbl, _ := m.sleepLabel(time.Now()); lbl != "" {
 			line += "  " + lbl
 		}
+		if lbl := nightLabel(s); lbl != "" {
+			line += "  " + lbl
+		}
 		return ps.txt.render(Clip(line, cols-1))
 	default:
 		msg := "connecting to LP10…"
@@ -339,6 +342,12 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 		}
 		statTxt += " · " + lbl
 		statStyled += ps.dmr.render(" · ") + pen.render(lbl)
+	}
+	// Night mode (the device's multi-band DRC) sits beside it: an accent badge,
+	// since it is an active effect on the sound rather than a clock.
+	if lbl := nightLabel(s); lbl != "" {
+		statTxt += " · " + lbl
+		statStyled += ps.dmr.render(" · ") + ps.acc.render(lbl)
 	}
 
 	prefixW := DispW(note) + 1 // "♪ "
@@ -794,6 +803,16 @@ func (m *model) dividerRow(label string, W int) string {
 	return bar(left) + " " + ps.dim.render(label) + " " + bar(rule-left)
 }
 
+// playerHints are the player-pane footer hints, longest first; footerRow
+// shows the first that fits W whole, so a narrow frame drops the rarer keys
+// instead of clipping the line mid-word. The shortest still fits the
+// full-dashboard minimum (64 cols).
+var playerHints = []string{
+	"space play · ↑↓ vol · m mute · s sleep · d night · e/tab EQ · ? diag · q quit",
+	"space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit",
+	"space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit",
+}
+
 func (m *model) footerRow(W int) string {
 	var hint string
 	switch {
@@ -804,9 +823,13 @@ func (m *model) footerRow(W int) string {
 	case m.pane == paneEQ:
 		hint = "↑↓ pick · ←→ adjust · enter toggle · tab player · q quit"
 	default:
-		// "s sleep" earned its slot by dropping "/tab" from the EQ hint: the
-		// longest form that still fits W at the full-dashboard minimum (64 cols).
-		hint = "space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit"
+		hint = playerHints[len(playerHints)-1]
+		for _, h := range playerHints {
+			if DispW(h) <= W {
+				hint = h
+				break
+			}
+		}
 	}
 	// Manual right-align. Safe from ccell's wrapping trap ONLY because Clip
 	// bounds the content to ≤ W first — with that guarantee this is

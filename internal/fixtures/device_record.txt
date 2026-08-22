@@ -19,3 +19,8 @@ MID-Read:92 Data:{"macaddress":{"bt":"aa:bb:cc:dd:ee:fe","eth0":"aa:bb:cc:dd:ee:
 @@g
 MID-Read:39 Data:{"devices":[]} Length:14
 @@E
+@@n
+numid=68,iface=MIXER,name='AED Multi-band DRC enable'
+  ; type=BOOLEAN,access=rw------,values=1
+  : values=off
+@@E

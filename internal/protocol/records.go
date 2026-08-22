@@ -9,8 +9,9 @@ import (
 // static device/network info block and 'c' the one-shot capability/config block
 // (both key=value lines); 'd' and 'g' are the one-shot raw register reads for
 // the device-details (reg 92) and multiroom-group (reg 39) JSON. All four are
-// sent once per connection.
-var tags = map[byte]bool{'B': true, 'p': true, 't': true, 'v': true, 's': true, 'i': true, 'c': true, 'd': true, 'g': true}
+// sent once per connection. 'n' is the night-mode (multi-band DRC enable)
+// readback: once at connect and again after every MID-91 set.
+var tags = map[byte]bool{'B': true, 'p': true, 't': true, 'v': true, 's': true, 'i': true, 'c': true, 'd': true, 'g': true, 'n': true}
 
 const maxRecLines = 200 // a legitimate record is ~30 lines
 

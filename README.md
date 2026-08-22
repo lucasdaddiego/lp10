@@ -49,7 +49,7 @@ $ lp10
 ┃  Sub     ● on                                                                ┃
 ┃  Lvl     ─────────●────────────────────────────────────────────────────  15  ┃
 ┃  Max Vol ─────────────────────────────────────────────────────────────● 100  ┃
-┃             space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit  ┃
+┃   space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit  ┃
 ```
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
@@ -96,6 +96,15 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   so it needs nothing from the device (whose own sleep timer is hidden on this
   firmware) and can't leave anything behind. It ends with the process: quitting
   lp10 cancels it.
+- **Night mode** — `d` switches on the device's own multi-band **dynamic range
+  compressor** (the Amlogic AED block's DRC, with the firmware's stock 3-band
+  table): peaks reined in, quiet passages lifted, for late-night listening at low
+  volume. It's the one audio effect on the box a host can actually switch (the
+  EQ/DRC coefficient tables are read-only from userspace, and the "WM8904"
+  mixer controls drive a chip that isn't on the bus), driven over the same ssh
+  stream as playback and read back from the device so the `◐ night` badge
+  beside the clock shows device truth. Session-scoped: quitting lp10 puts the
+  compressor back to the state it found.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -156,6 +165,7 @@ the arrow keys.
 | `m` | mute (volume 0 ↔ restored level, persisted) |
 | `t` | right-hand time: remaining ↔ total |
 | `s` / `S` | sleep timer: arm / step the countdown (15 · 30 · 45 · 60 · 90 min, then off) / cancel |
+| `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
 | `?` | diagnostics overlay (see below) |
 | `q` | quit |
 

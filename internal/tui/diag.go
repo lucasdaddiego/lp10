@@ -452,7 +452,23 @@ func (m *model) diagStackedAudioRows(d protocol.DiagnosticSnapshot, v diagVitals
 	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
 		rows = append(rows, m.diagLine("dac", dac))
 	}
+	if nr := m.nightReadout(d.Snapshot); nr != "" {
+		rows = append(rows, m.diagLine("night", nr))
+	}
 	return append(rows, m.diagLine("stream", t.pens().txt.render(diagFormat(d.Snapshot.Track))))
+}
+
+// nightReadout is the diag audio row for night mode — the device's multi-band
+// DRC enable as last read back — or "" before the device has reported it.
+func (m *model) nightReadout(s protocol.Snapshot) string {
+	if !s.NightKnown {
+		return ""
+	}
+	ps := m.sty.pens()
+	if s.Night {
+		return ps.acc.render("on") + ps.dim.render(" · multi-band DRC · d toggles")
+	}
+	return ps.dim.render("off · multi-band DRC · d toggles")
 }
 
 func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now time.Time) []string {
@@ -843,6 +859,9 @@ func (m *model) diagCardAudioRows(d protocol.DiagnosticSnapshot, v diagVitals, f
 	}
 	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
 		rows = append(rows, f.styled("dac", dac))
+	}
+	if nr := m.nightReadout(d.Snapshot); nr != "" {
+		rows = append(rows, f.styled("night", nr))
 	}
 	return append(rows, f.plain("stream", diagFormat(d.Snapshot.Track), m.sty.sTxt))
 }

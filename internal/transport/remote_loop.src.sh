@@ -142,6 +142,14 @@ echo @@E;
 echo @@d; LUCI_local -r 92 2>/dev/null; echo @@E;
 echo @@g; LUCI_local -r 39 2>/dev/null; echo @@E;
 
+# ── @@n night mode: the SoC's multi-band DRC enable (ALSA boolean on the AED
+# block — the one host-writable audio effect on this box; the EQ/DRC coefficient
+# tables are read-only and the WM8904 controls drive a chip that isn't there).
+# Read once at connect (the value quit restores) and again after every MID-91
+# set, so the laptop only ever paints what the device reports. nm() is shared. ──
+nm() { echo @@n; amixer -c0 cget name='AED Multi-band DRC enable' 2>/dev/null; echo @@E; };
+nm;
+
 # ── main streaming loop ── (state: i=metadata countdown, idl=idle ticks, bw=burst
 # window, dg=diag overlay flag, pc49=position-poll gate, pgc=ping gate, ef=EOF streak)
 i=0; prev=; ef=0; idl=0; bw=0; dg=0; pc49=0; pgc=0;
@@ -242,6 +250,7 @@ while :; do
       case "$mid" in
         __MIDS__) LUCI_local "$mid" "$data" >/dev/null 2>&1; pc=1;;
         90) case "$data" in 1) dg=1;; *) dg=0;; esac;;
+        91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name='AED Multi-band DRC enable' $nv >/dev/null 2>&1; nm;;
       esac;
       read -r -t 0 || break;
       read -r -t 1 mid data || break;

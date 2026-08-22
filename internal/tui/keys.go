@@ -192,6 +192,8 @@ func (m *model) key(ev keyEvent) (quit bool) {
 			m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
 		case 'S':
 			m.sleepCancel()
+		case 'd':
+			m.nightToggle() // night mode: the device's multi-band DRC
 		case 'e':
 			if !m.miniMode() { // no EQ pane to focus at mini size
 				m.pane = paneEQ
