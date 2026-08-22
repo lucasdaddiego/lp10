@@ -137,6 +137,9 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 		}
 		line := fmt.Sprintf("%s %s  %s/%s  %d%%", glyph, trackTitle(t),
 			FmtMs(s.Pos), m.fmtRight(t.TotalTime, s.Pos), s.Vol)
+		if lbl, _ := m.sleepLabel(time.Now()); lbl != "" {
+			line += "  " + lbl
+		}
 		return ps.txt.render(Clip(line, cols-1))
 	default:
 		msg := "connecting to LP10…"
@@ -325,6 +328,17 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 			statTxt = fmt.Sprintf("● reconnecting (%d)…", s.Attempts)
 		}
 		statStyled = ps.warn.render(statTxt)
+	}
+	// The sleep countdown rides beside the clock — it's time-shaped, and the
+	// header is the one row every layout keeps. Dim like the clock until the
+	// final minute, then amber so the imminent pause is noticed.
+	if lbl, final := m.sleepLabel(now); lbl != "" {
+		pen := ps.dim
+		if final {
+			pen = ps.warn
+		}
+		statTxt += " · " + lbl
+		statStyled += ps.dmr.render(" · ") + pen.render(lbl)
 	}
 
 	prefixW := DispW(note) + 1 // "♪ "
@@ -790,7 +804,9 @@ func (m *model) footerRow(W int) string {
 	case m.pane == paneEQ:
 		hint = "↑↓ pick · ←→ adjust · enter toggle · tab player · q quit"
 	default:
-		hint = "space play · ↑↓ vol · m mute · e/tab EQ · ? diag · q quit"
+		// "s sleep" earned its slot by dropping "/tab" from the EQ hint: the
+		// longest form that still fits W at the full-dashboard minimum (64 cols).
+		hint = "space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit"
 	}
 	// Manual right-align. Safe from ccell's wrapping trap ONLY because Clip
 	// bounds the content to ≤ W first — with that guarantee this is

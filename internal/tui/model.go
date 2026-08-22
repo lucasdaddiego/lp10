@@ -81,6 +81,12 @@ type model struct {
 	showRemaining bool
 	flash         map[string]time.Time
 
+	// sleep timer (sleep.go): sleepAt is the host-side deadline at which the
+	// logic tick pauses playback (zero == off); sleepPreset is the index into
+	// sleepPresets the 's' key last armed, so repeated presses step upward.
+	sleepAt     time.Time
+	sleepPreset int
+
 	rows, cols   int
 	cellW, cellH int // terminal cell size in device px (0 if unknown); sizes the Kitty cover
 	curTitle     string

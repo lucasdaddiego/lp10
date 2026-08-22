@@ -184,6 +184,7 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scroll++       // advance the now-playing marquee (independent of play state)
 		s := m.st.Snap() // one snapshot per tick, reused below
 		m.syncStats()    // device emits @@s only while the diag overlay is open
+		m.sleepFire(time.Now(), s)
 		// The window title rides View (tea.View.WindowTitle under bubbletea v2),
 		// so the tick only has to keep the cached string current.
 		m.curTitle = m.computeTitle(s)

@@ -3,7 +3,11 @@
 
 package tui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 // keyKind is the normalized key class dispatched to the controller logic.
 type keyKind int
@@ -184,6 +188,10 @@ func (m *model) key(ev keyEvent) (quit bool) {
 			m.do("mute")
 		case 't':
 			m.showRemaining = !m.showRemaining
+		case 's':
+			m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
+		case 'S':
+			m.sleepCancel()
 		case 'e':
 			if !m.miniMode() { // no EQ pane to focus at mini size
 				m.pane = paneEQ

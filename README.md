@@ -49,7 +49,7 @@ $ lp10
 ┃  Sub     ● on                                                                ┃
 ┃  Lvl     ─────────●────────────────────────────────────────────────────  15  ┃
 ┃  Max Vol ─────────────────────────────────────────────────────────────● 100  ┃
-┃                   space play · ↑↓ vol · m mute · e/tab EQ · ? diag · q quit  ┃
+┃             space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit  ┃
 ```
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
@@ -90,6 +90,12 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   the LAN by its `am=LP10` advertisement, so a changed DHCP lease never needs a
   config edit. Pure mDNS (no dependency, no bound port); falls back to the
   configured host.
+- **Sleep timer** — `s` arms a "pause in N minutes" countdown (15 → 30 → 45 →
+  60 → 90 min, one step per press; `S` cancels), shown beside the clock. It lives
+  entirely in lp10 — at the deadline it sends the same pause the space bar does —
+  so it needs nothing from the device (whose own sleep timer is hidden on this
+  firmware) and can't leave anything behind. It ends with the process: quitting
+  lp10 cancels it.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -149,6 +155,7 @@ the arrow keys.
 | `e` | jump focus to the equalizer |
 | `m` | mute (volume 0 ↔ restored level, persisted) |
 | `t` | right-hand time: remaining ↔ total |
+| `s` / `S` | sleep timer: arm / step the countdown (15 · 30 · 45 · 60 · 90 min, then off) / cancel |
 | `?` | diagnostics overlay (see below) |
 | `q` | quit |
 
