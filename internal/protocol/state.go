@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -76,6 +77,13 @@ type State struct {
 	eqVals      map[string]int       // wire code -> last-known value
 	eqHold      map[string]time.Time // wire code -> echo-suppression deadline
 	eqPresets   []string             // EQ preset names by EQS index (the PEQ list), nil until read
+
+	// output level: the ALSA softvol "Master" as last sampled (@@s, every
+	// third tick while the overlay is open) and how many consecutive samples
+	// disagreed with the reported volume — see updateLevel.
+	softvol      int
+	softvolOK    bool
+	levelBadRuns int
 
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
@@ -238,6 +246,13 @@ type DiagnosticSnapshot struct {
 	Multiroom        *Multiroom
 	Net              NetStat
 	EQConnected      bool
+
+	// Softvol is the last sampled output level (SoftvolOK false until one
+	// arrives); LevelDesync is true once it has disagreed with the reported
+	// volume on two consecutive samples — the app normally holds it at vol−1.
+	Softvol     int
+	SoftvolOK   bool
+	LevelDesync bool
 }
 
 // ---- volume / mute ----
@@ -488,6 +503,34 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		Multiroom:       st.mroom,
 		Net:             st.netViewLocked(),
 		EQConnected:     st.eqConnected,
+		Softvol:         st.softvol,
+		SoftvolOK:       st.softvolOK,
+		LevelDesync:     st.levelBadRuns >= 2,
+	}
+}
+
+// levelTolerance is how far the softvol may sit from vol−1 before a sample
+// counts as out of step: ±1 absorbs the app's own rounding and a sample taken
+// mid-change.
+const levelTolerance = 1
+
+// updateLevel folds one @@s softvol sample into the desync tracker. The
+// caller holds st.mu. An unread sample ("-" / "") leaves everything as is; a
+// readable one is compared with the current volume: the app keeps the softvol
+// at vol−1 (floored at 0), so anything further off than levelTolerance is a
+// bad run, and two bad runs in a row (≈6 s at the sample cadence) flag the
+// desync — one sample alone could straddle a volume change.
+func (st *State) updateLevel(si *SysInfo) {
+	v, err := strconv.Atoi(si.Softvol)
+	if err != nil || v < 0 {
+		return
+	}
+	st.softvol, st.softvolOK = v, true
+	want := max(st.vol-1, 0)
+	if d := v - want; d > levelTolerance || d < -levelTolerance {
+		st.levelBadRuns++
+	} else {
+		st.levelBadRuns = 0
 	}
 }
 

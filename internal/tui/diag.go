@@ -188,6 +188,8 @@ type diagVitals struct {
 	bufSev  int     // inverted health: a FULL ring is healthy
 
 	playing bool // ALSA reports RUNNING — gates the buffer's health meaning
+
+	levelDesync bool // softvol out of step with the reported volume (State's tracker)
 }
 
 // collectVitals parses the @@s/@@i numerics both layouts gauge (either source may
@@ -452,10 +454,31 @@ func (m *model) diagStackedAudioRows(d protocol.DiagnosticSnapshot, v diagVitals
 	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
 		rows = append(rows, m.diagLine("dac", dac))
 	}
+	if lv := m.levelReadout(d); lv != "" {
+		rows = append(rows, m.diagLine("level", lv))
+	}
 	if nr := m.nightReadout(d.Snapshot); nr != "" {
 		rows = append(rows, m.diagLine("night", nr))
 	}
 	return append(rows, m.diagLine("stream", t.pens().txt.render(diagFormat(d.Snapshot.Track))))
+}
+
+// levelReadout is the diag audio row for the real output level — the ALSA
+// softvol the app holds at vol−1 — against the volume the device reports.
+// In step: a dim "softvol 74 · vol 75". Out of step on two consecutive
+// samples (the room went quiet, or loud, while the volume display didn't):
+// "softvol 59 ≠ vol 75" in the warn colour plus the fix, which is any volume
+// nudge (the app rewrites the softvol on every volume change). "" until a
+// sample has arrived.
+func (m *model) levelReadout(d protocol.DiagnosticSnapshot) string {
+	if !d.SoftvolOK {
+		return ""
+	}
+	ps := m.sty.pens()
+	if d.LevelDesync {
+		return ps.warn.render(fmt.Sprintf("softvol %d ≠ vol %d", d.Softvol, d.Snapshot.Vol)) + ps.dim.render(" · +/− resyncs")
+	}
+	return ps.dim.render(fmt.Sprintf("softvol %d · vol %d", d.Softvol, d.Snapshot.Vol))
 }
 
 // nightReadout is the diag audio row for night mode — the device's multi-band
@@ -731,6 +754,9 @@ func diagWorst(v diagVitals, lastRx, now time.Time) int {
 	if !lastRx.IsZero() {
 		bump(sev(now.Sub(lastRx).Seconds(), thrRx))
 	}
+	if v.levelDesync {
+		bump(1) // the room isn't at the volume every display claims
+	}
 	return worst
 }
 
@@ -860,6 +886,9 @@ func (m *model) diagCardAudioRows(d protocol.DiagnosticSnapshot, v diagVitals, f
 	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
 		rows = append(rows, f.styled("dac", dac))
 	}
+	if lv := m.levelReadout(d); lv != "" {
+		rows = append(rows, f.styled("level", lv))
+	}
 	if nr := m.nightReadout(d.Snapshot); nr != "" {
 		rows = append(rows, f.styled("night", nr))
 	}
@@ -978,7 +1007,9 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 	t := m.sty
 	s := d.Snapshot
 	gaugeW := max(min(20, W-52), 8) // leaves room for label/value/detail
-	L := m.diagStackedContent(d, collectVitals(d.SysInfo, d.DevInfo), now, W, gaugeW)
+	vit := collectVitals(d.SysInfo, d.DevInfo)
+	vit.levelDesync = d.LevelDesync
+	L := m.diagStackedContent(d, vit, now, W, gaugeW)
 
 	// footer (and any device error) pins to the bottom; the gap fills the frame
 	var tail []string
@@ -1013,6 +1044,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 	t := m.sty
 	s := d.Snapshot
 	vit := collectVitals(d.SysInfo, d.DevInfo)
+	vit.levelDesync = d.LevelDesync
 	colW := (W - diagCardsGutter) / 2
 	rightW := W - diagCardsGutter - colW // absorbs the odd column
 	format := diagCardFmt{m: m, inner: colW - 2}

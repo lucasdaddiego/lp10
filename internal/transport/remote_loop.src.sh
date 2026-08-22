@@ -232,10 +232,14 @@ while :; do
     # parse succeeding, not just resolution: BusyBox ping prints the "PING host
     # (ip):" header even at 100% loss, and pinning a captive-portal / ICMP-dead
     # answer would hold a dead IP for the whole connection while DNS recovers.
+    # The ALSA softvol "Master" (the real output level on this box: the app keeps it
+    # at vol−1) rides the same every-3rd gate, so the laptop can flag the level
+    # drifting out of step with the volume the device reports — the one failure
+    # mode where the room goes quiet while every display says it didn't.
     pgc=$((pgc-1));
-    if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o; pg "$gw"; pgw=$o; pg "$ph"; pnt=$o; [ "$o" != - ] && [ -n "$oip" ] && ph=$oip; pgc=3; else pcl=-; pgw=-; pnt=-; fi;
+    if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o; pg "$gw"; pgw=$o; pg "$ph"; pnt=$o; [ "$o" != - ] && [ -n "$oip" ] && ph=$oip; pgc=3; sv=-; mv=$(amixer -c0 cget name=Master 2>/dev/null); case "$mv" in *": values="*) sv=${mv##*: values=}; sv=${sv%%,*}; sv=${sv%%"$nl"*};; esac; else pcl=-; pgw=-; pnt=-; sv=-; fi;
     echo @@s;
-    echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--}";
+    echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--} ${sv:--}";
   fi;
   echo @@E;
 

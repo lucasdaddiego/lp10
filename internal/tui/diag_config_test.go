@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -251,5 +252,41 @@ func TestServicesOpenPortsRow(t *testing.T) {
 	m3.sty = newTheme()
 	if rows3 := stripANSI(strings.Join(m3.serviceStrip(120), "\n")); strings.Contains(rows3, "open") {
 		t.Errorf("a loop that reported no listeners must not show an open group:\n%s", rows3)
+	}
+}
+
+// The audio section's level row shows the softvol against the reported volume,
+// dim while in step and in the warn colour (with the fix) once the tracker
+// flags a desync; the masthead verdict drops to warn with it.
+func TestDiagLevelRowAndVerdict(t *testing.T) {
+	m, st, _ := makeModel(t)
+	m.sty = newTheme()
+	m.rows, m.cols = 40, 120
+	m.diag = true
+	if out := stripANSI(m.viewContent()); strings.Contains(out, "softvol") {
+		t.Fatal("no level row before a sample")
+	}
+	line := func(sv string) string {
+		return "1000 0.1 0.1 0.1 100000 200000 2 fw.1 Linux-5 - - - - - - - - - - - - - - - - - - - - - " + sv
+	}
+	vol := st.Snap().Vol
+	good := strconv.Itoa(max(vol-1, 0))
+	protocol.ApplyRecord(st, protocol.Record{"s": {line(good)}})
+	out := stripANSI(m.viewContent())
+	if !strings.Contains(out, "softvol "+good+" · vol "+strconv.Itoa(vol)) || strings.Contains(out, "≠") {
+		t.Errorf("in-step level row missing or wrong:\n%s", out)
+	}
+	protocol.ApplyRecord(st, protocol.Record{"s": {line("5")}})
+	protocol.ApplyRecord(st, protocol.Record{"s": {line("5")}})
+	out = stripANSI(m.viewContent())
+	if !strings.Contains(out, "softvol 5 ≠ vol "+strconv.Itoa(vol)) || !strings.Contains(out, "resyncs") {
+		t.Errorf("desync level row missing:\n%s", out)
+	}
+	if !strings.Contains(out, "● warn") {
+		t.Errorf("verdict should be warn on a level desync:\n%s", out)
+	}
+	m.cols = 70 // stacked layout carries the row too
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "≠ vol") {
+		t.Errorf("stacked diag lacks the level row:\n%s", out)
 	}
 }

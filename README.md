@@ -80,8 +80,11 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   counters as session deltas, the multiroom group state, Wi-Fi **SNR**, and
   round-trip latency — average, jitter, and a spike-flagging peak — to your laptop,
   the gateway, and the internet);
-  the **audio chain** (ALSA playback state, the **buffer fill**, and the DAC's
-  *actual* rate/format/channels vs the source — catching resampling); and resource
+  the **audio chain** (ALSA playback state, the **buffer fill**, the DAC's
+  *actual* rate/format/channels vs the source — catching resampling — and the
+  **output level**: the ALSA softvol the firmware holds one step under the volume
+  it reports, flagged in amber when the two drift apart, i.e. the room is quieter
+  or louder than every display claims; a volume nudge resyncs it); and resource
   gauges (cpu + clock · memory · storage · process contention · temp · uptime). It also lists the
   device's **streaming capabilities** (AirPlay 2 · Bluetooth · DLNA · Spotify on,
   with Cast / Qobuz / Tidal / USB shown off when env-gated — read live from the box)

@@ -230,7 +230,7 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// the positional @@s line (new fields are appended at the END so older
 		// parsers and fixtures stay compatible; order is also cross-checked by
 		// protocol's TestSysStatsFieldOrder)
-		`echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--}"`,
+		`echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--} ${sv:--}"`,
 		// the one-shot raw register ships (device details + multiroom group)
 		`echo @@d; LUCI_local -r 92 2>/dev/null; echo @@E;`,
 		`echo @@g; LUCI_local -r 39 2>/dev/null; echo @@E;`,

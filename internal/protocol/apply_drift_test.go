@@ -46,6 +46,7 @@ func TestSysStatsFieldOrder(t *testing.T) {
 		sfNoiseDBm: "${ns:--}",
 		sfRxErrs:   "${rxe:--}",
 		sfTxDrop:   "${txd:--}",
+		sfSoftvol:  "${sv:--}",
 	}
 	for idx, want := range anchors {
 		if fields[idx] != want {

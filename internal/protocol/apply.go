@@ -49,6 +49,9 @@ type SysInfo struct {
 	// session deltas so historical noise never reads as a live fault)
 	RxErrs, TxErrs string
 	RxDrop, TxDrop string
+	// Softvol is the ALSA "Master" softvol level (0..99) the app keeps at vol−1 —
+	// the real output level; sampled every third @@s ("" / "-" otherwise).
+	Softvol string
 }
 
 // The @@s stats line is positional: these indices name the columns in the exact
@@ -87,6 +90,7 @@ const (
 	sfTxErrs
 	sfRxDrop
 	sfTxDrop
+	sfSoftvol
 	sysFieldCount
 )
 
@@ -221,6 +225,7 @@ func ApplyRecord(st *State, rec Record) bool {
 	st.lastRx = now
 	if p.sysinfo != nil {
 		st.updateNet(p.sysinfo, now)
+		st.updateLevel(p.sysinfo)
 		st.sysinfo = p.sysinfo
 	}
 	if p.devinfo != nil {
@@ -324,6 +329,7 @@ func parseSysInfo(lines []string) *SysInfo {
 	si.Procs, si.NoiseDBm = opt(sfProcs), opt(sfNoiseDBm)
 	si.RxErrs, si.TxErrs = opt(sfRxErrs), opt(sfTxErrs)
 	si.RxDrop, si.TxDrop = opt(sfRxDrop), opt(sfTxDrop)
+	si.Softvol = opt(sfSoftvol)
 	return si
 }
 
