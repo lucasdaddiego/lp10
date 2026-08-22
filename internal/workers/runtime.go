@@ -97,6 +97,7 @@ func StartRuntime(st *protocol.State, cfg config.Config) *Runtime {
 	r.wg.Go(func() { watchdog(st, r.procs, r.control, SilentAfter, ConnectWindow, DatalessAfter) })
 	r.wg.Go(func() { tunnelWorker(ctx, r.control, st, cfg, r.EQCommands) })
 	r.wg.Go(func() { artWorker(ctx, r.control, st, cfg) })
+	r.wg.Go(func() { lssdpWorker(ctx, r.control, st, cfg) })
 	return r
 }
 

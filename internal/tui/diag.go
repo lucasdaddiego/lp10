@@ -496,11 +496,61 @@ func (m *model) nightReadout(s protocol.Snapshot) string {
 
 func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now time.Time) []string {
 	status := m.linkStatus(d.LastRx, now, d.ConnectAttempts, d.EQConnected)
-	return []string{
-		m.diagLine("host", m.sty.pens().txt.render(m.hostReadout(d.DevInfo))),
+	rows := []string{m.diagLine("host", m.sty.pens().txt.render(m.hostReadout(d.DevInfo)))}
+	if lr := m.lssdpReadout(d, now); lr != "" {
+		rows = append(rows, m.diagLine("lssdp", lr))
+	}
+	return append(rows,
 		m.diagLine("ssh", m.sshReadout(status, d.ConnectAttempts)),
 		m.diagLine("tunnel", m.tunnelReadout(status)),
+	)
+}
+
+// lssdpFresh is how recent an LSSDP answer must be to count the device as
+// "up" in the connecting copy — a few probe periods, so one lost datagram
+// doesn't flip the message.
+const lssdpFresh = 20 * time.Second
+
+// lssdpReadout is the connection row for the device's UDP:1800 responder —
+// the one liveness signal that needs neither ssh nor the tunnel, so it reads
+// right when both are down: "answered 3s ago · S · ETH0" (accent) or, after
+// an unanswered probe, "no answer · probed 4s ago" (warn). "" until the first
+// probe has run.
+func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.LSSDPProbeAt.IsZero() {
+		return ""
 	}
+	ps := m.sty.pens()
+	if d.LSSDP == nil {
+		txt := "no answer"
+		if !d.LSSDPOKAt.IsZero() {
+			txt += fmt.Sprintf(" · last %s ago", fmtAgeShort(now.Sub(d.LSSDPOKAt)))
+		}
+		return ps.warn.render(txt) + ps.dim.render(fmt.Sprintf(" · probed %s ago", fmtAgeShort(now.Sub(d.LSSDPProbeAt))))
+	}
+	facts := []string{fmt.Sprintf("answered %s ago", fmtAgeShort(now.Sub(d.LSSDPOKAt)))}
+	if d.LSSDP.State != "" {
+		facts = append(facts, d.LSSDP.State)
+	}
+	if d.LSSDP.NetMode != "" {
+		facts = append(facts, strings.ToLower(d.LSSDP.NetMode))
+	}
+	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
+}
+
+// fmtAgeShort renders a duration as "0.6s" / "12s" / "3m" / "2h".
+func fmtAgeShort(d time.Duration) string {
+	switch {
+	case d < 0:
+		return "0s"
+	case d < 10*time.Second:
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	case d < 2*time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < 2*time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
 // identityFacts is the present-only identity list both diag layouts render, so
@@ -790,11 +840,14 @@ func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, f diagCardFmt)
 
 func (m *model) diagCardConnectionRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
 	ls := m.linkStatus(d.LastRx, now, d.ConnectAttempts, d.EQConnected)
-	return []string{
-		f.plain("host", m.hostReadout(d.DevInfo), m.sty.sTxt),
+	rows := []string{f.plain("host", m.hostReadout(d.DevInfo), m.sty.sTxt)}
+	if lr := m.lssdpReadout(d, now); lr != "" {
+		rows = append(rows, f.styled("lssdp", lr))
+	}
+	return append(rows,
 		f.styled("ssh", m.sshReadout(ls, d.ConnectAttempts)),
 		f.styled("tunnel", m.tunnelReadout(ls)),
-	}
+	)
 }
 
 func (m *model) diagCardSignalRow(d protocol.DiagnosticSnapshot, f diagCardFmt) (string, bool) {

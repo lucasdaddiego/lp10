@@ -446,6 +446,17 @@ func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 			// disconnected: a calm reason under "connecting…", not a red bottom line
 			out = append(out, ps.dmr.render(Clip(friendlyError(s.Error), w)))
 		}
+		if !s.Connected {
+			// The LSSDP probe needs neither ssh nor the tunnel, so it can say
+			// which kind of "connecting…" this is: a box that answers on the
+			// LAN but won't take the ssh (its lockout, or a password problem),
+			// or one that isn't there at all.
+			if s.LSSDPAlive && time.Since(s.LSSDPAt) < lssdpFresh {
+				out = append(out, ps.dmr.render(Clip("device is up on the LAN · ssh not accepting yet", w)))
+			} else if !s.LSSDPProbeAt.IsZero() {
+				out = append(out, ps.dmr.render(Clip("device not answering on the LAN", w)))
+			}
+		}
 		return out
 	}
 	name := cmp.Or(t.TrackName, "—")

@@ -37,12 +37,18 @@ const discoverTimeout = 1 * time.Second
 
 const usage = "lp10: takes no arguments — run `lp10` for the live TUI"
 
-// resolveDevice applies best-effort mDNS discovery to cfg, so a changed DHCP
-// lease never needs a config edit: find the LP10 on the LAN (via find — the
-// injectable discovery.FindLP10) and use its current address. Pinning the host
-// (LP10_HOST) or `discover = false` skips it; the configured host is the
-// fallback when nothing answers, so startup never blocks on a missing device.
-func resolveDevice(cfg config.Config, find func(string, time.Duration) (discovery.Device, bool)) config.Config {
+// finder is the injectable signature of discovery.FindLP10 / FindLP10LSSDP.
+type finder func(string, time.Duration) (discovery.Device, bool)
+
+// resolveDevice applies best-effort discovery to cfg, so a changed DHCP lease
+// never needs a config edit: find the LP10 on the LAN and use its current
+// address. find is the mDNS search (discovery.FindLP10); when it comes back
+// empty, fallback (discovery.FindLP10LSSDP, the device's own UDP:1800
+// responder — which answers even while its AirPlay daemon or sshd don't) gets
+// one more window. Pinning the host (LP10_HOST) or `discover = false` skips
+// both; the configured host is the fallback when nothing answers, so startup
+// never blocks on a missing device.
+func resolveDevice(cfg config.Config, find, fallback finder) config.Config {
 	if !cfg.Discover || os.Getenv(config.HostEnv) != "" {
 		return cfg
 	}
@@ -54,7 +60,11 @@ func resolveDevice(cfg config.Config, find func(string, time.Duration) (discover
 	if cfg.Name != config.DefaultName {
 		hint = cfg.Name
 	}
-	if dev, ok := find(hint, discoverTimeout); ok {
+	dev, ok := find(hint, discoverTimeout)
+	if !ok && fallback != nil {
+		dev, ok = fallback(hint, discoverTimeout)
+	}
+	if ok {
 		// Addr() can fall back to the raw SRV target when no A record arrived,
 		// which is as attacker-controllable as the label below — strip it the
 		// same way (it reaches the diag overlay's host readout).
@@ -84,7 +94,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	cfg := resolveDevice(config.Load(), discovery.FindLP10)
+	cfg := resolveDevice(config.Load(), discovery.FindLP10, discovery.FindLP10LSSDP)
 
 	// tui.Run handles SIGTERM/SIGHUP and Ctrl-C cooperatively and returns the
 	// exit code (0 clean, 130 interrupt, 143 signal) after running teardown and

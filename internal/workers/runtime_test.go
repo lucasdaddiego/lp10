@@ -12,6 +12,7 @@ import (
 func TestRuntimeCloseStopsAndJoinsWorkers(t *testing.T) {
 	t.Setenv("LP10_SSH", filepath.Join(t.TempDir(), "missing-ssh"))
 	t.Setenv("LP10_TUNNEL_ADDR", "127.0.0.1:0")
+	t.Setenv("LP10_LSSDP_HOST", "")
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
 
 	st := protocol.NewState()

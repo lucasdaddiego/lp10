@@ -85,6 +85,12 @@ type State struct {
 	softvolOK    bool
 	levelBadRuns int
 
+	// LSSDP liveness: the device's UDP:1800 answer as last probed (nil when the
+	// last probe went unanswered), and when a probe last ran / last succeeded.
+	lssdp        *LSSDPInfo
+	lssdpProbeAt time.Time
+	lssdpOKAt    time.Time
+
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
 	// distinguish "off" from "never reported".
@@ -111,6 +117,12 @@ func NewState() *State {
 	}
 }
 
+// LSSDPInfo is the device's UDP:1800 self-description (see discovery.ProbeLSSDP);
+// the strings are control-stripped on the way in.
+type LSSDPInfo struct {
+	Name, FW, State, NetMode string
+}
+
 // Snapshot is an immutable view of State for rendering.
 type Snapshot struct {
 	Connected bool
@@ -135,6 +147,13 @@ type Snapshot struct {
 	// Night is the device's multi-band DRC enable (night mode) as last read
 	// back; NightKnown is false until the device has reported it.
 	Night, NightKnown bool
+
+	// LSSDPAlive is true when the device's UDP:1800 responder answered the
+	// most recent probe — the box is up even if the ssh stream isn't; LSSDPAt
+	// is when that last answer arrived (zero: never this process).
+	LSSDPAlive   bool
+	LSSDPAt      time.Time
+	LSSDPProbeAt time.Time // when a probe last ran (zero: none yet)
 
 	// LastArt is the most-recently-decoded cover and the URL it came from,
 	// retained across idle so the idle screen can show a dimmed "ghost" of the
@@ -208,7 +227,30 @@ func (st *State) snapLocked(now time.Time) Snapshot {
 		LastCoverURL: st.artURL,
 		Night:        st.night,
 		NightKnown:   st.nightKnown,
+		LSSDPAlive:   st.lssdp != nil,
+		LSSDPAt:      st.lssdpOKAt,
+		LSSDPProbeAt: st.lssdpProbeAt,
 	}
+}
+
+// ---- LSSDP liveness ----
+
+// SetLSSDP records a probe result: the device's answer (control-stripped), or
+// nil for an unanswered probe.
+func (st *State) SetLSSDP(info *LSSDPInfo) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := time.Now()
+	st.lssdpProbeAt = now
+	if info == nil {
+		st.lssdp = nil
+		return
+	}
+	st.lssdp = &LSSDPInfo{
+		Name: printable(info.Name), FW: printable(info.FW),
+		State: printable(info.State), NetMode: printable(info.NetMode),
+	}
+	st.lssdpOKAt = now
 }
 
 // ---- night mode (multi-band DRC) ----
@@ -253,6 +295,11 @@ type DiagnosticSnapshot struct {
 	Softvol     int
 	SoftvolOK   bool
 	LevelDesync bool
+
+	// LSSDP is the device's last UDP:1800 answer (nil: unanswered or never
+	// probed); LSSDPProbeAt / LSSDPOKAt time the last probe and last answer.
+	LSSDP                   *LSSDPInfo
+	LSSDPProbeAt, LSSDPOKAt time.Time
 }
 
 // ---- volume / mute ----
@@ -506,6 +553,9 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		Softvol:         st.softvol,
 		SoftvolOK:       st.softvolOK,
 		LevelDesync:     st.levelBadRuns >= 2,
+		LSSDP:           st.lssdp,
+		LSSDPProbeAt:    st.lssdpProbeAt,
+		LSSDPOKAt:       st.lssdpOKAt,
 	}
 }
 

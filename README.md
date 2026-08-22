@@ -75,7 +75,8 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   over two ruled columns on a wide terminal (a stacked read-out when
   narrow): device & firmware identity (down to the serial, MCU version, and BT
   address); lp10's own **connection** to the box (ssh stream freshness and the
-  `:2018` control-tunnel state — readable even while the device is down); the
+  `:2018` control-tunnel state, and the LSSDP liveness answer — readable even
+  while the device is down); the
   active network link (Wi-Fi or ethernet, with live throughput, error/drop
   counters as session deltas, the multiroom group state, Wi-Fi **SNR**, and
   round-trip latency — average, jitter, and a spike-flagging peak — to your laptop,
@@ -93,8 +94,13 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   hardware can't provide degrades to "—".
 - **Finds the device itself** — mDNS auto-discovery at startup locates the LP10 on
   the LAN by its `am=LP10` advertisement, so a changed DHCP lease never needs a
-  config edit. Pure mDNS (no dependency, no bound port); falls back to the
-  configured host.
+  config edit; when mDNS is quiet it falls back to the device's own **LSSDP**
+  responder (an SSDP M-SEARCH on UDP 1800, answered by the LibreWireless stack
+  itself), then to the configured host. Pure UDP, no dependency, no bound port.
+  The same LSSDP probe runs while lp10 can't reach the box over ssh, so the
+  "connecting…" screen says whether the device is **up on the LAN but refusing
+  ssh** (its sshd rate-limits rapid reconnects) or not answering at all — and
+  the diagnostics overlay's connection section shows the last answer.
 - **Sleep timer** — `s` arms a "pause in N minutes" countdown (15 → 30 → 45 →
   60 → 90 min, one step per press; `S` cancels), shown beside the clock. It lives
   entirely in lp10 — at the deadline it sends the same pause the space bar does —

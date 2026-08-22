@@ -25,7 +25,7 @@ func TestResolveDevice(t *testing.T) {
 		gotHint = hint
 		return living, true
 	}
-	cfg := resolveDevice(base, found)
+	cfg := resolveDevice(base, found, nil)
 	if gotHint != "" {
 		t.Errorf("default name should discover unhinted, got hint %q", gotHint)
 	}
@@ -36,7 +36,7 @@ func TestResolveDevice(t *testing.T) {
 	// A custom name IS the hint, and stays the label even after a find.
 	custom := base
 	custom.Name = "Bedroom"
-	cfg = resolveDevice(custom, found)
+	cfg = resolveDevice(custom, found, nil)
 	if gotHint != "Bedroom" {
 		t.Errorf("custom name should hint discovery, got %q", gotHint)
 	}
@@ -46,7 +46,7 @@ func TestResolveDevice(t *testing.T) {
 
 	// Nothing found: the configured host stays the fallback, untouched.
 	notFound := func(string, time.Duration) (discovery.Device, bool) { return discovery.Device{}, false }
-	if cfg = resolveDevice(base, notFound); cfg.Host != "lp10.local" || cfg.Discovered || cfg.Name != config.DefaultName {
+	if cfg = resolveDevice(base, notFound, nil); cfg.Host != "lp10.local" || cfg.Discovered || cfg.Name != config.DefaultName {
 		t.Errorf("a miss must leave cfg untouched: %+v", cfg)
 	}
 
@@ -56,11 +56,11 @@ func TestResolveDevice(t *testing.T) {
 		return discovery.Device{}, false
 	}
 	t.Setenv(config.HostEnv, "10.0.0.9")
-	resolveDevice(base, probed)
+	resolveDevice(base, probed, nil)
 	t.Setenv(config.HostEnv, "")
 	off := base
 	off.Discover = false
-	resolveDevice(off, probed)
+	resolveDevice(off, probed, nil)
 
 	// A hostile advertised name carrying escape bytes is control-stripped before
 	// it composes the header label (mDNS labels are attacker-controllable). The
@@ -69,7 +69,7 @@ func TestResolveDevice(t *testing.T) {
 	evil := func(string, time.Duration) (discovery.Device, bool) {
 		return discovery.Device{Name: "Den\x1b]8;;http://evil\x07x", Model: "LP10", IP: net.IPv4(192, 168, 1, 41)}, true
 	}
-	if cfg = resolveDevice(base, evil); cfg.Name != "LP10 · Den]8;;http://evilx" {
+	if cfg = resolveDevice(base, evil, nil); cfg.Name != "LP10 · Den]8;;http://evilx" {
 		t.Errorf("device name must strip the ESC/BEL, got %q", cfg.Name)
 	}
 
@@ -79,7 +79,34 @@ func TestResolveDevice(t *testing.T) {
 	evilHost := func(string, time.Duration) (discovery.Device, bool) {
 		return discovery.Device{Name: "Den", Model: "LP10", Host: "own\x1b]0;x\x07ed.local."}, true
 	}
-	if cfg = resolveDevice(base, evilHost); cfg.Host != "own]0;xed.local" {
+	if cfg = resolveDevice(base, evilHost, nil); cfg.Host != "own]0;xed.local" {
 		t.Errorf("discovered host must strip the ESC/BEL, got %q", cfg.Host)
+	}
+}
+
+// The LSSDP fallback runs only when mDNS came back empty, and its answer is
+// used exactly like an mDNS one; a hit on mDNS never consults it.
+func TestResolveDeviceLSSDPFallback(t *testing.T) {
+	t.Setenv(config.HostEnv, "")
+	base := config.Config{Host: "lp10.local", Name: config.DefaultName, Discover: true}
+	notFound := func(string, time.Duration) (discovery.Device, bool) { return discovery.Device{}, false }
+	calls := 0
+	viaLSSDP := func(string, time.Duration) (discovery.Device, bool) {
+		calls++
+		return discovery.Device{Name: "Living", IP: net.IPv4(192, 168, 0, 13)}, true
+	}
+	cfg := resolveDevice(base, notFound, viaLSSDP)
+	if cfg.Host != "192.168.0.13" || !cfg.Discovered || cfg.Name != "LP10 · Living" || calls != 1 {
+		t.Errorf("fallback result = %+v (calls %d)", cfg, calls)
+	}
+	viaMDNS := func(string, time.Duration) (discovery.Device, bool) {
+		return discovery.Device{Name: "Den", IP: net.IPv4(10, 0, 0, 2)}, true
+	}
+	calls = 0
+	if cfg := resolveDevice(base, viaMDNS, viaLSSDP); cfg.Host != "10.0.0.2" || calls != 0 {
+		t.Errorf("mDNS hit must not consult LSSDP: %+v (calls %d)", cfg, calls)
+	}
+	if cfg := resolveDevice(base, notFound, notFound); cfg.Host != "lp10.local" || cfg.Discovered {
+		t.Errorf("both empty: configured host stays: %+v", cfg)
 	}
 }
