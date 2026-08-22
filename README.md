@@ -252,8 +252,8 @@ stacked column when narrow):
 ┃    line in   3.5 mm aux · ADC unidentified (WM8904 declare… ─ services ────────────────────────────────────────────  ┃
 ┃    line out  3.5 mm · 1 Vrms (no power amp)                   on  ● AirPlay 2 ● Bluetooth ● DLNA / UPnP ● Spotify    ┃
 ┃    optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz                  off ○ Google Cast ○ Qobuz ○ Tidal ○ USB playback       ┃
-┃    radio     dual-band 802.11ac · BT 5.0                      env-gated · toggle in the Arylic app                   ┃
-┃    soc       Amlogic A113L · 2× Cortex-A35                                                                           ┃
+┃    radio     dual-band 802.11ac · BT 5.0                      open ● telnet :23 ● adb :5555 ● web :80 ● control :2018┃
+┃    soc       Amlogic A113L · 2× Cortex-A35                    env-gated · toggle in the Arylic app                   ┃
 ┃                                                                                                                      ┃
 ┃  live · any key returns to the dashboard                                                  ● good   ● warn   ● fault  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -285,8 +285,12 @@ alphabetical by label too, so any reading is a lookup, never a hunt. A section w
 nothing to report is skipped, and the column split re-balances around what's left.
 
 The **services** matrix is read live from the device (a one-shot read at connect): a
-`pidof` for the running daemons (Spotify / AirPlay / DLNA / Bluetooth) and a `getenv`
-for the marketed-but-disabled features (Cast / Tidal / Qobuz / USB). Capabilities the
+`pidof` for the running daemons (Spotify / AirPlay / DLNA / Bluetooth), a `getenv`
+for the marketed-but-disabled features (Cast / Tidal / Qobuz / USB), and a scan of
+`/proc/net/tcp` for the **open** group — the unauthenticated listeners anyone on the
+LAN can reach: **telnet :23** and **adb :5555** (a root shell, shown in the warn
+colour) and the vendor's own web page :80 and control tunnel :2018 (by design, dim).
+lp10 only reports them; closing telnet/adb is a device-side change. Capabilities the
 LP10 doesn't actually offer — Roon / Alexa / Matter, LibreWireless firmware baggage
 that's never on the spec sheet — are not shown; toggle the rest in the device's own
 setup (the Arylic / 4STREAM app), not here.

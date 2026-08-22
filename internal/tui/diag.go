@@ -1119,6 +1119,7 @@ func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 	}
 	rows := m.flowGroup("on", on, w)
 	rows = append(rows, m.flowGroup("off", off, w)...)
+	rows = append(rows, m.flowGroup("open", m.exposedItems(cv), w)...)
 	rows = append(rows, m.sty.pens().dmr.render("env-gated · toggle in the Arylic app"))
 	// Budget every row to w (visible cols) — after the wrap this only bites on a
 	// single item wider than the whole column, or the note at a tiny width.
@@ -1126,6 +1127,41 @@ func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 		rows[i] = clipStyled(r, w)
 	}
 	return rows
+}
+
+// confExposed are the unauthenticated listeners the loop checks (key = the
+// @@c id), with the port and whether reaching it is a security concern —
+// telnet and adb hand out a root shell to anyone on the LAN; the web config
+// page and the :2018 control tunnel are the vendor's design (no credentials
+// either, but they're what the app uses).
+var confExposed = []struct {
+	id, label string
+	risky     bool
+}{
+	{"telnet", "telnet :23", true},
+	{"adb", "adb :5555", true},
+	{"web", "web :80", false},
+	{"control", "control :2018", false},
+}
+
+// exposedItems renders the listening unauthenticated ports for the "open"
+// group: risky ones in the warn colour, the by-design ones dim. Nothing is
+// listed for a loop that didn't report them (older loop / unreadable
+// /proc/net/tcp), so the group row disappears rather than claiming "closed".
+func (m *model) exposedItems(cv *protocol.ConfInfo) []string {
+	ps := m.sty.pens()
+	var items []string
+	for _, e := range confExposed {
+		if cv.Svc[e.id] != "on" {
+			continue
+		}
+		if e.risky {
+			items = append(items, ps.warn.render("●")+" "+ps.warn.render(e.label))
+		} else {
+			items = append(items, ps.dmr.render("●")+" "+ps.dim.render(e.label))
+		}
+	}
+	return items
 }
 
 // flowGroup flows one service group into rows at most w wide, separated by

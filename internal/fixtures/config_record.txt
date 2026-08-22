@@ -7,4 +7,8 @@ cast=off
 tidal=off
 qobuz=off
 usb=off
+telnet=on
+adb=on
+web=on
+control=on
 @@E

@@ -330,19 +330,31 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 // pr() keys off a running daemon (pidof), gv() off an env flag (getenv); both print
 // "key=value" directly — one exec per service, no capturing subshell.
 func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
-	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pr() { if pidof "$2" >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi; }; echo @@c; pr spotify newspotifyhifi; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; gv cast GoogleCast; gv tidal TidalEnabled; gv qobuz QobuzConnectEnabled; gv usb USBEnable; echo @@E`
+	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pr() { if pidof "$2" >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi; }; lp() { xtl=off; xad=off; xwb=off; xct=off; for f in /proc/net/tcp /proc/net/tcp6; do while read -r sl la ra stt rest; do [ "$stt" = 0A ] || continue; case "${la##*:}" in 0017) xtl=on;; 15B3) xad=on;; 0050) xwb=on;; 07E2) xct=on;; esac; done 2>/dev/null < $f; done; echo "telnet=$xtl"; echo "adb=$xad"; echo "web=$xwb"; echo "control=$xct"; }; echo @@c; pr spotify newspotifyhifi; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; gv cast GoogleCast; gv tidal TidalEnabled; gv qobuz QobuzConnectEnabled; gv usb USBEnable; lp; echo @@E`
 	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
 		t.Fatal("capability-probe snippet not found verbatim in the loop")
 	}
 	// Stub the device binaries: spotify + bluetooth daemons running; getenv reports
 	// GoogleCast on (=1), Tidal off (=0), Qobuz unknown (empty -> ""), USB off.
+	// The listener scan reads fake /proc/net/tcp{,6} files (the snippet's paths
+	// are rewritten to a temp dir): telnet LISTENs on v4, the web page on v6, a
+	// :2018 socket that is ESTABLISHED (01) must not count, adb absent.
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "tcp"), []byte(
+		"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"+
+			"   0: 00000000:0017 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1234 1 0 100 0 0 10 0\n"+
+			"   1: 0D00A8C0:07E2 1500A8C0:C3A1 01 00000000:00000000 00:00000000 00000000     0        0 1235 1 0 20 4 30 10 -1\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "tcp6"), []byte(
+		"  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"+
+			"   0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1236 1 0 100 0 0 10 0\n"), 0o644)
+	local := strings.NewReplacer("/proc/net/tcp6", filepath.Join(dir, "tcp6"), "/proc/net/tcp", filepath.Join(dir, "tcp")).Replace(snip)
 	const stub = `pidof() { case "$1" in newspotifyhifi|bluetoothd) return 0;; *) return 1;; esac; }; ` +
 		`getenv() { case "$1" in GoogleCast) echo 1;; TidalEnabled) echo 0;; USBEnable) echo off;; esac; }; `
-	out, err := exec.Command("sh", "-c", stub+snip).Output()
+	out, err := exec.Command("sh", "-c", stub+local).Output()
 	if err != nil {
 		t.Fatalf("sh: %v", err)
 	}
-	const want = "@@c\nspotify=on\nairplay=off\ndlna=off\nbt=on\ncast=on\ntidal=off\nqobuz=\nusb=off\n@@E\n"
+	const want = "@@c\nspotify=on\nairplay=off\ndlna=off\nbt=on\ncast=on\ntidal=off\nqobuz=\nusb=off\ntelnet=on\nadb=off\nweb=on\ncontrol=off\n@@E\n"
 	if string(out) != want {
 		t.Errorf("capability probe output:\n%q\nwant:\n%q", string(out), want)
 	}

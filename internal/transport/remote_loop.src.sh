@@ -125,6 +125,20 @@ gv() {
 pr() {
   if pidof "$2" >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi;
 };
+# lp() scans /proc/net/tcp{,6} for LISTEN (state 0A) sockets on the ports the
+# box exposes without auth — telnet :23 (0017), adb :5555 (15B3), the web config
+# :80 (0050) and the :2018 control tunnel (07E2) — so the diagnostics can say
+# what the LAN can reach. Read once at connect, like the rest of @@c.
+lp() {
+  xtl=off; xad=off; xwb=off; xct=off;
+  for f in /proc/net/tcp /proc/net/tcp6; do
+    while read -r sl la ra stt rest; do
+      [ "$stt" = 0A ] || continue;
+      case "${la##*:}" in 0017) xtl=on;; 15B3) xad=on;; 0050) xwb=on;; 07E2) xct=on;; esac;
+    done 2>/dev/null < $f;
+  done;
+  echo "telnet=$xtl"; echo "adb=$xad"; echo "web=$xwb"; echo "control=$xct";
+};
 echo @@c;
 pr spotify newspotifyhifi;
 pr airplay airplaydemo;
@@ -134,6 +148,7 @@ gv cast GoogleCast;
 gv tidal TidalEnabled;
 gv qobuz QobuzConnectEnabled;
 gv usb USBEnable;
+lp;
 echo @@E;
 
 # ── @@d device details (reg 92 JSON: serial / MACs / MCU + full fw version) and

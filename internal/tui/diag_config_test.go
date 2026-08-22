@@ -210,3 +210,46 @@ func TestDiagServicesUnknownBeforeData(t *testing.T) {
 		t.Error("no capability strip should render before @@c arrives")
 	}
 }
+
+// The services section lists the unauthenticated listeners the loop found:
+// telnet / adb in the warn colour (a root shell for the LAN), the vendor's web
+// page and control tunnel dim. A loop that didn't report them shows no group.
+func TestServicesOpenPortsRow(t *testing.T) {
+	m, st, _ := modelWith(protocol.NewState())
+	m.sty = newTheme()
+	applyFixtureRecords(st, "config_record.txt")
+	rows := stripANSI(strings.Join(m.serviceStrip(120), "\n"))
+	for _, want := range []string{"open", "telnet :23", "adb :5555", "web :80", "control :2018"} {
+		if !strings.Contains(rows, want) {
+			t.Errorf("services rows lack %q:\n%s", want, rows)
+		}
+	}
+	// risky vs by-design items are styled differently
+	styled := strings.Join(m.serviceStrip(120), "\n")
+	i, j := strings.Index(styled, "telnet"), strings.Index(styled, "web :80")
+	if i < 0 || j < 0 || styled[max(i-12, 0):i] == styled[max(j-12, 0):j] {
+		t.Errorf("telnet should carry the warn pen, web the dim one:\n%s", styled)
+	}
+	// narrow column: the group wraps, never overflows
+	for _, r := range m.serviceStrip(30) {
+		if w := visWidth(r); w > 30 {
+			t.Errorf("row %q width %d > 30", stripANSI(r), w)
+		}
+	}
+	// only the listening ones appear; none -> no "open" row at all
+	st2 := protocol.NewState()
+	protocol.ApplyRecord(st2, protocol.Record{"c": {"spotify=on", "telnet=off", "adb=off", "web=on", "control=off"}})
+	m2, _, _ := modelWith(st2)
+	m2.sty = newTheme()
+	rows2 := stripANSI(strings.Join(m2.serviceStrip(120), "\n"))
+	if strings.Contains(rows2, "telnet") || !strings.Contains(rows2, "web :80") {
+		t.Errorf("partial exposure rows wrong:\n%s", rows2)
+	}
+	st3 := protocol.NewState()
+	protocol.ApplyRecord(st3, protocol.Record{"c": {"spotify=on"}})
+	m3, _, _ := modelWith(st3)
+	m3.sty = newTheme()
+	if rows3 := stripANSI(strings.Join(m3.serviceStrip(120), "\n")); strings.Contains(rows3, "open") {
+		t.Errorf("a loop that reported no listeners must not show an open group:\n%s", rows3)
+	}
+}

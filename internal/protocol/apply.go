@@ -114,6 +114,8 @@ type DevInfo struct {
 var confKeys = map[string]bool{
 	"spotify": true, "airplay": true, "dlna": true, "bt": true,
 	"cast": true, "tidal": true, "qobuz": true, "usb": true,
+	// unauthenticated listeners the LAN can reach (the loop's lp())
+	"telnet": true, "adb": true, "web": true, "control": true,
 }
 
 // ConfInfo holds the device's streaming-capability state from the one-shot @@c
