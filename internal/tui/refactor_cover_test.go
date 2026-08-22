@@ -21,7 +21,7 @@ func TestFooterRowMaxVolHint(t *testing.T) {
 	if !strings.Contains(got, "caps remote & Spotify volume") {
 		t.Errorf("Max Vol footer hint = %q, want the output-cap warning", got)
 	}
-	m.eqFocus = 0 // any other band: the generic pick/adjust hint
+	m.eqFocus = 2 // a tone band: the generic pick/adjust hint
 	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "pick") {
 		t.Errorf("non-MXV footer hint = %q, want the generic EQ hint", got)
 	}

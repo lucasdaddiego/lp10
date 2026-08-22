@@ -44,7 +44,7 @@ func TestDiagShowsServicesAndHardware(t *testing.T) {
 	for _, want := range []string{
 		"─ services", "─ hardware",
 		"Spotify", "Bluetooth", "Google Cast", "USB playback",
-		"Amlogic A113L", "WM8904 declared, absent", "no power amp", // hardware facts (the teardown + live probe)
+		"Amlogic A113L", "BP10xx", "no power amp", // hardware facts (the teardown + live probe)
 		"env-gated · toggle in the Arylic app",
 	} {
 		if !strings.Contains(flat, want) {

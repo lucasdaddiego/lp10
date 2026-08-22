@@ -14,14 +14,35 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
-// eqOrder maps EQ-strip display position -> index into tunnel.Specs, so the
-// graphic equalizer reads EQ · Treble · Mid · Bass · Sub · Lvl · Max Vol while the
-// wire-level Specs order is unchanged. Max Vol (the rarely-touched output cap) sits
-// last.
-var eqOrder = []int{1, 4, 3, 2, 5, 6, 0}
+// eqDisplay is the equalizer's row order by wire code: the EQ enable and the
+// preset it applies first (they belong together — the preset colours the sound
+// only while EQ is on), then the always-live tone, deep bass, balance, and the
+// rarely-touched output cap last.
+var eqDisplay = []string{"EQE", "EQS", "TRE", "MID", "BAS", "VBS", "VBI", "BAL", "MXV"}
 
-// eqShort is the compact band label per wire code.
-var eqShort = map[string]string{"MXV": "Max Vol", "EQS": "EQ", "TRE": "Treble", "MID": "Mid", "BAS": "Bass", "VBS": "Sub", "VBI": "Lvl"}
+// eqOrder maps EQ-strip display position -> index into tunnel.Specs (derived
+// from eqDisplay so the wire-level Specs order can change freely).
+var eqOrder = func() []int {
+	idx := make(map[string]int, len(tunnel.Specs))
+	for i, sp := range tunnel.Specs {
+		idx[sp.Code] = i
+	}
+	out := make([]int, len(eqDisplay))
+	for d, code := range eqDisplay {
+		i, ok := idx[code]
+		if !ok {
+			panic("eqDisplay names an unknown tunnel code: " + code)
+		}
+		out[d] = i
+	}
+	return out
+}()
+
+// eqShort is the compact band label per wire code (≤ sliderLabelW-1 cells).
+var eqShort = map[string]string{
+	"MXV": "Max Vol", "EQE": "EQ", "EQS": "Preset", "TRE": "Treble", "MID": "Mid",
+	"BAS": "Bass", "VBS": "Sub", "VBI": "Lvl", "BAL": "Balance",
+}
 
 // sliderLabelW / sliderValW are the fixed-width columns of the eqSliders rows:
 // the band label on the left, the right-aligned value on the right, the track
@@ -58,26 +79,70 @@ func (m *model) eqAdjust(dir int) {
 	case step < 0 && target > cur:
 		target = sp.Min
 	}
-	m.sendEQ(sp.Code, tunnel.Clamp(sp.Code, target))
+	target = tunnel.Clamp(sp.Code, target)
+	if sp.Kind == tunnel.Choice {
+		// The preset index stops at the last NAMED preset once the device has
+		// listed them (PEQ); before that the spec bound applies.
+		if n := len(m.st.EQPresets()); n > 0 {
+			target = max(0, min(n-1, target))
+		}
+	}
+	m.sendEQ(sp.Code, target)
 }
 
-// eqToggleFocused flips a focused on/off control (no-op on ranged controls; an
-// unknown toggle re-queries instead, like eqAdjust).
+// eqToggleFocused flips a focused on/off control, or steps a choice control
+// to its next option (wrapping). No-op on ranged controls; an unknown value
+// re-queries instead, like eqAdjust.
 func (m *model) eqToggleFocused() {
 	sp := m.eqSpec()
-	if sp.Kind != tunnel.Toggle {
-		return
-	}
 	cur, known := m.st.EQValue(sp.Code)
-	if !known {
-		m.queryEQ(sp.Code)
-		return
+	switch sp.Kind {
+	case tunnel.Toggle:
+		if !known {
+			m.queryEQ(sp.Code)
+			return
+		}
+		v := 0
+		if cur == 0 {
+			v = 1
+		}
+		m.sendEQ(sp.Code, v)
+	case tunnel.Choice:
+		if !known {
+			m.queryEQ(sp.Code)
+			return
+		}
+		hi := sp.Max
+		if n := len(m.st.EQPresets()); n > 0 {
+			hi = n - 1
+		}
+		next := cur + 1
+		if next > hi || next < 0 {
+			next = 0
+		}
+		m.sendEQ(sp.Code, next)
 	}
-	v := 0
-	if cur == 0 {
-		v = 1
+}
+
+// presetName is the display name for an EQS index: the device's PEQ label, or
+// "preset N" when the list hasn't arrived or the index is past it.
+func presetName(names []string, idx int) string {
+	if idx >= 0 && idx < len(names) && names[idx] != "" {
+		return names[idx]
 	}
-	m.sendEQ(sp.Code, v)
+	return "preset " + strconv.Itoa(idx)
+}
+
+// balStr formats the balance: "0" centred, "L20" / "R20" for the favoured side
+// (the wire sign is positive-right).
+func balStr(v int) string {
+	switch {
+	case v < 0:
+		return "L" + strconv.Itoa(-v)
+	case v > 0:
+		return "R" + strconv.Itoa(v)
+	}
+	return "0"
 }
 
 // queryEQ asks the device to re-broadcast one control's value (no local write,
@@ -138,6 +203,48 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 		return labelCell + content + spaces(pad)
 	}
 
+	if spec.Kind == tunnel.Choice {
+		// A selector: every named option in a row, the current one lit. The
+		// whole list is clipped to the row, never wrapped; the current name is
+		// always drawn first-class when it fits (the device names six).
+		names := m.st.EQPresets()
+		roomW := trackW + sliderValW
+		var parts []string
+		used := 0
+		cur := -1
+		if known {
+			cur = v
+		}
+		n := max(len(names), cur+1)
+		for i := range n {
+			txt := presetName(names, i)
+			segW := DispW(txt)
+			if i > 0 {
+				segW += 3
+			}
+			if used+segW > roomW {
+				break
+			}
+			if i > 0 {
+				parts = append(parts, ps.dmr.render(" · "))
+			}
+			switch {
+			case i == cur && focused:
+				parts = append(parts, ps.accB.render(txt))
+			case i == cur:
+				parts = append(parts, ps.acc.render(txt))
+			default:
+				parts = append(parts, ps.dmr.render(txt))
+			}
+			used += segW
+		}
+		if n == 0 {
+			parts = append(parts, ps.dmr.render("—"))
+			used = 1
+		}
+		return labelCell + strings.Join(parts, "") + spaces(max(roomW-used, 0))
+	}
+
 	// Ranged: a horizontal slider ────●────
 	frac := 0.0
 	if known && spec.Max > spec.Min {
@@ -165,9 +272,12 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	// Value column: right-aligned within sliderValW cells.
 	valStr := "—"
 	if known {
-		if spec.Min < 0 {
+		switch {
+		case spec.Code == "BAL":
+			valStr = balStr(v)
+		case spec.Min < 0:
 			valStr = toneStr(v)
-		} else {
+		default:
 			valStr = strconv.Itoa(v)
 		}
 	}
@@ -179,45 +289,63 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	return labelCell + track + spaces(sliderValW-DispW(vraw)) + valPen.render(vraw)
 }
 
-// eqSummary is the compact dashboard's one-line EQ readout. It runs in eqOrder so
-// the display position matches the focus index, and — when the EQ pane has focus —
-// highlights the selected band (accent + bold + underline; the underline keeps the
-// cue legible even on a no-colour terminal), so a small screen still shows what
-// ↑↓ will pick and ←→ will change. Parts are added until W is full (width-safe).
-func (m *model) eqSummary(W int) string {
+// eqSummary is the compact dashboard's EQ readout: the controls in eqOrder
+// (so the display position matches the focus index), highlighting the focused
+// one when the EQ pane has focus (accent + bold + underline; the underline
+// keeps the cue legible on a no-colour terminal), so a small screen still
+// shows what ↑↓ will pick and ←→ will change. Nine controls don't fit one
+// narrow line, so the readout flows onto a second line (at most two — the
+// compact tail stays bounded); whatever still doesn't fit is dropped, never
+// overflowed. Every returned line is ≤ W.
+func (m *model) eqSummary(W int) []string {
 	_, vals := m.st.EQView()
+	names := m.st.EQPresets()
 	part := func(code string) string {
 		sp, _ := tunnel.Lookup(code)
 		v, known := vals[code]
 		if !known {
 			return eqShort[code] + " —"
 		}
-		if sp.Kind == tunnel.Toggle {
+		switch {
+		case sp.Kind == tunnel.Toggle:
 			st := "off"
 			if v != 0 {
 				st = "on"
 			}
 			return eqShort[code] + " " + st
-		}
-		if sp.Min < 0 {
+		case sp.Kind == tunnel.Choice:
+			return presetName(names, v) // the name alone reads fine beside "EQ on/off"
+		case code == "BAL":
+			return "Bal " + balStr(v)
+		case sp.Min < 0:
 			return string([]rune(eqShort[code])[:1]) + toneStr(v)
 		}
 		return fmt.Sprintf("%s %d", eqShort[code], v)
 	}
 	ps := m.sty.pens()
 	sep := ps.dmr.render(" · ")
+	const maxLines = 2
+	var lines []string
 	var b strings.Builder
 	used := 0
 	for d, idx := range eqOrder {
 		txt := part(tunnel.Specs[idx].Code)
 		segW := DispW(txt)
-		if d > 0 {
-			segW += 3 // the " · " separator preceding every part but the first
+		if used > 0 {
+			segW += 3 // the " · " separator preceding every part but a line's first
 		}
 		if used+segW > W {
-			break // out of room: stop cleanly rather than overflow the line
+			if len(lines)+1 >= maxLines || used == 0 {
+				break // out of lines (or a single part wider than W): stop cleanly
+			}
+			lines = append(lines, b.String())
+			b.Reset()
+			used, segW = 0, DispW(txt)
+			if segW > W {
+				break
+			}
 		}
-		if d > 0 {
+		if used > 0 {
 			b.WriteString(sep)
 		}
 		if m.pane == paneEQ && m.eqFocus == d {
@@ -229,7 +357,10 @@ func (m *model) eqSummary(W int) string {
 		}
 		used += segW
 	}
-	return b.String()
+	if used > 0 || len(lines) == 0 {
+		lines = append(lines, b.String())
+	}
+	return lines
 }
 
 // toneStr formats a signed tone value: "+3", "0", "-6" (avoids an odd "+0").

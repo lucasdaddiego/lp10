@@ -14,6 +14,7 @@ func eqModel(t *testing.T) (*model, *protocol.State, chan workers.EQCommand) {
 	t.Helper()
 	st := protocol.NewState()
 	st.ApplyTunnel("MXV", 40)
+	st.ApplyTunnel("EQE", 0)
 	st.ApplyTunnel("EQS", 0)
 	eqcmds := make(chan workers.EQCommand, 16)
 	m := newModel(st, defaultCfg(), make(chan *protocol.Command, 8), eqcmds)
@@ -24,22 +25,22 @@ func eqModel(t *testing.T) (*model, *protocol.State, chan workers.EQCommand) {
 func TestEQPaneFocusAdjustToggle(t *testing.T) {
 	m, st, eqcmds := eqModel(t)
 
-	// 'e' focuses the EQ pane; first display slot is the EQ switch (EQS, a toggle).
+	// 'e' focuses the EQ pane; first display slot is the EQ enable (EQE, a toggle).
 	m.key(kr('e'))
 	if m.pane != paneEQ || m.eqFocus != 0 {
 		t.Fatalf("after e: pane=%d focus=%d", m.pane, m.eqFocus)
 	}
-	if m.eqSpec().Code != "EQS" {
-		t.Fatalf("display slot 0 is %s, want EQS", m.eqSpec().Code)
+	if m.eqSpec().Code != "EQE" {
+		t.Fatalf("display slot 0 is %s, want EQE", m.eqSpec().Code)
 	}
 
-	// enter flips the EQ toggle 0 -> 1, optimistic + queued.
+	// enter flips the EQ enable 0 -> 1, optimistic + queued.
 	m.key(ke(kEnter))
-	if v, _ := st.EQValue("EQS"); v != 1 {
-		t.Errorf("EQS=%d want 1", v)
+	if v, _ := st.EQValue("EQE"); v != 1 {
+		t.Errorf("EQE=%d want 1", v)
 	}
-	if cmd := <-eqcmds; cmd.Code != "EQS" || cmd.Val != 1 || cmd.TS.IsZero() {
-		t.Errorf("queued cmd=%+v want {EQS 1}", cmd)
+	if cmd := <-eqcmds; cmd.Code != "EQE" || cmd.Val != 1 || cmd.TS.IsZero() {
+		t.Errorf("queued cmd=%+v want {EQE 1}", cmd)
 	}
 
 	// Max Vol (MXV) is the last display slot; right nudges its slider (+step=5): 40 -> 45.
@@ -103,7 +104,7 @@ func TestEQAdjustOverflowSaturates(t *testing.T) {
 		t.Errorf("queued val=%d want 100 (saturated at Max, not wrapped to Min)", cmd.Val)
 	}
 	st.ApplyTunnel("BAS", math.MinInt)
-	m.eqFocus = 3 // Bass
+	m.eqFocus = 4 // Bass
 	m.key(ke(kLeft))
 	if cmd := <-eqcmds; cmd.Val != -10 {
 		t.Errorf("queued val=%d want -10 (saturated at Min, not wrapped to Max)", cmd.Val)
@@ -131,8 +132,9 @@ func TestDiagCloseSwallowsRestOfBatch(t *testing.T) {
 }
 
 func TestEQDisplayOrder(t *testing.T) {
-	// EQ + tone, then deep bass, then the rarely-touched output cap (Max Vol) last.
-	want := []string{"EQS", "TRE", "MID", "BAS", "VBS", "VBI", "MXV"}
+	// EQ enable + its preset, tone, deep bass, balance, then the rarely-touched
+	// output cap (Max Vol) last.
+	want := []string{"EQE", "EQS", "TRE", "MID", "BAS", "VBS", "VBI", "BAL", "MXV"}
 	if len(eqOrder) != len(want) {
 		t.Fatalf("eqOrder len=%d want %d", len(eqOrder), len(want))
 	}
@@ -167,10 +169,12 @@ func TestEQUnknownValuesQueryNotSet(t *testing.T) {
 	m.key(kr('e'))
 	m.eqFocus = len(eqOrder) - 1 // Max Vol: slider shows "—"
 	m.key(ke(kLeft))
-	m.eqFocus = 0 // EQS toggle, also unknown
+	m.eqFocus = 0 // EQE toggle, also unknown
+	m.key(ke(kEnter))
+	m.eqFocus = 1 // EQS preset choice, also unknown
 	m.key(ke(kEnter))
 
-	for _, want := range []string{"MXV", "EQS"} {
+	for _, want := range []string{"MXV", "EQE", "EQS"} {
 		cmd := <-eqcmds
 		if !cmd.Query || cmd.Code != want || cmd.TS.IsZero() {
 			t.Errorf("queued cmd=%+v want a %s query", cmd, want)

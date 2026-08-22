@@ -235,7 +235,8 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	meta := m.metaLines(s, W)
 	content := append([]string{header, ""}, meta...)
 	content = append(content, "", m.seekRow(s, W), "", m.controlsRow(s, now, W, true))
-	tail := []string{m.dividerRow("equalizer", W), m.eqSummary(W), m.footerRow(W)}
+	tail := append([]string{m.dividerRow("equalizer", W)}, m.eqSummary(W)...)
+	tail = append(tail, m.footerRow(W))
 	if errLine != "" {
 		tail = append(tail, errLine)
 	}
@@ -820,6 +821,11 @@ func (m *model) footerRow(W int) string {
 		// The one band with a device-wide gotcha (teardown §5.3): a low output cap
 		// is why the remote / Spotify volume feels stuck near the top.
 		hint = "Max Vol caps remote & Spotify volume · ←→ adjust · q quit"
+	case m.pane == paneEQ && m.eqSpec().Code == "EQE":
+		// EQE gates only the preset: the tone sliders are always live.
+		hint = "EQ on applies the preset · tone sliders are always live · q quit"
+	case m.pane == paneEQ && m.eqSpec().Code == "EQS":
+		hint = "←→ pick a preset · enter next · heard only while EQ is on · q quit"
 	case m.pane == paneEQ:
 		hint = "↑↓ pick · ←→ adjust · enter toggle · tab player · q quit"
 	default:

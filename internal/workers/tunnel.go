@@ -245,6 +245,10 @@ func tunnelReader(st *protocol.State, conn net.Conn, done chan struct{}) {
 			}
 			carry = rest
 			for _, u := range updates {
+				if u.Names != nil {
+					st.SetEQPresets(u.Names)
+					continue
+				}
 				st.ApplyTunnel(u.Code, u.Val)
 			}
 		}

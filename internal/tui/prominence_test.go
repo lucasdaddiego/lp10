@@ -88,10 +88,10 @@ func TestMutedHeaderAndRail(t *testing.T) {
 func TestEQSummaryOrderWidthAndFocus(t *testing.T) {
 	m, st, _ := modelWith(protocol.NewState())
 	m.sty = newTheme()
-	st.PreloadEQ(map[string]int{"EQS": 0, "TRE": 0, "MID": 0, "BAS": 3, "VBS": 0, "VBI": 0, "MXV": 100})
+	st.PreloadEQ(map[string]int{"EQE": 0, "EQS": 0, "TRE": 0, "MID": 0, "BAS": 3, "VBS": 0, "VBI": 0, "BAL": 0, "MXV": 100})
 
-	// display order EQ · Treble · Mid · Bass · Sub · Lvl · Max Vol, Bass shows +3
-	plain := stripANSI(m.eqSummary(80))
+	// display order EQ · Preset · Treble · Mid · Bass · Sub · Lvl · Balance · Max Vol, Bass shows +3
+	plain := stripANSI(strings.Join(m.eqSummary(80), " "))
 	for _, want := range []string{"EQ off", "B+3", "Max Vol 100"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("eqSummary missing %q: %q", want, plain)
@@ -103,8 +103,14 @@ func TestEQSummaryOrderWidthAndFocus(t *testing.T) {
 
 	// width-safe: never exceeds the column, even when narrow
 	for _, w := range []int{80, 56, 40, 24} {
-		if got := DispW(stripANSI(m.eqSummary(w))); got > w {
-			t.Errorf("eqSummary(%d) width %d exceeds the column", w, got)
+		ls := m.eqSummary(w)
+		if len(ls) > 2 {
+			t.Errorf("eqSummary(%d) = %d lines, want ≤ 2", w, len(ls))
+		}
+		for _, l := range ls {
+			if got := DispW(stripANSI(l)); got > w {
+				t.Errorf("eqSummary(%d) width %d exceeds the column", w, got)
+			}
 		}
 	}
 
@@ -114,9 +120,9 @@ func TestEQSummaryOrderWidthAndFocus(t *testing.T) {
 	// visibly marked. The plain text is identical, so any difference is the cue.
 
 	m.pane, m.eqFocus = paneNow, 3
-	unfocused := m.eqSummary(80)
-	m.pane = paneEQ // Bass focused (eqOrder index 3)
-	focused := m.eqSummary(80)
+	unfocused := strings.Join(m.eqSummary(80), "\n")
+	m.pane = paneEQ // Mid focused (eqOrder index 3)
+	focused := strings.Join(m.eqSummary(80), "\n")
 	if focused == unfocused {
 		t.Error("the focused band should be visibly marked when the EQ pane has focus")
 	}

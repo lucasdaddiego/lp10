@@ -1077,18 +1077,19 @@ var confServices = []struct{ id, label string }{
 }
 
 // confHardware is the invariant hardware reference for the LP10 (the one model
-// this tool targets), alphabetical by label, encoding the teardown's findings: a
-// line-level streamer, no power amp, optical S/PDIF up to 24-bit/192 kHz. The
-// codec row is deliberately hedged: the firmware's device tree declares a Wolfson
-// WM8904 at I2C 0x1a and binds its driver, but on the unit nothing ACKs at that
-// address (live probe 2026-08-22) — the driver runs against a regmap cache and
-// every "WM8904" mixer control is inert, so the real DAC / line-in ADC are
-// unidentified no-control parts. The audio-chain and compute facts only — live
-// memory/link usage is the resources/network cards' job, so nothing here repeats
-// a live gauge.
+// this tool targets), alphabetical by label, encoding the teardown's findings
+// as corrected by the 2026-08-22 live probes: a line-level streamer, no power
+// amp, optical S/PDIF up to 24-bit/192 kHz. The DAC is the front-panel MCU
+// itself — an MVSilicon BP10xx Bluetooth-audio SoC running in I2S-in mode,
+// which also hosts every tone / EQ-preset / virtual-bass / balance / max-volume
+// stage (the :2018 tunnel's controls); the firmware's device tree declares a
+// Wolfson WM8904 at I2C 0x1a, but nothing answers there and its mixer
+// controls are inert. The audio-chain and compute facts only — live
+// memory/link usage is the resources/network cards' job, so nothing here
+// repeats a live gauge.
 var confHardware = []struct{ k, v string }{
-	{"codec", "DAC unidentified · WM8904 declared, absent on I2C"},
-	{"line in", "3.5 mm aux · ADC unidentified"},
+	{"dac", "MVSilicon BP10xx (the MCU) · I2S in · tone/EQ/balance on-chip"},
+	{"line in", "3.5 mm aux · ADC unidentified (WM8904 declared, absent)"},
 	{"line out", "3.5 mm · 1 Vrms (no power amp)"},
 	{"optical", "S/PDIF TOSLINK ≤ 24-bit/192 kHz"},
 	{"radio", "dual-band 802.11ac · BT 5.0"},

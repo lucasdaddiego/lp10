@@ -22,7 +22,7 @@ func TestCov_LookupKnown(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lookup(%q) ok=false, want true", "EQS")
 	}
-	wantEQS := Spec{Code: "EQS", Kind: Toggle, Min: 0, Max: 1, Step: 1}
+	wantEQS := Spec{Code: "EQS", Kind: Choice, Min: 0, Max: MaxPresets - 1, Step: 1}
 	if got != wantEQS {
 		t.Errorf("Lookup(%q)=%+v want %+v", "EQS", got, wantEQS)
 	}
@@ -54,7 +54,7 @@ func TestCov_Clamp(t *testing.T) {
 		{"below min", "MXV", -5, 0},
 		{"below min negative range", "BAS", -99, -10},
 		{"above max", "MXV", 250, 100},
-		{"above max toggle", "EQS", 7, 1},
+		{"above max toggle", "EQE", 7, 1},
 		{"in range", "VBI", 73, 73},
 		{"in range at min boundary", "BAS", -10, -10},
 		{"in range at max boundary", "BAS", 10, 10},
@@ -90,13 +90,13 @@ func TestCov_Query(t *testing.T) {
 }
 
 // TestCov_SeedQueries confirms one query per control, in Specs order, with
-// len(out) == len(Specs).
+// len(out) == len(Specs)+1 (the PEQ preset-name list rides along).
 func TestCov_SeedQueries(t *testing.T) {
 	got := SeedQueries()
-	if len(got) != len(Specs) {
-		t.Fatalf("SeedQueries len=%d want %d", len(got), len(Specs))
+	if len(got) != len(Specs)+1 {
+		t.Fatalf("SeedQueries len=%d want %d", len(got), len(Specs)+1)
 	}
-	want := []string{"MXV;", "EQS;", "BAS;", "MID;", "TRE;", "VBS;", "VBI;"}
+	want := []string{"MXV;", "EQE;", "EQS;", "BAS;", "MID;", "TRE;", "VBS;", "VBI;", "BAL;", "PEQ;"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SeedQueries=%v want %v", got, want)
 	}
@@ -105,7 +105,7 @@ func TestCov_SeedQueries(t *testing.T) {
 // TestCov_ParseFramesMultiple parses several complete frames and leaves no rest.
 func TestCov_ParseFramesMultiple(t *testing.T) {
 	out, rest := ParseFrames("MXV:100;EQS:0;BAS:-3;")
-	want := []Update{{"MXV", 100}, {"EQS", 0}, {"BAS", -3}}
+	want := []Update{{Code: "MXV", Val: 100}, {Code: "EQS", Val: 0}, {Code: "BAS", Val: -3}}
 	if !reflect.DeepEqual(out, want) {
 		t.Errorf("out=%v want %v", out, want)
 	}
@@ -118,7 +118,7 @@ func TestCov_ParseFramesMultiple(t *testing.T) {
 // rest, with the completed frame parsed.
 func TestCov_ParseFramesTrailingPartial(t *testing.T) {
 	out, rest := ParseFrames("MXV:100;BAS:7")
-	want := []Update{{"MXV", 100}}
+	want := []Update{{Code: "MXV", Val: 100}}
 	if !reflect.DeepEqual(out, want) {
 		t.Errorf("out=%v want %v", out, want)
 	}
@@ -130,7 +130,7 @@ func TestCov_ParseFramesTrailingPartial(t *testing.T) {
 // TestCov_ParseFramesSkipUnknown skips a frame whose code is not a known control.
 func TestCov_ParseFramesSkipUnknown(t *testing.T) {
 	out, rest := ParseFrames("XYZ:5;MXV:10;")
-	want := []Update{{"MXV", 10}}
+	want := []Update{{Code: "MXV", Val: 10}}
 	if !reflect.DeepEqual(out, want) {
 		t.Errorf("out=%v want %v", out, want)
 	}
@@ -143,7 +143,7 @@ func TestCov_ParseFramesSkipUnknown(t *testing.T) {
 // (our own query echo).
 func TestCov_ParseFramesSkipValueless(t *testing.T) {
 	out, rest := ParseFrames("MXV;MXV:10;")
-	want := []Update{{"MXV", 10}}
+	want := []Update{{Code: "MXV", Val: 10}}
 	if !reflect.DeepEqual(out, want) {
 		t.Errorf("out=%v want %v", out, want)
 	}
@@ -155,7 +155,7 @@ func TestCov_ParseFramesSkipValueless(t *testing.T) {
 // TestCov_ParseFramesSkipNonNumeric skips a frame whose value is not an integer.
 func TestCov_ParseFramesSkipNonNumeric(t *testing.T) {
 	out, rest := ParseFrames("MXV:abc;MXV:10;")
-	want := []Update{{"MXV", 10}}
+	want := []Update{{Code: "MXV", Val: 10}}
 	if !reflect.DeepEqual(out, want) {
 		t.Errorf("out=%v want %v", out, want)
 	}
@@ -168,7 +168,7 @@ func TestCov_ParseFramesSkipNonNumeric(t *testing.T) {
 // is trimmed before the numeric parse.
 func TestCov_ParseFramesTrimsWhitespace(t *testing.T) {
 	out, rest := ParseFrames("MXV:  100  ;BAS:\t-3\t;")
-	want := []Update{{"MXV", 100}, {"BAS", -3}}
+	want := []Update{{Code: "MXV", Val: 100}, {Code: "BAS", Val: -3}}
 	if !reflect.DeepEqual(out, want) {
 		t.Errorf("out=%v want %v", out, want)
 	}
@@ -193,24 +193,24 @@ func TestCov_ParseFramesEmpty(t *testing.T) {
 // (incl. whitespace trimming) and each reject path.
 func TestCov_parseFrame(t *testing.T) {
 	// happy path
-	if code, val, ok := parseFrame("MXV:100"); !ok || code != "MXV" || val != 100 {
-		t.Errorf("parseFrame(MXV:100)=(%q,%d,%v) want (MXV,100,true)", code, val, ok)
+	if u, ok := parseFrame("MXV:100"); !ok || u.Code != "MXV" || u.Val != 100 {
+		t.Errorf("parseFrame(MXV:100)=(%+v,%v) want (MXV,100,true)", u, ok)
 	}
 	// happy path with whitespace trimmed around the value
-	if code, val, ok := parseFrame("BAS:  -3 "); !ok || code != "BAS" || val != -3 {
-		t.Errorf("parseFrame(BAS:  -3 )=(%q,%d,%v) want (BAS,-3,true)", code, val, ok)
+	if u, ok := parseFrame("BAS:  -3 "); !ok || u.Code != "BAS" || u.Val != -3 {
+		t.Errorf("parseFrame(BAS:  -3 )=(%+v,%v) want (BAS,-3,true)", u, ok)
 	}
 
 	// reject: no ':' separator
-	if code, val, ok := parseFrame("MXV"); ok || code != "" || val != 0 {
-		t.Errorf("parseFrame(MXV)=(%q,%d,%v) want (\"\",0,false)", code, val, ok)
+	if u, ok := parseFrame("MXV"); ok || u.Code != "" || u.Val != 0 || u.Names != nil {
+		t.Errorf("parseFrame(MXV)=(%+v,%v) want (zero,false)", u, ok)
 	}
 	// reject: unknown code
-	if code, val, ok := parseFrame("XYZ:5"); ok || code != "" || val != 0 {
-		t.Errorf("parseFrame(XYZ:5)=(%q,%d,%v) want (\"\",0,false)", code, val, ok)
+	if u, ok := parseFrame("XYZ:5"); ok || u.Code != "" || u.Val != 0 || u.Names != nil {
+		t.Errorf("parseFrame(XYZ:5)=(%+v,%v) want (zero,false)", u, ok)
 	}
 	// reject: non-numeric value
-	if code, val, ok := parseFrame("MXV:abc"); ok || code != "" || val != 0 {
-		t.Errorf("parseFrame(MXV:abc)=(%q,%d,%v) want (\"\",0,false)", code, val, ok)
+	if u, ok := parseFrame("MXV:abc"); ok || u.Code != "" || u.Val != 0 || u.Names != nil {
+		t.Errorf("parseFrame(MXV:abc)=(%+v,%v) want (zero,false)", u, ok)
 	}
 }

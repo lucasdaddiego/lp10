@@ -6,6 +6,7 @@
 package tunnel
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,7 @@ func FuzzParseFrames(f *testing.F) {
 				len(o1), len(o2), len(out), r2, rest)
 		}
 		for i, u := range append(o1, o2...) {
-			if u != out[i] {
+			if !reflect.DeepEqual(u, out[i]) {
 				t.Fatalf("chunked update %d = %+v, whole = %+v", i, u, out[i])
 			}
 		}

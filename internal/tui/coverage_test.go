@@ -451,11 +451,11 @@ func TestCov_KeyPanes(t *testing.T) {
 	}
 	m.key(ke(kLeft))           // eqAdjust(-1)
 	m.key(ke(kRight))          // eqAdjust(+1)
-	m.eqFocus = 0              // EQS (toggle)
-	m.st.ApplyTunnel("EQS", 0) // toggling needs a known value (unknown is a no-op)
-	before, _ := m.st.EQValue("EQS")
-	m.key(ke(kEnter)) // toggle EQS
-	after, _ := m.st.EQValue("EQS")
+	m.eqFocus = 0              // EQE (toggle)
+	m.st.ApplyTunnel("EQE", 0) // toggling needs a known value (unknown is a no-op)
+	before, _ := m.st.EQValue("EQE")
+	m.key(ke(kEnter)) // toggle EQE
+	after, _ := m.st.EQValue("EQE")
 	if before == after {
 		t.Error("enter in EQ pane should toggle the focused band")
 	}
@@ -832,8 +832,9 @@ func TestCov_dividerAndMetaIdleAndFooter(t *testing.T) {
 		t.Errorf("metaLines disconnected+error = %q", joined)
 	}
 
-	// footer EQ-pane hint
+	// footer EQ-pane hint (a tone band: the generic hint)
 	m.pane = paneEQ
+	m.eqFocus = 2
 	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "pick") || !strings.Contains(got, "adjust") {
 		t.Errorf("footer EQ hint = %q", got)
 	}
@@ -847,11 +848,11 @@ func TestCov_eqSliderRow(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	m.sty = newTheme()
 	const w = 60
-	// toggle ON (EQS == Specs[1]) and OFF
-	if got := stripANSI(m.eqSliderRow(1, map[string]int{"EQS": 1}, false, w)); !strings.Contains(got, "on") {
+	// toggle ON (EQE == Specs[1]) and OFF
+	if got := stripANSI(m.eqSliderRow(1, map[string]int{"EQE": 1}, false, w)); !strings.Contains(got, "on") {
 		t.Errorf("toggle on = %q", got)
 	}
-	if got := stripANSI(m.eqSliderRow(1, map[string]int{"EQS": 0}, false, w)); !strings.Contains(got, "off") {
+	if got := stripANSI(m.eqSliderRow(1, map[string]int{"EQE": 0}, false, w)); !strings.Contains(got, "off") {
 		t.Errorf("toggle off = %q", got)
 	}
 	// ranged unknown value -> "—"
@@ -859,30 +860,30 @@ func TestCov_eqSliderRow(t *testing.T) {
 		t.Errorf("ranged unknown = %q", got)
 	}
 	// ranged tone +/- and a non-negative-min ranged (MXV) accent knob, focused
-	if got := stripANSI(m.eqSliderRow(2, map[string]int{"BAS": 5}, true, w)); !strings.Contains(got, "+5") {
+	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": 5}, true, w)); !strings.Contains(got, "+5") {
 		t.Errorf("ranged +5 = %q", got)
 	}
-	if got := stripANSI(m.eqSliderRow(2, map[string]int{"BAS": -5}, true, w)); !strings.Contains(got, "-5") {
+	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": -5}, true, w)); !strings.Contains(got, "-5") {
 		t.Errorf("ranged -5 = %q", got)
 	}
 	if got := stripANSI(m.eqSliderRow(0, map[string]int{"MXV": 50}, true, w)); !strings.Contains(got, "50") {
 		t.Errorf("ranged MXV = %q", got)
 	}
 	// trackW < 1 (very narrow) still renders without panicking
-	_ = m.eqSliderRow(2, map[string]int{"BAS": 0}, false, 5)
+	_ = m.eqSliderRow(3, map[string]int{"BAS": 0}, false, 5)
 
 	// an out-of-range device echo drives the knob position past the track ends,
 	// exercising the defensive knobPos clamps (above the max, then below the min)
-	if got := stripANSI(m.eqSliderRow(2, map[string]int{"BAS": 1000}, false, w)); DispW(got) != w {
+	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": 1000}, false, w)); DispW(got) != w {
 		t.Errorf("over-range knob row width = %d, want %d", DispW(got), w)
 	}
-	if got := stripANSI(m.eqSliderRow(2, map[string]int{"BAS": -1000}, false, w)); DispW(got) != w {
+	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": -1000}, false, w)); DispW(got) != w {
 		t.Errorf("under-range knob row width = %d, want %d", DispW(got), w)
 	}
 
 	// the warm (boost) and cool (cut) focused knobs emit different styling
-	warm := m.eqSliderRow(2, map[string]int{"BAS": 5}, true, w)
-	cool := m.eqSliderRow(2, map[string]int{"BAS": -5}, true, w)
+	warm := m.eqSliderRow(3, map[string]int{"BAS": 5}, true, w)
+	cool := m.eqSliderRow(3, map[string]int{"BAS": -5}, true, w)
 	if warm == cool {
 		t.Error("a boosted (warm) and cut (cool) knob should differ in styling")
 	}
@@ -1230,15 +1231,15 @@ func TestCov_eqSummaryArms(t *testing.T) {
 	// unknown values -> "code —" parts
 	mu, _, _ := modelWith(protocol.NewState())
 	mu.sty = newTheme()
-	if got := stripANSI(mu.eqSummary(120)); !strings.Contains(got, "—") {
+	if got := stripANSI(strings.Join(mu.eqSummary(120), " ")); !strings.Contains(got, "—") {
 		t.Errorf("eqSummary unknown = %q", got)
 	}
 	// a toggle that's on -> "on"
 	on := protocol.NewState()
-	on.PreloadEQ(map[string]int{"EQS": 1})
+	on.PreloadEQ(map[string]int{"EQE": 1})
 	mo, _, _ := modelWith(on)
 	mo.sty = newTheme()
-	if got := stripANSI(mo.eqSummary(120)); !strings.Contains(got, "EQ on") {
+	if got := stripANSI(strings.Join(mo.eqSummary(120), " ")); !strings.Contains(got, "EQ on") {
 		t.Errorf("eqSummary toggle-on = %q", got)
 	}
 }

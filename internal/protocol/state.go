@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"maps"
 	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -74,6 +75,7 @@ type State struct {
 	eqConnected bool
 	eqVals      map[string]int       // wire code -> last-known value
 	eqHold      map[string]time.Time // wire code -> echo-suppression deadline
+	eqPresets   []string             // EQ preset names by EQS index (the PEQ list), nil until read
 
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
@@ -338,6 +340,20 @@ func (st *State) PreloadEQ(vals map[string]int) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	maps.Copy(st.eqVals, vals)
+}
+
+// SetEQPresets records the device's EQ preset names by index (its PEQ list).
+func (st *State) SetEQPresets(names []string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.eqPresets = slices.Clone(names)
+}
+
+// EQPresets returns the preset names by EQS index (nil before the PEQ reply).
+func (st *State) EQPresets() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return slices.Clone(st.eqPresets)
 }
 
 // EQValue returns one control's last-known value and whether it is known yet.

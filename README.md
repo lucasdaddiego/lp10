@@ -42,12 +42,14 @@ $ lp10
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃  ─────────────────────────────── equalizer ────────────────────────────────  ┃
-┃  EQ      ● on                                                                ┃
+┃  EQ      ○ off                                                               ┃
+┃  Preset  Flat · Classical · Pop · Jazz · Rock · Vocal                        ┃
 ┃  Treble  ────────────────────────────────────────●─────────────────────  +3  ┃
 ┃  Mid     ───────────────────────────────●──────────────────────────────   0  ┃
 ┃  Bass    ────────────────────────────────────────●─────────────────────  +3  ┃
 ┃  Sub     ● on                                                                ┃
 ┃  Lvl     ─────────●────────────────────────────────────────────────────  15  ┃
+┃  Balance ───────────────────────────────●──────────────────────────────   0  ┃
 ┃  Max Vol ─────────────────────────────────────────────────────────────● 100  ┃
 ┃   space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit  ┃
 ```
@@ -190,10 +192,18 @@ device exposes no seek command.
 ## Equalizer
 
 The equalizer pane (focus it with `e` or `tab`) drives the device's tone and
-output as a stack of horizontal sliders — the **EQ** switch, the **Treble / Mid /
-Bass** tone, the deep-bass **Sub** switch and its **Lvl**, and **Max Vol**, the
-output cap, kept last as it's rarely touched. `↑` / `↓` pick a row; `←` / `→`
-adjust it; `enter` flips an on/off band.
+output as a stack of rows — the **EQ** switch and the **Preset** it applies
+(Flat · Classical · Pop · Jazz · Rock · Vocal, named by the device), the
+**Treble / Mid / Bass** tone, the deep-bass **Sub** switch and its **Lvl**,
+**Balance**, and **Max Vol**, the output cap, kept last as it's rarely touched.
+`↑` / `↓` pick a row; `←` / `→` adjust it; `enter` flips an on/off row or steps
+to the next preset.
+
+> **How the two EQ rows relate:** the **tone sliders are always live**, EQ on or
+> off. **EQ** only decides whether the selected **Preset** curve is applied on
+> top — so "EQ on" with flat sliders still colours the sound (that's the preset),
+> and "EQ off" with Treble +8 still adds treble (that's the tone stage). Both
+> stages run inside the LP10's MCU, which is also its DAC.
 
 These ride a separate plain-text control connection to the device on TCP
 **2018** (the same channel the vendor app uses), independent of the SSH player
@@ -238,8 +248,8 @@ stacked column when narrow):
 ┃    serial    RKARYLLP100000000000                             tasks     2 running · 237 total                        ┃
 ┃                                                               temp      ━━━━━━━─────  52 °C SoC                      ┃
 ┃  ─ hardware ────────────────────────────────────────────      uptime    3h 25m                                       ┃
-┃    codec     DAC unidentified · WM8904 declared, absent on I2C                                                       ┃
-┃    line in   3.5 mm aux · ADC unidentified                  ─ services ────────────────────────────────────────────  ┃
+┃    dac       MVSilicon BP10xx (the MCU) · I2S in · tone/EQ/balance on-chip                                           ┃
+┃    line in   3.5 mm aux · ADC unidentified (WM8904 declare… ─ services ────────────────────────────────────────────  ┃
 ┃    line out  3.5 mm · 1 Vrms (no power amp)                   on  ● AirPlay 2 ● Bluetooth ● DLNA / UPnP ● Spotify    ┃
 ┃    optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz                  off ○ Google Cast ○ Qobuz ○ Tidal ○ USB playback       ┃
 ┃    radio     dual-band 802.11ac · BT 5.0                      env-gated · toggle in the Arylic app                   ┃
@@ -264,9 +274,9 @@ tunnel, the target host — readable even while the device is down, which is exa
 when you need them), **device** identity (model, firmware, build — plus the name,
 serial, Bluetooth MAC, and MCU version read from the device's own registers), a
 **hardware** reference (SoC, the DAC situation, the line-out / optical outputs — encoded
-from a full teardown of the unit — the codec row is hedged on purpose: the firmware
-declares a Wolfson WM8904, but nothing answers at its I2C address, so the real DAC is an
-unidentified no-control part and every "WM8904" mixer control is inert), **latency**, the **network** the box itself is on
+from a full teardown of the unit, corrected by live probes: the DAC is the front-panel
+MCU itself, an MVSilicon BP10xx fed over I2S, which also runs every tone / preset /
+balance stage; the WM8904 the firmware declares isn't on the bus), **latency**, the **network** the box itself is on
 (address, DNS, link, MAC, interface **error/drop counters** shown as session deltas —
 so a degrading powerline link turns amber without boot-lifetime noise false-alarming —
 and the **multiroom** group state), **resources** (cpu · memory · storage · tasks ·
