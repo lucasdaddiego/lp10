@@ -83,7 +83,7 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   gauges (cpu + clock · memory · storage · process contention · temp · uptime). It also lists the
   device's **streaming capabilities** (AirPlay 2 · Bluetooth · DLNA · Spotify on,
   with Cast / Qobuz / Tidal / USB shown off when env-gated — read live from the box)
-  and a **hardware reference** (SoC, WM8904 codec, the line-out / optical outputs).
+  and a **hardware reference** (SoC, the DAC situation, the line-out / optical outputs).
   The live metrics are gathered **only while the overlay is open**; any metric the
   hardware can't provide degrades to "—".
 - **Finds the device itself** — mDNS auto-discovery at startup locates the LP10 on
@@ -228,8 +228,8 @@ stacked column when narrow):
 ┃    serial    RKARYLLP100000000000                             tasks     2 running · 237 total                        ┃
 ┃                                                               temp      ━━━━━━━─────  52 °C SoC                      ┃
 ┃  ─ hardware ────────────────────────────────────────────      uptime    3h 25m                                       ┃
-┃    codec     Cirrus/Wolfson WM8904 (DAC + ADC)                                                                       ┃
-┃    line in   3.5 mm aux → WM8904 ADC                        ─ services ────────────────────────────────────────────  ┃
+┃    codec     DAC unidentified · WM8904 declared, absent on I2C                                                       ┃
+┃    line in   3.5 mm aux · ADC unidentified                  ─ services ────────────────────────────────────────────  ┃
 ┃    line out  3.5 mm · 1 Vrms (no power amp)                   on  ● AirPlay 2 ● Bluetooth ● DLNA / UPnP ● Spotify    ┃
 ┃    optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz                  off ○ Google Cast ○ Qobuz ○ Tidal ○ USB playback       ┃
 ┃    radio     dual-band 802.11ac · BT 5.0                      env-gated · toggle in the Arylic app                   ┃
@@ -253,8 +253,10 @@ the **audio** chain (source stream in, DAC out, the ring buffer between), lp10's
 tunnel, the target host — readable even while the device is down, which is exactly
 when you need them), **device** identity (model, firmware, build — plus the name,
 serial, Bluetooth MAC, and MCU version read from the device's own registers), a
-**hardware** reference (SoC, WM8904 codec, the line-out / optical outputs — encoded
-from a full teardown of the unit), **latency**, the **network** the box itself is on
+**hardware** reference (SoC, the DAC situation, the line-out / optical outputs — encoded
+from a full teardown of the unit — the codec row is hedged on purpose: the firmware
+declares a Wolfson WM8904, but nothing answers at its I2C address, so the real DAC is an
+unidentified no-control part and every "WM8904" mixer control is inert), **latency**, the **network** the box itself is on
 (address, DNS, link, MAC, interface **error/drop counters** shown as session deltas —
 so a degrading powerline link turns amber without boot-lifetime noise false-alarming —
 and the **multiroom** group state), **resources** (cpu · memory · storage · tasks ·
