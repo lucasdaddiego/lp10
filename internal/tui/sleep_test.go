@@ -237,3 +237,86 @@ func TestSleepGlyphHasASCIIFallback(t *testing.T) {
 		t.Errorf("glyphs(1)[sleep] = %q, want ☾", g)
 	}
 }
+
+// ---- bedtime chord ----------------------------------------------------------
+
+func TestBedtimeArmsSleepAndNightThenRestores(t *testing.T) {
+	m, st, collect := makeModel(t)
+	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=off"}}) // baseline: night off
+	m.key(kr('b'))
+	if m.sleepAt.IsZero() || !m.bedtime {
+		t.Fatal("b should arm the timer and mark it bedtime")
+	}
+	got := collect()
+	if len(got) != 1 || got[0].Mid != 91 || got[0].Data != "1" {
+		t.Fatalf("sent = %+v, want [91 1] (night on)", got)
+	}
+	if s := st.Snap(); !s.Night {
+		t.Error("night should be on optimistically")
+	}
+	// stepping again keeps night on without resending it
+	m.key(kr('b'))
+	if got := collect(); len(got) != 0 {
+		t.Errorf("second b sent %+v, want nothing (night already on)", got)
+	}
+	// the timer fires: pause, then night back to the baseline (off)
+	m.sleepAt = time.Now().Add(-time.Second)
+	m.dispatch(logicMsg{})
+	got = collect()
+	if len(got) != 2 || got[0].Mid != 40 || got[0].Data != "PAUSE" || got[1].Mid != 91 || got[1].Data != "0" {
+		t.Errorf("fire sent %+v, want [40 PAUSE] [91 0]", got)
+	}
+	if m.bedtime || !m.sleepAt.IsZero() || st.Snap().Night {
+		t.Error("after the fire: bedtime cleared, timer off, night restored")
+	}
+}
+
+func TestBedtimeCancelAndCycleOffRestoreNight(t *testing.T) {
+	m, st, collect := makeModel(t)
+	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=off"}})
+	m.key(kr('b'))
+	collect()
+	m.key(kr('S')) // cancel restores night
+	if got := collect(); len(got) != 1 || got[0].Mid != 91 || got[0].Data != "0" {
+		t.Errorf("S sent %+v, want [91 0]", got)
+	}
+	if m.bedtime || st.Snap().Night {
+		t.Error("cancel should clear bedtime and restore night")
+	}
+	// cycling past the last preset turns everything off too
+	m.key(kr('b'))
+	collect()
+	for range len(sleepPresets) - 1 {
+		m.key(kr('b'))
+	}
+	if m.sleepAt.IsZero() {
+		t.Fatal("should still be armed on the last preset")
+	}
+	collect()
+	m.key(kr('b')) // -> off
+	if got := collect(); len(got) != 1 || got[0].Data != "0" || !m.sleepAt.IsZero() || m.bedtime {
+		t.Errorf("cycle-off sent %+v, timer=%v bedtime=%v", got, m.sleepAt, m.bedtime)
+	}
+	// a plain 's' timer never touches night mode
+	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=on"}})
+	m.key(kr('s'))
+	m.sleepAt = time.Now().Add(-time.Second)
+	m.dispatch(logicMsg{})
+	for _, c := range collect() {
+		if c.Mid == 91 {
+			t.Errorf("a plain sleep timer sent a night-mode command: %+v", c)
+		}
+	}
+	// night already on at connect (baseline on): bedtime leaves it on at the end
+	st2 := protocol.NewState()
+	protocol.ApplyRecord(st2, protocol.Record{"n": {"  : values=on"}})
+	m2, _, c2 := modelWith(st2)
+	m2.key(kr('b'))
+	if got := c2(); len(got) != 0 {
+		t.Errorf("night already on: b sent %+v, want nothing", got)
+	}
+	m2.key(kr('S'))
+	if got := c2(); len(got) != 0 {
+		t.Errorf("baseline on: cancel sent %+v, want nothing", got)
+	}
+}

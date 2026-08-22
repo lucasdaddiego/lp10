@@ -86,6 +86,7 @@ type model struct {
 	// sleepPresets the 's' key last armed, so repeated presses step upward.
 	sleepAt     time.Time
 	sleepPreset int
+	bedtime     bool // the timer was armed with 'b': night mode is restored when it ends
 
 	rows, cols   int
 	cellW, cellH int // terminal cell size in device px (0 if unknown); sizes the Kitty cover

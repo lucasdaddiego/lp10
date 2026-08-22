@@ -192,6 +192,8 @@ func (m *model) key(ev keyEvent) (quit bool) {
 			m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
 		case 'S':
 			m.sleepCancel()
+		case 'b':
+			m.bedtimeCycle(time.Now()) // sleep step + night mode on, restored when the timer ends
 		case 'd':
 			m.nightToggle() // night mode: the device's multi-band DRC
 		case 'e':

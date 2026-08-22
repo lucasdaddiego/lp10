@@ -34,10 +34,31 @@ func (m *model) sleepCycle(now time.Time) {
 	m.sleepAt = now.Add(time.Duration(sleepPresets[m.sleepPreset]) * time.Minute)
 }
 
-// sleepCancel disarms the timer (idempotent).
+// sleepCancel disarms the timer (idempotent). A bedtime arming also puts
+// night mode back (see bedtimeCycle).
 func (m *model) sleepCancel() {
 	m.sleepAt = time.Time{}
 	m.sleepPreset = 0
+	if m.bedtime {
+		m.bedtime = false
+		m.nightRestore()
+	}
+}
+
+// bedtimeCycle is the 'b' chord: the same preset step as 's', plus night mode
+// switched on for the duration — so one key does "compress the dynamics and
+// pause in 30 minutes". The timer's fire, a cancel, or cycling past the last
+// preset puts night mode back to its connect-time value; pressing 'd' while
+// it runs is allowed and simply changes what there is to restore.
+func (m *model) bedtimeCycle(now time.Time) {
+	m.sleepCycle(now)
+	if m.sleepAt.IsZero() {
+		return // cycled to off: sleepCancel already restored night mode
+	}
+	m.bedtime = true
+	if s := m.st.Snap(); !(s.NightKnown && s.Night) {
+		m.nightToggle()
+	}
 }
 
 // sleepFire is the tick hook: once the deadline passes it pauses the player —
@@ -51,10 +72,10 @@ func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 	if m.sleepAt.IsZero() || now.Before(m.sleepAt) {
 		return
 	}
-	m.sleepCancel()
 	if s.Playing == 0 && s.Track != nil {
 		m.do("toggle")
 	}
+	m.sleepCancel() // after the pause: also restores night mode after a bedtime arming
 }
 
 // sleepLabel is the countdown shown beside the clock ("☾ 29m"; "☾ 45s" inside

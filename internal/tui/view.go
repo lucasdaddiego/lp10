@@ -809,6 +809,7 @@ func (m *model) dividerRow(label string, W int) string {
 // instead of clipping the line mid-word. The shortest still fits the
 // full-dashboard minimum (64 cols).
 var playerHints = []string{
+	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · ? diag · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · d night · e/tab EQ · ? diag · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit",

@@ -109,7 +109,9 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   mixer controls drive a chip that isn't on the bus), driven over the same ssh
   stream as playback and read back from the device so the `◐ night` badge
   beside the clock shows device truth. Session-scoped: quitting lp10 puts the
-  compressor back to the state it found.
+  compressor back to the state it found. **`b` is bedtime**: the sleep timer and
+  night mode in one press — compress now, pause in N minutes, and put the
+  compressor back when the timer goes off.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -171,6 +173,7 @@ the arrow keys.
 | `t` | right-hand time: remaining ↔ total |
 | `s` / `S` | sleep timer: arm / step the countdown (15 · 30 · 45 · 60 · 90 min, then off) / cancel |
 | `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
+| `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
 | `?` | diagnostics overlay (see below) |
 | `q` | quit |
 

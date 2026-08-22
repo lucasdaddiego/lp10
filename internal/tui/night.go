@@ -33,3 +33,19 @@ func nightLabel(s protocol.Snapshot) string {
 	}
 	return ""
 }
+
+// nightRestore puts night mode back to the value first read this process (the
+// same restore quit performs), optimistically and over the wire. A no-op when
+// nothing is known or nothing changed.
+func (m *model) nightRestore() {
+	orig, needed := m.st.NightRestore()
+	if !needed {
+		return
+	}
+	m.st.SetNightLocal(orig)
+	if orig {
+		m.send(91, "1")
+	} else {
+		m.send(91, "0")
+	}
+}
