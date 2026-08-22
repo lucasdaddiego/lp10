@@ -1204,7 +1204,7 @@ func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 	}
 	rows := m.flowGroup("on", on, w)
 	rows = append(rows, m.flowGroup("off", off, w)...)
-	rows = append(rows, m.flowGroup("open", m.exposedItems(cv), w)...)
+	rows = append(rows, m.flowGroup("lan", m.exposedItems(cv), w)...) // ≤3 chars: the group label column is 4 wide
 	rows = append(rows, m.sty.pens().dmr.render("env-gated · toggle in the Arylic app"))
 	// Budget every row to w (visible cols) — after the wrap this only bites on a
 	// single item wider than the whole column, or the note at a tiny width.
@@ -1229,8 +1229,8 @@ var confExposed = []struct {
 	{"control", "control :2018", false},
 }
 
-// exposedItems renders the listening unauthenticated ports for the "open"
-// group: risky ones in the warn colour, the by-design ones dim. Nothing is
+// exposedItems renders the listening unauthenticated ports for the "lan"
+// group (what the LAN can reach without credentials): risky ones in the warn colour, the by-design ones dim. Nothing is
 // listed for a loop that didn't report them (older loop / unreadable
 // /proc/net/tcp), so the group row disappears rather than claiming "closed".
 func (m *model) exposedItems(cv *protocol.ConfInfo) []string {

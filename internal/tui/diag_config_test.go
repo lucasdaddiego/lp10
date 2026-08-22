@@ -220,7 +220,7 @@ func TestServicesOpenPortsRow(t *testing.T) {
 	m.sty = newTheme()
 	applyFixtureRecords(st, "config_record.txt")
 	rows := stripANSI(strings.Join(m.serviceStrip(120), "\n"))
-	for _, want := range []string{"open", "telnet :23", "adb :5555", "web :80", "control :2018"} {
+	for _, want := range []string{"lan ●", "telnet :23", "adb :5555", "web :80", "control :2018"} {
 		if !strings.Contains(rows, want) {
 			t.Errorf("services rows lack %q:\n%s", want, rows)
 		}
@@ -250,8 +250,8 @@ func TestServicesOpenPortsRow(t *testing.T) {
 	protocol.ApplyRecord(st3, protocol.Record{"c": {"spotify=on"}})
 	m3, _, _ := modelWith(st3)
 	m3.sty = newTheme()
-	if rows3 := stripANSI(strings.Join(m3.serviceStrip(120), "\n")); strings.Contains(rows3, "open") {
-		t.Errorf("a loop that reported no listeners must not show an open group:\n%s", rows3)
+	if rows3 := stripANSI(strings.Join(m3.serviceStrip(120), "\n")); strings.Contains(rows3, "lan") {
+		t.Errorf("a loop that reported no listeners must not show a lan group:\n%s", rows3)
 	}
 }
 
