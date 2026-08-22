@@ -48,6 +48,18 @@ func TestTunnelWorkerRoundTrip(t *testing.T) {
 		t.Error("tunnel not marked connected")
 	}
 
+	// The PEQ reply names the presets (a string-valued frame, not a control value).
+	if _, err := conn.Write([]byte("PEQ:0@Flat,1@Classical,2@Pop;EQS:2;")); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "PEQ applied", func() bool { return len(st.EQPresets()) == 3 })
+	if names := st.EQPresets(); names[1] != "Classical" {
+		t.Errorf("presets = %v", names)
+	}
+	if v, ok := st.EQValue("EQS"); !ok || v != 2 {
+		t.Errorf("EQS=%d,%v want 2", v, ok)
+	}
+
 	// A queued command is written to the device, clamped, as CODE:VAL;.
 	eqcmds <- EQCommand{Code: "BAS", Val: 99} // clamps to +10
 	got := readUntilContains(t, conn, "BAS:10;")

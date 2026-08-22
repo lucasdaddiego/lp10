@@ -113,3 +113,22 @@ func TestNightGlyphHasASCIIFallback(t *testing.T) {
 		t.Errorf("glyphs(2)[night] = %q, want N", g)
 	}
 }
+
+
+func TestNightRestoreToOnBaseline(t *testing.T) {
+	m, st, collect := makeModel(t)
+	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=on"}}) // baseline on
+	m.nightRestore()
+	if got := collect(); len(got) != 0 {
+		t.Errorf("at the baseline nothing is sent: %+v", got)
+	}
+	m.key(kr('d')) // off
+	collect()
+	m.nightRestore() // back to on
+	if got := collect(); len(got) != 1 || got[0].Mid != 91 || got[0].Data != "1" {
+		t.Errorf("restore sent %+v, want [91 1]", got)
+	}
+	if !st.Snap().Night {
+		t.Error("restore should flip the snapshot back on")
+	}
+}
