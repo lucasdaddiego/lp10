@@ -617,3 +617,111 @@ func TestServicesPaneDistinguishesInertFlagFromFault(t *testing.T) {
 		}
 	}
 }
+
+// A record that carries no spotify.cfg at all is UNKNOWN, not off. Falling
+// through to the first cycle position painted a lit dot beside the word "off".
+func TestServicesPaneUnknownSpotifyConfig(t *testing.T) {
+	st := protocol.NewState()
+	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "tidal=off"}})
+	m, _, _ := modelWith(st)
+	m.rows, m.cols = 44, 120
+	m.openOverlay(ovServices)
+	for ln := range strings.SplitSeq(clean(m.viewContent()), "\n") {
+		if strings.Contains(ln, "Spotify ") {
+			if !strings.Contains(ln, "—") {
+				t.Errorf("unknown Spotify config rendered as %q, want an unknown marker", strings.TrimRight(ln, " "))
+			}
+			return
+		}
+	}
+	t.Fatal("no Spotify row rendered")
+}
+
+// The engine path had a settle test; the boolean one did not. A toggle on an
+// ordinary service must clear the moment the device reports the daemon in the
+// requested state, and stay pending while it reports the opposite.
+func TestServicesPaneBooleanTogglePending(t *testing.T) {
+	for _, c := range []struct{ start, want, confirm string }{
+		{"on", "0", "off"}, // running -> asked to stop -> device reports stopped
+		{"off", "1", "on"}, // and the reverse
+	} {
+		st := protocol.NewState()
+		protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "spotify.cfg=hifi", "tidal=" + c.start}})
+		m, _, collect := modelWith(st)
+		m.rows, m.cols, m.sty = 44, 120, newTheme()
+		m.openOverlay(ovServices)
+		for i, row := range svcRows {
+			if row.id == "tidal" {
+				m.svcFocus = i
+			}
+		}
+		now := time.Now()
+		m.svcToggle(now)
+		if got := collect(); len(got) != 1 || got[0].Data != "tidal "+c.want {
+			t.Fatalf("start=%s toggled to %+v, want %q", c.start, got, "tidal "+c.want)
+		}
+		// pending shows the state it is heading to, named as on/off
+		if got := clean(m.renderJoin(now)); !strings.Contains(got, "… "+c.confirm) {
+			t.Errorf("start=%s: pending row did not name its target %q", c.start, c.confirm)
+		}
+		// the device still reporting the old state keeps it pending
+		protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "tidal=" + c.start}})
+		if got := clean(m.renderJoin(now)); !strings.Contains(got, "… "+c.confirm) {
+			t.Errorf("start=%s: pending cleared before the device moved", c.start)
+		}
+		// and the device confirming clears it
+		protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "tidal=" + c.confirm}})
+		if got := clean(m.renderJoin(now)); strings.Contains(got, "… "+c.confirm) {
+			t.Errorf("start=%s: pending survived confirmation", c.start)
+		}
+	}
+}
+
+// An engine string the cycle does not recognise must step to the safe engine
+// rather than wedging, and must not be painted as one of the known states.
+func TestServicesPaneUnknownEngineFallsBackSafely(t *testing.T) {
+	st := protocol.NewState()
+	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=weirdengine", "spotify.cfg=hifi"}})
+	m, _, collect := modelWith(st)
+	m.rows, m.cols, m.sty = 44, 120, newTheme()
+	m.openOverlay(ovServices)
+	m.svcFocus = 0
+	// the engine readout names it verbatim rather than guessing
+	if got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), 114), "\n")); !strings.Contains(got, "weirdengine") {
+		t.Errorf("unknown engine not reported: %q", got)
+	}
+	// A pending target the row cannot interpret must settle rather than wedge the
+	// row on "applying…" for the full window, and the next press then steps from
+	// the device's own position.
+	m.svcPending, m.svcPendingWant, m.svcPendingAt = "spotify", "nonsense", time.Now()
+	if m.svcPendingRow("spotify", m.st.ConfView(), time.Now()) {
+		t.Error("an uninterpretable pending target left the row waiting")
+	}
+	m.svcToggle(time.Now())
+	if got := collect(); len(got) != 1 || got[0].Data != "spotify pro" {
+		t.Errorf("next press sent %+v, want it to step from the device position", got)
+	}
+}
+
+// The diagnostics strip and the services pane must agree about what counts as a
+// divergence, or the same device state reads as broken in one view and fine in
+// the other.
+func TestDiagStripDivergenceMatchesPane(t *testing.T) {
+	st := protocol.NewState()
+	protocol.ApplyRecord(st, protocol.Record{"c": {
+		"spotify.eng=newspotifyhifi", "spotify.cfg=hifi",
+		"dlna=on",                   // inert flag, not carried at all now
+		"tidal=off", "tidal.env=on", // consulted and contradicted: a real fault
+	}})
+	m, _, _ := modelWith(st)
+	m.rows, m.cols, m.sty = 44, 120, newTheme()
+	strip := clean(strings.Join(m.serviceStripFor(m.st.ConfView(), 114), "\n"))
+	if !strings.Contains(strip, "Tidal") {
+		t.Fatalf("strip missing Tidal: %q", strip)
+	}
+	// The strip renders; the pane's rule (gateDaemon flags are inert) is applied
+	// there too, so DLNA is never singled out.
+	if cv := m.st.ConfView(); cv.Divergent("dlna") {
+		t.Error("an uncarried flag was treated as a divergence")
+	}
+}
