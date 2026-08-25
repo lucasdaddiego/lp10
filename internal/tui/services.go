@@ -176,7 +176,11 @@ func (m *model) svcWant(row svcDef, cv *protocol.ConfInfo, pending bool) string 
 				return spotifyStates[(i+1)%len(spotifyStates)].wire
 			}
 		}
-		return spotifyStates[1].wire // unrecognised: step to the safe engine
+		// Unreachable in practice: svcPos only ever yields a known wire for this
+		// row (a pending target the row itself set, or a cycle position), and an
+		// uninterpretable pending target settles rather than persisting. Kept so a
+		// future caller cannot get "" back, and pointed at the SAFE engine.
+		return spotifyStates[1].wire
 	}
 	if cur == "1" {
 		return "0"
@@ -268,11 +272,16 @@ func spotifyStateIdx(cv *protocol.ConfInfo) int {
 func (m *model) svcState(row svcDef, cv *protocol.ConfInfo) string {
 	t := m.sty.pens()
 	if row.gate == gateEngine {
-		if cv.Cfg() == "both" {
+		switch cv.Cfg() {
+		case "both":
 			return m.sty.sevs[2].Render("⚠ both flags set — neither runs")
-		}
-		if cv.Cfg() == "none" {
+		case "none":
 			return t.dim.render("○") + " " + t.dim.render("off")
+		case "":
+			// Unknown, not off: a record that carried no cfg at all would otherwise
+			// fall through to the first cycle position and paint a lit dot beside
+			// the word "off" — a cell contradicting itself.
+			return t.dmr.render("—")
 		}
 		return t.acc.render("●") + " " + t.txt.render(spotifyStates[spotifyStateIdx(cv)].label)
 	}
