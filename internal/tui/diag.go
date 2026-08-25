@@ -1196,16 +1196,30 @@ func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 	}
 	var on, off []string
 	for _, sv := range confServices {
+		// A service whose configured flag and running state disagree gets the warn
+		// hue rather than being quietly filed under on or off: that mismatch is the
+		// fault the device's own web page structurally cannot show, since it reads
+		// the flag and never looks for the daemon.
+		mark := cv.Divergent(sv.id)
 		if cv.Svc[sv.id] == "on" {
-			on = append(on, m.sty.pens().acc.render("●")+" "+m.sty.pens().txt.render(sv.label))
+			dot, name := m.sty.pens().acc.render("●"), m.sty.pens().txt.render(sv.label)
+			if mark {
+				dot, name = m.sty.sevs[1].Render("◍"), m.sty.sevs[1].Render(sv.label)
+			}
+			on = append(on, dot+" "+name)
 		} else {
-			off = append(off, m.sty.pens().dmr.render("○")+" "+m.sty.pens().dim.render(sv.label))
+			dot, name := m.sty.pens().dmr.render("○"), m.sty.pens().dim.render(sv.label)
+			if mark {
+				dot, name = m.sty.sevs[1].Render("◌"), m.sty.sevs[1].Render(sv.label)
+			}
+			off = append(off, dot+" "+name)
 		}
 	}
 	rows := m.flowGroup("on", on, w)
 	rows = append(rows, m.flowGroup("off", off, w)...)
 	rows = append(rows, m.flowGroup("lan", m.exposedItems(cv), w)...) // ≤3 chars: the group label column is 4 wide
-	rows = append(rows, m.sty.pens().dmr.render("env-gated · toggle in the Arylic app"))
+	rows = append(rows, m.flowGroup("via", m.engineItems(cv), w)...)
+	rows = append(rows, m.sty.pens().dmr.render("env-gated · c to switch them here"))
 	// Budget every row to w (visible cols) — after the wrap this only bites on a
 	// single item wider than the whole column, or the note at a tiny width.
 	for i, r := range rows {
@@ -1443,4 +1457,28 @@ func firstSeg(s string, sep byte) string {
 // column can never produce a negative (panicking) repeat count.
 func labelGap(label string, col int) string {
 	return strings.Repeat(" ", max(0, col-DispW(label)))
+}
+
+// engineItems is the Spotify engine readout for the capability strip: which of
+// the two engines is live and its Spotify eSDK build. It earns a line because
+// the two are not interchangeable — the eSDK version is what decides whether
+// lossless can arrive at all, and the older one cannot, whatever its name says.
+func (m *model) engineItems(cv *protocol.ConfInfo) []string {
+	eng := cv.Engine()
+	if eng == "" {
+		return nil
+	}
+	t := m.sty.pens()
+	label := eng
+	switch eng {
+	case "newspotifyhifi":
+		label = "spotify · legacy · Ogg/AAC"
+	case "spotifymusicpro":
+		label = "spotify · new · FLAC"
+	}
+	items := []string{t.dim.render(label)}
+	if sdk := cv.SDK(); sdk != "" {
+		items = append(items, t.dmr.render("eSDK "+sdk))
+	}
+	return items
 }

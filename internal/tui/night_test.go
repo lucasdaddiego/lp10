@@ -114,7 +114,6 @@ func TestNightGlyphHasASCIIFallback(t *testing.T) {
 	}
 }
 
-
 func TestNightRestoreToOnBaseline(t *testing.T) {
 	m, st, collect := makeModel(t)
 	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=on"}}) // baseline on

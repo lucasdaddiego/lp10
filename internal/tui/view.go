@@ -39,7 +39,7 @@ func (m *model) viewContent() string {
 	}
 	m.motifLive, m.searchLive = false, false // set true below iff the plasma / search figure is actually drawn
 	if rows < MiniRows || cols < MiniCols {
-		m.diag = false
+		m.diag, m.ov = false, ovNone
 		return m.renderMini(m.st.Snap())
 	}
 
@@ -51,6 +51,10 @@ func (m *model) viewContent() string {
 
 	var body []string
 	switch {
+	case m.ov == ovServices:
+		body = m.renderServices(now, W)
+	case m.ov == ovLogs:
+		body = m.renderLogs(now, W)
 	case m.diag:
 		body = m.renderDiagnostic(m.st.DiagnosticView(now), now, W)
 	default:
@@ -820,6 +824,8 @@ func (m *model) dividerRow(label string, W int) string {
 // instead of clipping the line mid-word. The shortest still fits the
 // full-dashboard minimum (64 cols).
 var playerHints = []string{
+	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · c services · l logs · ? diag · q quit",
+	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · c services · ? diag · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · ? diag · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · d night · e/tab EQ · ? diag · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit",

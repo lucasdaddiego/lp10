@@ -100,6 +100,11 @@ func runeEvents(s string) []keyEvent {
 
 // key dispatches one keypress, reporting whether it asked to quit.
 func (m *model) key(ev keyEvent) (quit bool) {
+	// The services and logs panes are navigated, not merely dismissed, so they
+	// take the key first and nothing leaks through to the dashboard beneath.
+	if m.ov != ovNone {
+		return m.overlayKey(ev)
+	}
 	if m.diag {
 		m.diag = false // any key closes the overlay
 		return false
@@ -201,7 +206,93 @@ func (m *model) key(ev keyEvent) (quit bool) {
 				m.pane = paneEQ
 			}
 		case '?':
-			m.diag = true
+			m.diag, m.ov = true, ovNone
+		case 'c':
+			m.openOverlay(ovServices)
+		case 'l':
+			m.openOverlay(ovLogs)
+		}
+	}
+	return false
+}
+
+// openOverlay engages one interactive pane, closing whatever else was open —
+// the three overlays are mutually exclusive by construction rather than by
+// convention. Opening the logs pane costs a device round trip, so it is only
+// asked for once per run unless the user refreshes: reopening the pane shows
+// the tail already in hand instead of stalling on a fresh fetch.
+func (m *model) openOverlay(which int) {
+	if m.miniMode() {
+		return // no room to draw it; the dashboard keeps the keys
+	}
+	m.diag, m.ov = false, which
+	if which == ovLogs && !m.logAsked {
+		m.logRequest()
+	}
+}
+
+// toggleOverlay opens a pane, or closes it if it is the one already open.
+func (m *model) toggleOverlay(which int) {
+	if m.ov == which {
+		m.ov = ovNone
+		return
+	}
+	m.openOverlay(which)
+}
+
+// overlayKey drives the interactive panes. Esc backs out, q still quits the app
+// from anywhere (matching the dashboard), and each pane's own letter closes it
+// so the key that opened it also dismisses it.
+func (m *model) overlayKey(ev keyEvent) (quit bool) {
+	if ev.kind == kRune && (ev.r == 'q' || ev.r == 'Q') {
+		return true
+	}
+	if ev.kind == kEsc {
+		m.ov = ovNone
+		return false
+	}
+	// The overlay letters work from inside an overlay too: pressing the pane's own
+	// letter closes it, another pane's letter switches straight to it. Toggling a
+	// service and then reading the log for why it did nothing is the whole
+	// workflow, and making that a two-step (esc, then l) would be needless.
+	if ev.kind == kRune {
+		switch ev.r {
+		case 'c':
+			m.toggleOverlay(ovServices)
+			return false
+		case 'l':
+			m.toggleOverlay(ovLogs)
+			return false
+		case '?':
+			m.diag, m.ov = true, ovNone
+			return false
+		}
+	}
+	switch m.ov {
+	case ovServices:
+		switch {
+		case ev.kind == kUp:
+			m.svcMove(-1)
+		case ev.kind == kDown:
+			m.svcMove(+1)
+		case ev.kind == kEnter:
+			m.svcToggle(time.Now())
+		}
+	case ovLogs:
+		page := max(m.rows-8, 1)
+		switch {
+		case ev.kind == kUp:
+			m.logScrollBy(+1, page)
+		case ev.kind == kDown:
+			m.logScrollBy(-1, page)
+		case ev.kind == kLeft:
+			m.logScrollBy(+page, page)
+		case ev.kind == kRight:
+			m.logScrollBy(-page, page)
+		case ev.kind == kRune && ev.r == 'f':
+			m.logCycleFilter()
+		case ev.kind == kRune && ev.r == 'r':
+			m.logRequest()
 		}
 	}
 	return false

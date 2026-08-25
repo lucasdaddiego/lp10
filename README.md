@@ -118,6 +118,37 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   compressor back to the state it found. **`b` is bedtime**: the sleep timer and
   night mode in one press — compress now, pause in N minutes, and put the
   compressor back when the timer goes off.
+- **Services pane** (`c`) — the box has two independent notions of "on" and they
+  drift apart: an env flag, and whether a daemon is actually running. The device's
+  own web page reads only the flag, so it will report `Spotify: on` with no engine
+  running at all — which is exactly what an OTA did to this device in August 2026
+  (it flipped the factory default to Spotify's newer engine while the user config
+  still held the old one; the two init scripts are each guarded on the *other*
+  flag being clear, so neither started). The pane shows one honest state per row
+  and surfaces the second truth only where it means something — printing both on
+  every row just teaches the eye to skip the line, which is where the interesting
+  case was hiding. A flag its init script never reads is marked inert rather than
+  as a fault (AirPlay and DLNA are both in that position, whether or not the flag
+  happens to agree); the warning is reserved for a flag that *is* consulted and
+  still contradicts what is running. The focused row spells out what `enter` will
+  do to it — `enter` on Spotify cycles off → legacy (hifi) → new, and presses stack
+  faster than the device can answer. It is also honest
+  about leverage: AirPlay and DLNA have no env gate at all, so stopping them lasts
+  only until the next boot; Bluetooth is never offered because the LP10's remote
+  control *is* a Bluetooth device; Google Cast lives in a config layer `setenv`
+  cannot reach. Spotify is a three-way — **off · legacy (hifi) · new** — because
+  its two engines are not interchangeable: the legacy one drives the box's ALSA
+  softvol so the volume works but tops out at Ogg/AAC, while the newer eSDK is the
+  only one that negotiates FLAC and bypasses softvol entirely, pinning the output
+  at full scale. The pane names that cost rather than hiding it, and always writes
+  the Spotify flags as a coherent pair so the vendor's both-set trap is
+  unreachable from here.
+- **Device log** (`l`) — the tail of `/var/log/messages`, fetched on demand over
+  the same ssh stream (zero cost while the pane is closed). It is the only place
+  the box records a service *refusing* to start — an init script's "not enabled"
+  line lands there and nowhere else — so it is what turns "the switch did nothing"
+  into an answer. `f` filters to errors and warnings, `r` refetches; the
+  luci_service chatter that is most of the file is dropped at the source.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -180,8 +211,14 @@ the arrow keys.
 | `s` / `S` | sleep timer: arm / step the countdown (15 · 30 · 45 · 60 · 90 min, then off) / cancel |
 | `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
 | `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
+| `c` | services pane — what each streaming service is really doing, and switch it |
+| `l` | device log — the tail of the box's own syslog |
 | `?` | diagnostics overlay (see below) |
 | `q` | quit |
+
+Inside the services, log or diagnostics overlay, `esc` backs out and the other
+overlay letters switch straight across — toggling a service and then reading the
+log for what the device made of it is one movement, not two.
 
 > On Spotify, `p` (previous) first restarts the current track — that's the
 > device's own MID-40 `PREV` behaviour, not lp10's; press it twice to actually

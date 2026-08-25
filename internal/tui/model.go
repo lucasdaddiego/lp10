@@ -52,6 +52,17 @@ const (
 	paneEQ  = 1 // equalizer strip
 )
 
+// Overlay identifiers for the two INTERACTIVE full-screen panes. The read-only
+// diagnostics overlay keeps its own m.diag flag: it is dismissed by any key,
+// while these two own their key handling, so folding all three into one enum
+// would put two unrelated dismissal rules behind one value. The openers hold the
+// invariant that at most one of (m.diag, m.ov) is ever engaged.
+const (
+	ovNone = iota
+	ovServices
+	ovLogs
+)
+
 // miniMode reports whether the terminal is too small for the dashboard, so only
 // the one-line mini view renders (no EQ pane). Only key dispatch consults this
 // (the view has its own rows==0 guard), so before the first WindowSizeMsg it
@@ -78,8 +89,23 @@ type model struct {
 	searchLive    bool // the connecting search figure was drawn last render (keeps the frame clock ticking while idle)
 	scroll        int  // tick counter driving the now-playing marquee (advances every tick)
 	diag          bool
+	ov            int // ovNone | ovServices | ovLogs (the interactive overlays)
 	showRemaining bool
-	flash         map[string]time.Time
+
+	// services pane: the focused row, and the row awaiting a device answer after
+	// a toggle (the pane paints the device's report, never an optimistic flip).
+	svcFocus       int
+	svcPending     string
+	svcPendingWant string // the state asked for, so the wait ends when it lands
+	svcPendingAt   time.Time
+
+	// logs pane: which device-side tail is requested, how far the viewport is
+	// scrolled up from the newest line, and whether a fetch has been asked for
+	// yet (so an empty view can say "waiting" rather than "no logs").
+	logFilter int
+	logScroll int
+	logAsked  bool
+	flash     map[string]time.Time
 
 	// sleep timer (sleep.go): sleepAt is the host-side deadline at which the
 	// logic tick pauses playback (zero == off); sleepPreset is the index into

@@ -46,7 +46,7 @@ func TestDiagShowsServicesAndHardware(t *testing.T) {
 		"─ services", "─ hardware",
 		"Spotify", "Bluetooth", "Google Cast", "USB playback",
 		"Amlogic A113L", "BP10xx", "no power amp", // hardware facts (the teardown + live probe)
-		"env-gated · toggle in the Arylic app",
+		"env-gated · c to switch them here",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("diag overlay missing %q", want)
