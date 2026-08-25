@@ -118,6 +118,16 @@ type DevInfo struct {
 var confKeys = map[string]bool{
 	"spotify": true, "airplay": true, "dlna": true, "bt": true,
 	"cast": true, "tidal": true, "qobuz": true, "usb": true,
+	// "<id>.env" is the CONFIGURED flag, next to the bare id's RUNNING state.
+	// The two disagreeing is not an inconsistency to paper over — it is the
+	// failure the device's own web page cannot see (it reports only the flag,
+	// so it will happily show "Spotify: on" with no engine running at all).
+	"airplay.env": true, "dlna.env": true, "bt.env": true,
+	"cast.env": true, "tidal.env": true, "qobuz.env": true, "usb.env": true,
+	// Spotify ships two mutually exclusive engines: which one is live (.eng),
+	// its Spotify eSDK build (.sdk), and the state of the env PAIR (.cfg —
+	// hifi|pro|both|none, where "both" starts NEITHER).
+	"spotify.eng": true, "spotify.sdk": true, "spotify.cfg": true,
 	// unauthenticated listeners the LAN can reach (the loop's lp())
 	"telnet": true, "adb": true, "web": true, "control": true,
 }
@@ -129,6 +139,57 @@ var confKeys = map[string]bool{
 // so unlike @@s it is gathered unconditionally at connect, not gated on an overlay.
 type ConfInfo struct {
 	Svc map[string]string
+}
+
+// Env reports the service's CONFIGURED flag ("on"/"off"/"" unknown), as opposed
+// to Svc[id], which is whether it is actually running. Spotify has no single
+// .env key — it is gated by a pair; ask Cfg instead.
+func (c *ConfInfo) Env(id string) string {
+	if c == nil {
+		return ""
+	}
+	return c.Svc[id+".env"]
+}
+
+// Engine reports which Spotify engine binary is live ("" when none is).
+func (c *ConfInfo) Engine() string {
+	if c == nil {
+		return ""
+	}
+	return c.Svc["spotify.eng"]
+}
+
+// SDK reports the live Spotify engine's eSDK build ("" when unknown). The build
+// is what separates an engine that can receive lossless from one that tops out
+// at Ogg/AAC, so it is worth surfacing next to the codec.
+func (c *ConfInfo) SDK() string {
+	if c == nil {
+		return ""
+	}
+	return c.Svc["spotify.sdk"]
+}
+
+// Cfg reports the configured Spotify engine: "hifi", "pro", "none", or "both".
+// "both" is the broken pair — the vendor's two init scripts are each guarded on
+// the OTHER flag being clear, so with both set neither engine ever starts.
+func (c *ConfInfo) Cfg() string {
+	if c == nil {
+		return ""
+	}
+	return c.Svc["spotify.cfg"]
+}
+
+// Divergent reports a service whose configured flag and running state disagree
+// — configured on but not running, or running while configured off. Services
+// with no .env reading (unknown) never diverge, so an unreadable flag stays
+// quiet rather than crying wolf.
+func (c *ConfInfo) Divergent(id string) bool {
+	env := c.Env(id)
+	if env == "" {
+		return false
+	}
+	run, ok := c.Svc[id]
+	return ok && run != "" && run != env
 }
 
 // parsedRecord is the lock-free decode of one framed record, ready to be
@@ -149,6 +210,9 @@ type parsedRecord struct {
 	mroom    *Multiroom
 
 	night, nightOK bool // @@n: the multi-band DRC enable readback
+
+	logs   []string // @@l: the device syslog tail, answering a MID-93 request
+	hasLog bool
 }
 
 // regInt extracts the integer register value from a section's joined lines
@@ -188,7 +252,25 @@ func parseRecord(rec Record) parsedRecord {
 	p.details = parseDevDetails(rec["d"])
 	p.mroom = parseMultiroom(rec["g"])
 	p.night, p.nightOK = parseNight(rec["n"])
+	p.logs, p.hasLog = parseLogs(rec)
 	return p
+}
+
+// parseLogs decodes the @@l section: the device syslog tail. The device prefixes
+// every line with a space so a log line beginning with "@@" cannot be mistaken
+// for a section header, so that one space comes back off here. Present-but-empty
+// is meaningful (the filter matched nothing) and must not read as "no answer",
+// hence the comma-ok on the section rather than a length test.
+func parseLogs(rec Record) ([]string, bool) {
+	lines, ok := rec["l"]
+	if !ok {
+		return nil, false
+	}
+	out := make([]string, 0, len(lines))
+	for _, ln := range lines {
+		out = append(out, printable(strings.TrimPrefix(ln, " ")))
+	}
+	return out, true
 }
 
 // parseNight decodes the @@n section — the raw `amixer cget` output for the
@@ -233,6 +315,9 @@ func ApplyRecord(st *State, rec Record) bool {
 	}
 	if p.confinfo != nil {
 		st.confinfo = p.confinfo
+	}
+	if p.hasLog {
+		st.logs, st.logsAt = p.logs, now
 	}
 	if p.details != nil {
 		st.details = p.details
@@ -399,6 +484,15 @@ func parseConfInfo(lines []string) *ConfInfo {
 	for _, ln := range lines {
 		if k, v, ok := strings.Cut(printable(ln), "="); ok && confKeys[k] {
 			ci.Svc[k] = v
+		}
+	}
+	// Spotify's running state is not shipped as its own line: which engine is
+	// live already carries it, and the loop is at dropbear's command-length
+	// ceiling, so it is derived here instead of costing a second wire field.
+	if eng, ok := ci.Svc["spotify.eng"]; ok {
+		ci.Svc["spotify"] = "off"
+		if eng != "" {
+			ci.Svc["spotify"] = "on"
 		}
 	}
 	// Same all-junk guard as parseDevInfo/parseDevDetails.

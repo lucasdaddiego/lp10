@@ -236,11 +236,11 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 // skip the track; a 'q' would quit the app).
 func (m *model) dispatchKeys(evs []keyEvent) (quit bool) {
 	for _, ev := range evs {
-		wasDiag := m.diag
+		wasOpen := m.diag || m.ov != ovNone
 		if m.key(ev) {
 			return true
 		}
-		if wasDiag && !m.diag {
+		if wasOpen && !m.diag && m.ov == ovNone {
 			return false
 		}
 	}

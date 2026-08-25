@@ -97,12 +97,31 @@ func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 			t.Errorf("missing wire tag %q", tag)
 		}
 	}
-	// the @@c capability block reads services read-only (pidof / getenv), never
-	// writes; pr/gv print "key=value" directly (one exec per service, no capturing
-	// subshell), so the keys are emitted at runtime rather than literal in the source.
-	for _, want := range []string{"echo @@c", "pr spotify ", "pr bt ", "gv cast ", "gv usb ", `echo "$1=on"`, "pidof", "getenv"} {
+	// the @@c capability block reads services read-only (pidof / getenv); pr/gv
+	// print "key=value" directly (one exec per service, no capturing subshell), so
+	// the keys are emitted at runtime rather than literal in the source. The table
+	// is id:envkey:daemon — a service with a daemon reports what is RUNNING next to
+	// what is CONFIGURED, because on this box those two disagree (the device's own
+	// web page only ever reports the flag, and cannot see a dead daemon).
+	for _, want := range []string{
+		"echo @@c", `echo "$1=on"`, "pidof", "getenv",
+		"bt:btenabled:bluetoothd", "cast:GoogleCast:cast_sample_app", "usb:USBEnable:",
+		`gv "$ci.env" "$ck"`, "spotify.eng=", "spotify.sdk=", "spotify.cfg=",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing @@c capability probe %q", want)
+		}
+	}
+	// getenv prints " [ KEY ]: value", so gv must cut the value off the tail before
+	// comparing. Matching the raw line against a bare "1" answers "off" for every
+	// flag whatever its real value — a silent, total misreport.
+	if !strings.Contains(body, "v=${v##*: }") {
+		t.Error("gv must strip getenv's \" [ KEY ]: \" prefix before comparing")
+	}
+	// The two config-writing commands and the log fetch.
+	for _, want := range []string{`92) tg "$data"`, "93) echo @@l; lg;", "@@l"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing service/log command %q", want)
 		}
 	}
 	// LibreWireless reference-image baggage the LP10 doesn't market is not probed.
@@ -236,13 +255,15 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		`echo @@g; LUCI_local -r 39 2>/dev/null; echo @@E;`,
 		// the FriendlyName read keeps spaces (suffix-strip, not first-word)
 		`case "$fn" in *Data:*) fn=${fn#*Data:}; fn=${fn% Length:*};; *) fn=;; esac;`,
-		`printf 'name=%s\n' "$fn"`,
 		// the new diag-gated gathers (all default to "-" so absent paths don't break the line)
 		`for ad in /proc/asound/card*/pcm*p/sub*; do`,
 		`buffer_size) bs=$av;;`,
 		`2>/dev/null < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq`,
 		`ns=${nz%.}`, // Wi-Fi noise floor (for SNR)
-		`printf 'dns=%s\n' "$dns"`,
+		// the @@i block is ONE printf: seventeen of them cost ~230 bytes of the
+		// ssh command-length budget, and the loop sits at dropbear's ceiling.
+		`printf 'net=%s\niface=%s\nip=%s\n`,
+		`\nname=%s\ndata=%s %s\ndns=%s\n' "$net"`,
 		`if [ "$dg" = 1 ]; then`,
 		`90) case "$data" in 1) dg=1;; *) dg=0;; esac;;`,
 		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; }`,
@@ -329,16 +350,22 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 // edit to that hand-written POSIX-sh fails here rather than silently on the device.
 // pr() keys off a running daemon (pidof), gv() off an env flag (getenv); both print
 // "key=value" directly — one exec per service, no capturing subshell.
+//
+// The getenv stub answers in the device's REAL format (" [ KEY ]: value"). An
+// earlier stub echoed a bare value, which let a gv() that never matched anything
+// pass: on the device every env-gated service was reported "off" regardless.
 func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
-	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pr() { if pidof "$2" >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi; }; lp() { xtl=off; xad=off; xwb=off; xct=off; for f in /proc/net/tcp /proc/net/tcp6; do while read -r sl la ra stt rest; do [ "$stt" = 0A ] || continue; case "${la##*:}" in 0017) xtl=on;; 15B3) xad=on;; 0050) xwb=on;; 07E2) xct=on;; esac; done 2>/dev/null < $f; done; echo "telnet=$xtl"; echo "adb=$xad"; echo "web=$xwb"; echo "control=$xct"; }; echo @@c; pr spotify newspotifyhifi; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; gv cast GoogleCast; gv tidal TidalEnabled; gv qobuz QobuzConnectEnabled; gv usb USBEnable; lp; echo @@E`
+	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); v=${v##*: }; case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pr() { if pidof $2 >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi; }; sy() { eng=; for sb in spotifymusicpro newspotifyhifi; do pidof $sb >/dev/null 2>&1 && { eng=$sb; break; }; done; echo "spotify.eng=$eng"; sl=; case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac; sk=; [ -n "$sl" ] && sk=$(grep -ao 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1); echo "spotify.sdk=${sk#esdk:}"; se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null); case "${se##*: }/${sr##*: }" in 0/1) sc=pro;; 1/0) sc=hifi;; 1/1) sc=both;; *) sc=none;; esac; echo "spotify.cfg=$sc"; }; lp() { xtl=off; xad=off; xwb=off; xct=off; for f in /proc/net/tcp /proc/net/tcp6; do while read -r sl2 la ra stt rest; do [ "$stt" = 0A ] || continue; case "${la##*:}" in 0017) xtl=on;; 15B3) xad=on;; 0050) xwb=on;; 07E2) xct=on;; esac; done 2>/dev/null < $f; done; printf 'telnet=%s\nadb=%s\nweb=%s\ncontrol=%s\n' $xtl $xad $xwb $xct; }; ct() { echo @@c; sy; for e in airplay:airplay:airplaydemo dlna:DMPEnable:dmr bt:btenabled:bluetoothd tidal:TidalEnabled:tidalConnect qobuz:QobuzConnectEnabled:qobuzConnect usb:USBEnable: cast:GoogleCast:cast_sample_app; do ci=${e%%:*}; cr=${e#*:}; ck=${cr%%:*}; cb=${cr#*:}; if [ -n "$cb" ]; then pr "$ci" "$cb"; gv "$ci.env" "$ck"; else gv "$ci" "$ck"; fi; done; lp; echo @@E; }; ct;`
 	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
 		t.Fatal("capability-probe snippet not found verbatim in the loop")
 	}
-	// Stub the device binaries: spotify + bluetooth daemons running; getenv reports
-	// GoogleCast on (=1), Tidal off (=0), Qobuz unknown (empty -> ""), USB off.
-	// The listener scan reads fake /proc/net/tcp{,6} files (the snippet's paths
-	// are rewritten to a temp dir): telnet LISTENs on v4, the web page on v6, a
-	// :2018 socket that is ESTABLISHED (01) must not count, adb absent.
+	// Stub the device binaries: the legacy Spotify engine and bluetoothd running,
+	// nothing else. getenv reports AirPlay and Bluetooth on, Cast on as the string
+	// "true", DMP/Tidal/USB off, Qobuz unknown (no answer at all -> ""), and the
+	// Spotify pair as hifi (1/0).
+	// The listener scan reads fake /proc/net/tcp{,6} files (the snippet's paths are
+	// rewritten to a temp dir): telnet LISTENs on v4, the web page on v6, a :2018
+	// socket that is ESTABLISHED (01) must not count, adb absent.
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "tcp"), []byte(
 		"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"+
@@ -349,12 +376,24 @@ func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
 			"   0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1236 1 0 100 0 0 10 0\n"), 0o644)
 	local := strings.NewReplacer("/proc/net/tcp6", filepath.Join(dir, "tcp6"), "/proc/net/tcp", filepath.Join(dir, "tcp")).Replace(snip)
 	const stub = `pidof() { case "$1" in newspotifyhifi|bluetoothd) return 0;; *) return 1;; esac; }; ` +
-		`getenv() { case "$1" in GoogleCast) echo 1;; TidalEnabled) echo 0;; USBEnable) echo off;; esac; }; `
+		`getenv() { case "$1" in ` +
+		`airplay) echo " [ airplay ]: 1";; btenabled) echo " [ btenabled ]: 1";; ` +
+		`GoogleCast) echo " [ GoogleCast ]: true";; DMPEnable) echo " [ DMPEnable ]: 0";; ` +
+		`TidalEnabled) echo " [ TidalEnabled ]: 0";; USBEnable) echo " [ USBEnable ]: off";; ` +
+		`SpotifyEnabled) echo " [ SpotifyEnabled ]: 1";; SpotifyProEnabled) echo " [ SpotifyProEnabled ]: 0";; ` +
+		`esac; }; `
 	out, err := exec.Command("sh", "-c", stub+local).Output()
 	if err != nil {
 		t.Fatalf("sh: %v", err)
 	}
-	const want = "@@c\nspotify=on\nairplay=off\ndlna=off\nbt=on\ncast=on\ntidal=off\nqobuz=\nusb=off\ntelnet=on\nadb=off\nweb=on\ncontrol=off\n@@E\n"
+	// spotify has no running= line of its own: .eng carries it and the laptop
+	// derives the boolean (parseConfInfo), which keeps the loop under the ceiling.
+	// .sdk is empty here because the stub host has no libspotifyhifi.so to grep.
+	const want = "@@c\n" +
+		"spotify.eng=newspotifyhifi\nspotify.sdk=\nspotify.cfg=hifi\n" +
+		"airplay=off\nairplay.env=on\ndlna=off\ndlna.env=off\nbt=on\nbt.env=on\n" +
+		"tidal=off\ntidal.env=off\nqobuz=off\nqobuz.env=\nusb=off\ncast=off\ncast.env=on\n" +
+		"telnet=on\nadb=off\nweb=on\ncontrol=off\n@@E\n"
 	if string(out) != want {
 		t.Errorf("capability probe output:\n%q\nwant:\n%q", string(out), want)
 	}

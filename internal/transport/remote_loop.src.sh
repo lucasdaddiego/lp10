@@ -95,35 +95,58 @@ done 2>/dev/null < /etc/resolv.conf;
 set -- $(df -k /lsync 2>/dev/null | tail -1);
 if [ $# -ge 6 ]; then duk=$3; dtk=$2; elif [ $# -eq 5 ]; then duk=$2; dtk=$1; else duk=; dtk=; fi;
 echo @@i;
-printf 'net=%s\n' "$net";
-printf 'iface=%s\n' "$dv";
-printf 'ip=%s\n' "$ip";
-printf 'mac=%s\n' "$mac";
-printf 'gw=%s\n' "$gw";
-printf 'speed=%s\n' "$sp";
-printf 'duplex=%s\n' "$dx";
-printf 'ssid=%s\n' "$ss";
-printf 'freq=%s\n' "$fq";
-printf 'rate=%s\n' "$rt";
-printf 'build=%s\n' "$bd";
-printf 'app=%s\n' "$ap";
-printf 'platform=%s\n' "$pf";
-printf 'name=%s\n' "$fn";
-printf 'data=%s %s\n' "$duk" "$dtk";
-printf 'dns=%s\n' "$dns";
+printf 'net=%s\niface=%s\nip=%s\nmac=%s\ngw=%s\nspeed=%s\nduplex=%s\nssid=%s\nfreq=%s\nrate=%s\nbuild=%s\napp=%s\nplatform=%s\nname=%s\ndata=%s %s\ndns=%s\n' "$net" "$dv" "$ip" "$mac" "$gw" "$sp" "$dx" "$ss" "$fq" "$rt" "$bd" "$ap" "$pf" "$fn" "$duk" "$dtk" "$dns";
 echo @@E;
 
-# ── @@c capability block: gv()=env flag (getenv), pr()=running daemon (pidof) ──
+# ── @@c capability block ──
+# Two independent truths per service, because they diverge and the divergence IS
+# the interesting fault: `<id>` is what is actually RUNNING (pidof), `<id>.env`
+# is what the config SAYS. The device's own web page only ever reports the env
+# flag, which is how an LP10 can advertise "Spotify: on" with no engine running
+# at all (the AR241CE_8530 OTA left both Spotify flags set and the XOR-guarded
+# init scripts started neither).
+#
+# gv() reads an env flag. getenv prints " [ KEY ]: value", so the value must be
+# cut off the tail before it is compared — matching the raw line against bare
+# "1" silently answered "off" for every flag, whatever its real value.
 gv() {
-  v=$(getenv "$2" 2>/dev/null);
+  v=$(getenv "$2" 2>/dev/null); v=${v##*: };
   case "$v" in
     1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";;
     '') echo "$1=";;
     *) echo "$1=off";;
   esac;
 };
+# pr() reports a running daemon. $2 is deliberately unquoted: BusyBox pidof takes
+# several names, and a service may ship under more than one binary.
 pr() {
-  if pidof "$2" >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi;
+  if pidof $2 >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi;
+};
+# sy() reports the whole Spotify picture in one pass: whether an engine is up,
+# WHICH of the two it is, its Spotify eSDK build, and the state of the env PAIR.
+# The eSDK build is the only honest signal for the codec ceiling — both engines
+# link libFLAC, but only the newer one negotiates FLAC delivery, so the presence
+# of a decoder says nothing about what actually arrives. One grep of the mapped
+# library, once per connection. cfg=both is the pair that starts NEITHER engine.
+sy() {
+  eng=;
+  for sb in spotifymusicpro newspotifyhifi; do
+    pidof $sb >/dev/null 2>&1 && { eng=$sb; break; };
+  done;
+  echo "spotify.eng=$eng";
+  sl=;
+  case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac;
+  sk=;
+  [ -n "$sl" ] && sk=$(grep -ao 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1);
+  echo "spotify.sdk=${sk#esdk:}";
+  se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null);
+  case "${se##*: }/${sr##*: }" in
+    0/1) sc=pro;;
+    1/0) sc=hifi;;
+    1/1) sc=both;;
+    *) sc=none;;
+  esac;
+  echo "spotify.cfg=$sc";
 };
 # lp() scans /proc/net/tcp{,6} for LISTEN (state 0A) sockets on the ports the
 # box exposes without auth — telnet :23 (0017), adb :5555 (15B3), the web config
@@ -132,24 +155,86 @@ pr() {
 lp() {
   xtl=off; xad=off; xwb=off; xct=off;
   for f in /proc/net/tcp /proc/net/tcp6; do
-    while read -r sl la ra stt rest; do
+    while read -r sl2 la ra stt rest; do
       [ "$stt" = 0A ] || continue;
       case "${la##*:}" in 0017) xtl=on;; 15B3) xad=on;; 0050) xwb=on;; 07E2) xct=on;; esac;
     done 2>/dev/null < $f;
   done;
-  echo "telnet=$xtl"; echo "adb=$xad"; echo "web=$xwb"; echo "control=$xct";
+  printf 'telnet=%s\nadb=%s\nweb=%s\ncontrol=%s\n' $xtl $xad $xwb $xct;
 };
-echo @@c;
-pr spotify newspotifyhifi;
-pr airplay airplaydemo;
-pr dlna dmr;
-pr bt bluetoothd;
-gv cast GoogleCast;
-gv tidal TidalEnabled;
-gv qobuz QobuzConnectEnabled;
-gv usb USBEnable;
-lp;
-echo @@E;
+# ct() emits the whole capability block: at connect, and again after every MID-92
+# service toggle, so the pane paints device truth rather than an optimistic flip.
+# The table is id:envkey:daemon — a service with a daemon reports what is RUNNING,
+# one without (usb) can only report its flag. Cast is out of the table because its
+# daemon has two possible names and the loop's word splitting cannot carry them.
+ct() {
+  echo @@c;
+  sy;
+  for e in airplay:airplay:airplaydemo dlna:DMPEnable:dmr bt:btenabled:bluetoothd tidal:TidalEnabled:tidalConnect qobuz:QobuzConnectEnabled:qobuzConnect usb:USBEnable: cast:GoogleCast:cast_sample_app; do
+    ci=${e%%:*}; cr=${e#*:}; ck=${cr%%:*}; cb=${cr#*:};
+    if [ -n "$cb" ]; then pr "$ci" "$cb"; gv "$ci.env" "$ck"; else gv "$ci" "$ck"; fi;
+  done;
+  lp;
+  echo @@E;
+};
+ct;
+
+# ── tg(): service toggle (MID 92, "<id> <state>") ──
+# Writes the env flag the service is ACTUALLY gated on, then kicks its init
+# script detached (setsid) so the daemon outlives this ssh session — the scripts
+# background their daemon with a bare '&', so a foreground kick would take it
+# down with the connection. `start)` is empty in nearly all of them; netready and
+# netdown are the real entry points.
+#
+# Spotify writes BOTH flags as a coherent pair. The vendor's two init scripts are
+# each guarded on the OTHER flag being clear, so writing one alone is exactly how
+# a box ends up with neither engine running — which is what the AR241CE_8530 OTA
+# did. Its state is off|hifi|pro, not 0/1: the engines are not interchangeable.
+sn() { setenv "$1" "$2" >/dev/null; };
+tg() {
+  vid=${1%% *}; vst=${1##* }; vk=; vs=;
+  case "$vid" in
+    spotify)
+      killall -9 newspotifyhifi spotifymusicpro >/dev/null 2>&1;
+      va=0; vb=0;
+      case "$vst" in
+        hifi) va=1; vs=S99newspotifyhifi;;
+        pro) vb=1; vs=S99spotifymusicpro;;
+      esac;
+      sn SpotifyEnabled $va; sn SpotifyProEnabled $vb;;
+    tidal) vk=TidalEnabled; vs=S99tidalConnect;;
+    qobuz) vk=QobuzConnectEnabled; vs=S99qobuzConnect;;
+    usb) vk=USBEnable;;
+    airplay) vs=S99airplay_v2;;
+    dlna) vs=S99dmr;;
+    *) return;;
+  esac;
+  [ -n "$vk" ] && sn "$vk" "$vst";
+  if [ -n "$vs" ]; then
+    vc=netready;
+    case "$vst" in 0|off) vc=netdown;; esac;
+    setsid /etc/init.d/$vs $vc </dev/null >/dev/null 2>&1 &
+  fi;
+  ct;
+  cq=8;
+};
+
+# ── lg(): the @@l log block (MID 93) ──
+# The tail of the device's own syslog — the only place the box records a service
+# refusing to start (an init script's "not enabled" line lands here and nowhere
+# else), so it is what turns "the toggle did nothing" into an answer.
+#
+# The path is NOT /var/log/messages: the box touches that file at boot and then
+# never writes to it (it stays 0 bytes), while rsyslog writes the real thing to
+# /var/log/syslog/messages.log. The severity grep does double duty — it keeps
+# only real log lines, dropping the indented continuation lines of the multi-line
+# PlayView JSON that luci_service logs, which are most of what survives otherwise.
+# luci_service itself is dropped at the source: it is the overwhelming majority of
+# the file and none of it concerns services. The severity FILTER is deliberately
+# not here — it is a view over the same tail, applied laptop-side with no second
+# round trip. sed prefixes every line with a space: a log line that itself began
+# with "@@" would otherwise be read as a section header and break record framing.
+lg() { grep " [EWIDNF]/" /var/log/syslog/messages.log 2>/dev/null | grep -v luci_serv | tail -160 | sed 's/^/ /'; };
 
 # ── @@d device details (reg 92 JSON: serial / MACs / MCU + full fw version) and
 # @@g multiroom group (reg 39 JSON: linked devices) — both once per connection,
@@ -167,7 +252,7 @@ nm;
 
 # ── main streaming loop ── (state: i=metadata countdown, idl=idle ticks, bw=burst
 # window, dg=diag overlay flag, pc49=position-poll gate, pgc=ping gate, ef=EOF streak)
-i=0; prev=; ef=0; idl=0; bw=0; dg=0; pc49=0; pgc=0;
+i=0; prev=; ef=0; idl=0; bw=0; dg=0; pc49=0; pgc=0; cq=0;
 while :; do
 
   # @@B now-playing metadata (MB42), re-read every ~5 ticks, only when it changes
@@ -241,6 +326,10 @@ while :; do
     echo @@s;
     echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--} ${sv:--}";
   fi;
+  # A service toggle re-reads capabilities twice: once immediately (the env write
+  # is visible at once) and once a few ticks later, because a daemon needs a
+  # moment to appear in pidof and the pane must never settle on a stale "off".
+  [ $cq -gt 0 ] && { cq=$((cq-1)); [ $cq = 0 ] && ct; };
   echo @@E;
 
   # tick bookkeeping: countdown, and force an immediate metadata re-read (i=0) on a
@@ -270,6 +359,8 @@ while :; do
         __MIDS__) LUCI_local "$mid" "$data" >/dev/null 2>&1; pc=1;;
         90) case "$data" in 1) dg=1;; *) dg=0;; esac;;
         91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name='AED Multi-band DRC enable' $nv >/dev/null 2>&1; nm;;
+        92) tg "$data";;
+        93) echo @@l; lg; echo @@E;;
       esac;
       read -r -t 0 || break;
       read -r -t 1 mid data || break;

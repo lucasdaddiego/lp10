@@ -30,6 +30,8 @@ type State struct {
 	confinfo  *ConfInfo   // streaming-capability state (@@c, once per connection)
 	details   *DevDetails // device-details JSON readout (@@d, once per connection)
 	mroom     *Multiroom  // multiroom-group readout (@@g, once per connection)
+	logs      []string    // device syslog tail (@@l, only in answer to MID 93)
+	logsAt    time.Time   // when that tail arrived (zero == none yet this run)
 
 	posMs    int
 	posAt    time.Time
@@ -592,6 +594,15 @@ func (st *State) ConfView() *ConfInfo {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.confinfo
+}
+
+// LogView returns the last device syslog tail and when it arrived (nil, zero
+// before any MID-93 answer). The slice is replaced wholesale by the worker and
+// never mutated in place, so the caller may range it without copying.
+func (st *State) LogView() ([]string, time.Time) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.logs, st.logsAt
 }
 
 // ---- preload / optimistic UI ----
