@@ -1143,22 +1143,21 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 // arylic-lp10-teardown.md). @@c rides the connect unconditionally, so the matrix is
 // already in hand whenever the overlay opens.
 
-// confServices is the capability matrix in display order (alphabetical by label,
-// like every diag section's items) — the LP10's *marketed* streaming features
-// only. LibreWireless reference-image baggage that this box doesn't actually
-// offer (Roon / Alexa / Matter / QPlay — installed but env-gated off, not on
-// Arylic's spec sheet; see teardown §13/§7.4) is deliberately omitted. id
-// matches the @@c wire key; the on/off grouping is decided live, so each group
-// row also reads a-z.
-var confServices = []struct{ id, label string }{
-	{"airplay", "AirPlay 2"},
-	{"bt", "Bluetooth"},
-	{"dlna", "DLNA / UPnP"},
-	{"cast", "Google Cast"},
-	{"qobuz", "Qobuz"},
-	{"spotify", "Spotify"},
-	{"tidal", "Tidal"},
-	{"usb", "USB playback"},
+// confServices is the capability matrix for the diagnostics strip. svcRows (the
+// services pane) is the single source of truth for which services exist and what
+// they are called — keeping a second list here meant two places to edit and a
+// guaranteed drift. Only the ORDER differs: the pane is a control surface and
+// orders by what you reach for, while every diag section reads a-z.
+//
+// LibreWireless reference-image baggage that this box doesn't actually offer
+// (Roon / Alexa / Matter / QPlay — installed but env-gated off, not on Arylic's
+// spec sheet; see teardown §13/§7.4) is absent from svcRows and so from here.
+var confServices = alphabetical(svcRows)
+
+func alphabetical(rows []svcDef) []svcDef {
+	out := slices.Clone(rows)
+	slices.SortFunc(out, func(a, b svcDef) int { return strings.Compare(a.label, b.label) })
+	return out
 }
 
 // confHardware is the invariant hardware reference for the LP10 (the one model
@@ -1199,8 +1198,10 @@ func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 		// A service whose configured flag and running state disagree gets the warn
 		// hue rather than being quietly filed under on or off: that mismatch is the
 		// fault the device's own web page structurally cannot show, since it reads
-		// the flag and never looks for the daemon.
-		mark := cv.Divergent(sv.id)
+		// the flag and never looks for the daemon. Only where the flag is actually
+		// consulted, though — see svcFlagNote: a gateDaemon row's init script never
+		// reads its flag, so the two disagreeing there means nothing.
+		mark := sv.gate != gateDaemon && cv.Divergent(sv.id)
 		if cv.Svc[sv.id] == "on" {
 			dot, name := m.sty.pens().acc.render("●"), m.sty.pens().txt.render(sv.label)
 			if mark {

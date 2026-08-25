@@ -14,8 +14,8 @@ func TestParseConfInfoRunningAndConfigured(t *testing.T) {
 		"spotify.eng=spotifymusicpro",
 		"spotify.sdk=3.211.130-g110e3e03",
 		"spotify.cfg=pro",
-		"airplay=on", "airplay.env=on",
-		"dlna=on", "dlna.env=off",
+		"airplay=on", "airplay.env=on", // .env not in the allowlist: dropped
+		"dlna=on", "dlna.env=off", // likewise — its init script never reads it
 		"tidal=off", "tidal.env=on",
 		"qobuz=off", "qobuz.env=",
 		"usb=off",
@@ -42,18 +42,22 @@ func TestParseConfInfoRunningAndConfigured(t *testing.T) {
 	if got, want := ci.Cfg(), "pro"; got != want {
 		t.Errorf("Cfg() = %q, want %q", got, want)
 	}
-	if got, want := ci.Env("dlna"), "off"; got != want {
-		t.Errorf("Env(dlna) = %q, want %q", got, want)
+	if got, want := ci.Env("tidal"), "on"; got != want {
+		t.Errorf("Env(tidal) = %q, want %q", got, want)
 	}
-	// running while configured off, and configured on while not running: both are
-	// divergences worth flagging.
-	for _, id := range []string{"dlna", "tidal"} {
-		if !ci.Divergent(id) {
-			t.Errorf("Divergent(%s) = false, want true", id)
+	// Configured on while nothing runs: a divergence worth flagging, because this
+	// is a flag the service actually consults.
+	if !ci.Divergent("tidal") {
+		t.Error("Divergent(tidal) = false, want true")
+	}
+	// A flag whose init script never reads it is not carried at all, so it can
+	// never be reported as a divergence — AirPlay and DLNA are in that position,
+	// and marking whichever one happened to disagree read as a fault when nothing
+	// was wrong. Unreadable and agreeing flags stay quiet for the same reason.
+	for _, id := range []string{"airplay", "dlna", "bt", "cast", "qobuz", "usb"} {
+		if ci.Env(id) != "" && id != "qobuz" {
+			t.Errorf("Env(%s) = %q, want it not carried at all", id, ci.Env(id))
 		}
-	}
-	// agreeing, and unreadable, must both stay quiet.
-	for _, id := range []string{"airplay", "qobuz", "usb"} {
 		if ci.Divergent(id) {
 			t.Errorf("Divergent(%s) = true, want false", id)
 		}

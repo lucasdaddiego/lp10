@@ -87,10 +87,7 @@ func (m *model) sleepLabel(now time.Time) (label string, final bool) {
 	if m.sleepAt.IsZero() {
 		return "", false
 	}
-	left := m.sleepAt.Sub(now)
-	if left <= 0 {
-		left = 0
-	}
+	left := max(m.sleepAt.Sub(now), 0)
 	secs := int((left + time.Second - 1) / time.Second)
 	if secs < 60 {
 		return GL["sleep"] + " " + strconv.Itoa(secs) + "s", true
