@@ -511,9 +511,9 @@ func TestCov_TeardownKillLadder(t *testing.T) {
 // failure -> backed off, not retried within the delay, no art set.
 func TestCov_ArtTransientFailureBacksOff(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	var hits int32
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		hits.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -524,14 +524,14 @@ func TestCov_ArtTransientFailureBacksOff(t *testing.T) {
 	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto", Host: allowedHost(t, srv.URL)})
 	defer control.stop.Set()
 
-	if !waitFor(func() bool { return atomic.LoadInt32(&hits) >= 1 }, 3*time.Second) {
+	if !waitFor(func() bool { return hits.Load() >= 1 }, 3*time.Second) {
 		t.Fatal("transient endpoint never hit")
 	}
 	time.Sleep(2*artPoll + 100*time.Millisecond) // would re-fetch if not backed off
 	if st.Snap().Art != nil {
 		t.Error("a failing cover must not set art")
 	}
-	if n := atomic.LoadInt32(&hits); n != 1 {
+	if n := hits.Load(); n != 1 {
 		t.Errorf("hits=%d want 1 (backed off after transient failure)", n)
 	}
 }
@@ -540,9 +540,9 @@ func TestCov_ArtTransientFailureBacksOff(t *testing.T) {
 // permanent failure -> the url is marked loaded and never retried.
 func TestCov_ArtUndecodableGivesUp(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	var hits int32
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		hits.Add(1)
 		w.Write([]byte("this is definitely not an image"))
 	}))
 	defer srv.Close()
@@ -553,14 +553,14 @@ func TestCov_ArtUndecodableGivesUp(t *testing.T) {
 	go artWorker(context.Background(), control, st, config.Config{Art: true, ArtMode: "auto", Host: allowedHost(t, srv.URL)})
 	defer control.stop.Set()
 
-	if !waitFor(func() bool { return atomic.LoadInt32(&hits) >= 1 }, 3*time.Second) {
+	if !waitFor(func() bool { return hits.Load() >= 1 }, 3*time.Second) {
 		t.Fatal("undecodable endpoint never hit")
 	}
 	time.Sleep(2*artPoll + 100*time.Millisecond) // would re-fetch if not given up on
 	if st.Snap().Art != nil {
 		t.Error("an undecodable cover must not set art")
 	}
-	if n := atomic.LoadInt32(&hits); n != 1 {
+	if n := hits.Load(); n != 1 {
 		t.Errorf("hits=%d want 1 (undecodable never retried)", n)
 	}
 }

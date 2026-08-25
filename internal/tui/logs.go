@@ -154,10 +154,7 @@ func (m *model) renderLogs(now time.Time, W int) []string {
 
 	// The viewport is whatever the frame leaves after the heading, the blank and
 	// the two-line tail; the offset counts up from the newest line.
-	page := m.rows - 2 - len(content) - 2
-	if page < 1 {
-		page = 1
-	}
+	page := max(m.rows-2-len(content)-2, 1)
 	if len(lines) > 0 {
 		end := len(lines) - m.logScroll
 		end = min(max(end, 1), len(lines))

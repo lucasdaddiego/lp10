@@ -45,9 +45,9 @@ func smallPNG(t *testing.T) []byte {
 func TestArtWorkerLoadsAndDedups(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
 	body := smallPNG(t)
-	var hits int32
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		hits.Add(1)
 		w.Write(body)
 	}))
 	defer srv.Close()
@@ -65,7 +65,7 @@ func TestArtWorkerLoadsAndDedups(t *testing.T) {
 	// refetch — loadedURL gates it — so the endpoint stays hit exactly once. The
 	// old 50ms wait spanned zero polls (artPoll is 700ms), so it proved nothing.
 	time.Sleep(2*artPoll + 100*time.Millisecond)
-	if n := atomic.LoadInt32(&hits); n != 1 {
+	if n := hits.Load(); n != 1 {
 		t.Errorf("endpoint hit %d times, want 1 (dedup by url)", n)
 	}
 }
@@ -73,9 +73,9 @@ func TestArtWorkerLoadsAndDedups(t *testing.T) {
 // art disabled, or art_mode "off", returns immediately and fetches nothing.
 func TestArtWorkerDisabledFetchesNothing(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	var hits int32
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		hits.Add(1)
 	}))
 	defer srv.Close()
 
@@ -87,7 +87,7 @@ func TestArtWorkerDisabledFetchesNothing(t *testing.T) {
 			t.Errorf("cfg %+v: art set despite being disabled", cfg)
 		}
 	}
-	if n := atomic.LoadInt32(&hits); n != 0 {
+	if n := hits.Load(); n != 0 {
 		t.Errorf("disabled worker fetched %d times, want 0", n)
 	}
 }

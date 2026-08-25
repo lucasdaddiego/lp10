@@ -429,10 +429,7 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, W int) []string {
 func (m *model) sectionHead(title string, W int) string {
 	lead := 2
 	body := " " + title + " "
-	rest := W - lead - DispW(body)
-	if rest < 0 {
-		rest = 0
-	}
+	rest := max(W-lead-DispW(body), 0)
 	return m.sty.pens().dmr.render(strings.Repeat("─", lead) + body + strings.Repeat("─", rest))
 }
 

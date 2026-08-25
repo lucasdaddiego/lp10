@@ -122,8 +122,12 @@ var confKeys = map[string]bool{
 	// The two disagreeing is not an inconsistency to paper over — it is the
 	// failure the device's own web page cannot see (it reports only the flag,
 	// so it will happily show "Spotify: on" with no engine running at all).
-	"airplay.env": true, "dlna.env": true, "bt.env": true,
-	"cast.env": true, "tidal.env": true, "qobuz.env": true, "usb.env": true,
+	//
+	// Only for services whose init script actually CONSULTS the flag. AirPlay and
+	// DLNA start on every netready whatever theirs says, and Bluetooth and Cast
+	// cannot be switched from here at all, so reading those four would cost a
+	// getenv fork each (~40ms) to learn something no view is entitled to act on.
+	"tidal.env": true, "qobuz.env": true,
 	// Spotify ships two mutually exclusive engines: which one is live (.eng),
 	// its Spotify eSDK build (.sdk), and the state of the env PAIR (.cfg —
 	// hifi|pro|both|none, where "both" starts NEITHER).

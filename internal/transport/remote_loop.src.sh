@@ -117,11 +117,20 @@ gv() {
     *) echo "$1=off";;
   esac;
 };
-# pr() reports a running daemon. $2 is deliberately unquoted: BusyBox pidof takes
-# several names, and a service may ship under more than one binary.
-pr() {
-  if pidof $2 >/dev/null 2>&1; then echo "$1=on"; else echo "$1=off"; fi;
+# pz() reads every process's comm into $pl in a single pass over /proc, with no
+# forks at all. It replaces a pidof exec per service: measured on this box, seven
+# pidof calls cost ~0.24s against ~0.05s for the whole scan, and comm is the exact
+# executable name, so the match stays exact rather than a substring guess over a
+# command line. Refreshed at the top of every ct(), since a service toggle is
+# precisely when the process list changes.
+pz() {
+  pl=" ";
+  for pf in /proc/[0-9]*/comm; do
+    read -r pc < $pf 2>/dev/null && pl="$pl$pc ";
+  done;
 };
+# pr() reports a running daemon by looking it up in that one scan.
+pr() { case "$pl" in *" $2 "*) echo "$1=on";; *) echo "$1=off";; esac; };
 # sy() reports the whole Spotify picture in one pass: whether an engine is up,
 # WHICH of the two it is, its Spotify eSDK build, and the state of the env PAIR.
 # The eSDK build is the only honest signal for the codec ceiling — both engines
@@ -130,14 +139,14 @@ pr() {
 # library, once per connection. cfg=both is the pair that starts NEITHER engine.
 sy() {
   eng=;
-  for sb in spotifymusicpro newspotifyhifi; do
-    pidof $sb >/dev/null 2>&1 && { eng=$sb; break; };
-  done;
+  case "$pl" in
+    *" spotifymusicpro "*) eng=spotifymusicpro;;
+    *" newspotifyhifi "*) eng=newspotifyhifi;;
+  esac;
   echo "spotify.eng=$eng";
   sl=;
   case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac;
-  sk=;
-  [ -n "$sl" ] && sk=$(grep -ao 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1);
+  [ "$eng" = "$sle" ] || { sle=$eng; sk=; [ -n "$sl" ] && sk=$(grep -aom1 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1); };
   echo "spotify.sdk=${sk#esdk:}";
   se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null);
   case "${se##*: }/${sr##*: }" in
@@ -148,32 +157,48 @@ sy() {
   esac;
   echo "spotify.cfg=$sc";
 };
-# lp() scans /proc/net/tcp{,6} for LISTEN (state 0A) sockets on the ports the
-# box exposes without auth — telnet :23 (0017), adb :5555 (15B3), the web config
-# :80 (0050) and the :2018 control tunnel (07E2) — so the diagnostics can say
-# what the LAN can reach. Read once at connect, like the rest of @@c.
+# lp() scans /proc/net/tcp{,6} for LISTEN (state 0A) sockets on the ports the box
+# exposes without auth — telnet :23 (0017), adb :5555 (15B3), the web config :80
+# (0050) and the :2018 control tunnel (07E2) — so the diagnostics can say what the
+# LAN can reach. It collects the listening ports into one string and then decides,
+# rather than carrying a flag variable per port: same output, and the loop needs
+# every byte it can give back (see TestRemoteLoopFitsDropbearCmdLen).
 lp() {
-  xtl=off; xad=off; xwb=off; xct=off;
+  xp=;
   for f in /proc/net/tcp /proc/net/tcp6; do
     while read -r sl2 la ra stt rest; do
-      [ "$stt" = 0A ] || continue;
-      case "${la##*:}" in 0017) xtl=on;; 15B3) xad=on;; 0050) xwb=on;; 07E2) xct=on;; esac;
+      [ "$stt" = 0A ] && xp="$xp${la##*:} ";
     done 2>/dev/null < $f;
   done;
-  printf 'telnet=%s\nadb=%s\nweb=%s\ncontrol=%s\n' $xtl $xad $xwb $xct;
+  for e in telnet:0017 adb:15B3 web:0050 control:07E2; do
+    case "$xp" in
+      *"${e#*:} "*) echo "${e%%:*}=on";;
+      *) echo "${e%%:*}=off";;
+    esac;
+  done;
 };
 # ct() emits the whole capability block: at connect, and again after every MID-92
 # service toggle, so the pane paints device truth rather than an optimistic flip.
-# The table is id:envkey:daemon — a service with a daemon reports what is RUNNING,
-# one without (usb) can only report its flag. Cast is out of the table because its
-# daemon has two possible names and the loop's word splitting cannot carry them.
+#
+# The CONFIGURED flag is read only where the init script actually consults it.
+# AirPlay and DLNA start on every netready whatever theirs says, and Bluetooth and
+# Cast are not switchable from here at all, so reading those four would spend a
+# getenv fork each (~40ms) on a value no view may act on — and reporting them
+# alongside the running state invited exactly the wrong reading, that a service
+# whose inert flag happens to disagree is somehow broken.
 ct() {
+  pz;
   echo @@c;
   sy;
-  for e in airplay:airplay:airplaydemo dlna:DMPEnable:dmr bt:btenabled:bluetoothd tidal:TidalEnabled:tidalConnect qobuz:QobuzConnectEnabled:qobuzConnect usb:USBEnable: cast:GoogleCast:cast_sample_app; do
-    ci=${e%%:*}; cr=${e#*:}; ck=${cr%%:*}; cb=${cr#*:};
-    if [ -n "$cb" ]; then pr "$ci" "$cb"; gv "$ci.env" "$ck"; else gv "$ci" "$ck"; fi;
-  done;
+  pr airplay airplaydemo;
+  pr dlna dmr;
+  pr bt bluetoothd;
+  pr cast cast_sample_app;
+  pr tidal tidalConnect;
+  gv tidal.env TidalEnabled;
+  pr qobuz qobuzConnect;
+  gv qobuz.env QobuzConnectEnabled;
+  gv usb USBEnable;
   lp;
   echo @@E;
 };
