@@ -676,7 +676,7 @@ func TestDiagLatencyBlockFullRender(t *testing.T) {
 	st := protocol.NewState()
 	applyFixtureRecords(st, "device_record.txt") // @@i: eth link
 	// feed several @@s with a gateway spike (48) amid a ~6ms baseline
-	base := "@@s\n5185 0.2 0.2 0.2 138000 221064 2 AR241CE_9243.16 Linux-5.15.137 50400 "
+	base := "@@s\n5185 0.2 0.2 0.2 138000 221064 2 AR241CE_8530.23 Linux-5.15.137 50400 "
 	type s struct{ rx, tx, you, gw, net string }
 	for _, smp := range []s{
 		{"1000", "500", "8", "6", "24"}, {"2000", "700", "9", "6", "25"},

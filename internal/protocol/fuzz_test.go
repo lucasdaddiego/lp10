@@ -150,7 +150,7 @@ func FuzzSanitizeCached(f *testing.F) {
 // @@s stats line, the @@i and @@c key=value blocks, and the raw register JSON
 // of @@d / @@g.
 func FuzzSections(f *testing.F) {
-	f.Add("12345.6 0.44 0.36 0.42 139000 221064 2 AR241CE_9243.16 Linux 52000 1 2 - - 2.1 14.3 31.4 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 - 0 0 256 0",
+	f.Add("12345.6 0.44 0.36 0.42 139000 221064 2 AR241CE_8530.23 Linux 52000 1 2 - - 2.1 14.3 31.4 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 - 0 0 256 0",
 		"net=eth\nip=192.168.1.13\ndata=1258291 7340032",
 		"spotify=on\nbt=off",
 		`MID-Read:92 Data:{"macaddress":{"bt":"aa"},"serialnumber":{"device_serialnumber":9},"versioninfo":{"devicefwversion":null}} Length:1`,

@@ -40,7 +40,7 @@ func TestDiagLSSDPRow(t *testing.T) {
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "lssdp") {
 		t.Fatal("no lssdp row before a probe")
 	}
-	st.SetLSSDP(&protocol.LSSDPInfo{Name: "Living", FW: "AR241CE_9243.16.2", State: "S", NetMode: "ETH0"})
+	st.SetLSSDP(&protocol.LSSDPInfo{Name: "Living", FW: "AR241CE_8530.23.2", State: "S", NetMode: "ETH0"})
 	out := stripANSI(m.viewContent())
 	if !strings.Contains(out, "lssdp") || !strings.Contains(out, "answered") || !strings.Contains(out, "eth0") {
 		t.Errorf("answered row missing:\n%s", out)

@@ -54,7 +54,10 @@ type Spec struct {
 }
 
 // Specs is the control set. Codes verified live on FW AR241CE_9243 / MCU 16
-// against Arylic's UART API doc (2026-08-22):
+// against Arylic's UART API doc (2026-08-22), and re-verified unchanged on
+// AR241CE_8530 / MCU 23 (2026-09-02): the MCU's command table and the PEQ
+// preset list are byte-identical across the two mcu.bin images, and every
+// getter below answered with the same shape on the live box.
 //   - MXV  max-volume cap (30..100 per the doc; the slider keeps 0 so a
 //     device-set low cap still displays).
 //   - EQE  the EQ enable — whether the selected preset is applied at all.

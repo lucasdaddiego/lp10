@@ -46,7 +46,7 @@ func TestWifiBand(t *testing.T) {
 func TestDiagPlayingBufferReadsFull(t *testing.T) {
 	st := protocol.NewState()
 	// PcmState RUNNING with avail 4834 of a 22050-frame ring -> ~78% full.
-	applyRaw(st, "@@s\n100 0.1 0.1 0.1 139000 221064 2 AR241CE_9243.16 Linux-5.15.137 "+
+	applyRaw(st, "@@s\n100 0.1 0.1 0.1 139000 221064 2 AR241CE_8530.23 Linux-5.15.137 "+
 		"49000 1 2 - - 2.0 - - RUNNING 4834 44100 S16_LE 2 22050 1200000 1/200 -\n@@E\n")
 	applyRaw(st, "@@v\nMID-Read:64 Data:54 Length:2\n@@E\n")
 	m, _, _ := modelWith(st)
@@ -123,8 +123,8 @@ func TestDiagIdentityExtrasAndMultiroom(t *testing.T) {
 		"Living",               // name row (FriendlyName, works without mDNS)
 		"RKARYLLP100000000000", // serial
 		"aa:bb:cc:dd:ee:fe",    // bt MAC
-		"v16",                  // mcu version
-		"AR241CE_9243.16.2",    // the fuller firmware string from reg 92
+		"v23",                  // mcu version
+		"AR241CE_8530.23.2",    // the fuller firmware string from reg 92
 		"solo",                 // multiroom (empty group)
 	} {
 		if !strings.Contains(flat, want) {
@@ -154,7 +154,7 @@ func TestDiagMultiroomLinked(t *testing.T) {
 // The errors row shows SESSION deltas — the first sample baselines the boot
 // lifetime (256 historical drops read as zero), growth turns the number amber.
 func TestDiagErrorsRowSessionDelta(t *testing.T) {
-	base := "@@s\n100 0.1 0.1 0.1 139000 221064 2 AR241CE_9243.16 Linux-5.15.137 " +
+	base := "@@s\n100 0.1 0.1 0.1 139000 221064 2 AR241CE_8530.23 Linux-5.15.137 " +
 		"49000 1000 500 - - 2.0 - - RUNNING 4834 44100 S16_LE 2 22050 1200000 1/200 - "
 	st := protocol.NewState()
 	applyFixtureRecords(st, "device_record.txt")
