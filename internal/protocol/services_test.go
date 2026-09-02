@@ -107,11 +107,14 @@ func TestValidatePayloadServiceToggle(t *testing.T) {
 			t.Errorf("ValidatePayload(92, %q) = true, want false", d)
 		}
 	}
-	// MID 93 is a bare fetch: the severity filter is a laptop-side view.
-	if !ValidatePayload(93, "1") {
-		t.Error("ValidatePayload(93, 1) = false, want true")
+	// MID 93 is a bare fetch naming the source (1 syslog, 2 the vendor app's
+	// log): the severity filter is a laptop-side view.
+	for _, d := range []string{"1", "2"} {
+		if !ValidatePayload(93, d) {
+			t.Errorf("ValidatePayload(93, %q) = false, want true", d)
+		}
 	}
-	for _, d := range []string{"0", "2", "", "x"} {
+	for _, d := range []string{"0", "3", "", "x", "12"} {
 		if ValidatePayload(93, d) {
 			t.Errorf("ValidatePayload(93, %q) = true, want false", d)
 		}
@@ -144,17 +147,17 @@ func TestReduceCommandsServiceTogglesCollapsePerService(t *testing.T) {
 // present-but-empty section means the tail matched nothing, which is an answer
 // and must not read as "never asked".
 func TestParseLogs(t *testing.T) {
-	lines, ok := parseLogs(Record{"l": {" Aug 25 15:28 I/x: hi", " @@E not a header"}})
+	lines, ok := parseLogs(Record{"l": {" Aug 25 15:28 I/x: hi", " @@E not a header"}}, "l")
 	if !ok {
 		t.Fatal("parseLogs reported no section")
 	}
 	if want := []string{"Aug 25 15:28 I/x: hi", "@@E not a header"}; !reflect.DeepEqual(lines, want) {
 		t.Errorf("parseLogs = %q, want %q", lines, want)
 	}
-	if l, ok := parseLogs(Record{"l": {}}); !ok || len(l) != 0 {
+	if l, ok := parseLogs(Record{"l": {}}, "l"); !ok || len(l) != 0 {
 		t.Errorf("empty section = (%q, %v), want ([], true)", l, ok)
 	}
-	if _, ok := parseLogs(Record{}); ok {
+	if _, ok := parseLogs(Record{}, "l"); ok {
 		t.Error("absent section reported present")
 	}
 }
@@ -163,16 +166,16 @@ func TestParseLogs(t *testing.T) {
 // one wholesale.
 func TestStateLogView(t *testing.T) {
 	st := NewState()
-	if lines, at := st.LogView(); lines != nil || !at.IsZero() {
+	if lines, at := st.LogView(LogSyslog); lines != nil || !at.IsZero() {
 		t.Error("fresh State already holds a log tail")
 	}
 	ApplyRecord(st, Record{"l": {" one", " two"}})
-	lines, at := st.LogView()
+	lines, at := st.LogView(LogSyslog)
 	if len(lines) != 2 || at.IsZero() {
 		t.Fatalf("LogView = (%q, %v)", lines, at)
 	}
 	ApplyRecord(st, Record{"l": {" three"}})
-	if lines, _ := st.LogView(); len(lines) != 1 || lines[0] != "three" {
+	if lines, _ := st.LogView(LogSyslog); len(lines) != 1 || lines[0] != "three" {
 		t.Errorf("second tail did not replace the first: %q", lines)
 	}
 }
@@ -194,5 +197,50 @@ func TestReduceCommandsServiceToggleSkipsOtherMids(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ReduceCommands =\n %+v\nwant\n %+v", got, want)
+	}
+}
+
+// The vendor app version rides @@i as vapp=. The loop cuts it out of
+// /lsync/app-0.json with no shell-side guard, so a manifest without a
+// "version" key hands over some other quoted token — only a version-shaped
+// value may reach DevInfo.
+func TestDevInfoVendorApp(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"32", "32"},
+		{"1.4.2-rc1", "1.4.2-rc1"},
+		{"", ""},
+		{"rakoit_app", ""},              // the "name" value of a version-less manifest
+		{"9aa7f360179db64ab10853", ""}, // an md5 is too long to be a version
+		{"32; rm -rf", ""},
+	} {
+		st := NewState()
+		for _, rec := range recordsFrom(splitLines("@@i\nnet=eth\nvapp=" + c.in + "\n@@E\n")) {
+			ApplyRecord(st, rec)
+		}
+		di := st.DiagnosticView(time.Now()).DevInfo
+		if di == nil || di.VendorApp != c.want {
+			t.Errorf("vapp=%q -> %+v, want VendorApp %q", c.in, di, c.want)
+		}
+	}
+}
+
+// The two log tails are independent answers: an @@L never disturbs the held
+// syslog tail and vice versa, and each is read back through its own source.
+func TestStateTwoLogSources(t *testing.T) {
+	st := NewState()
+	ApplyRecord(st, Record{"l": {" Aug 25 15:28 I/x: sys"}})
+	ApplyRecord(st, Record{"L": {" [2026-09-02 00:06:26.775] [DEBUG] [luci-rx] MB#112"}})
+	if lines, at := st.LogView(LogSyslog); at.IsZero() || len(lines) != 1 || lines[0] != "Aug 25 15:28 I/x: sys" {
+		t.Errorf("syslog tail = %q at %v", lines, at)
+	}
+	if lines, at := st.LogView(LogVendor); at.IsZero() || len(lines) != 1 || lines[0] != "[2026-09-02 00:06:26.775] [DEBUG] [luci-rx] MB#112" {
+		t.Errorf("vendor tail = %q at %v", lines, at)
+	}
+	ApplyRecord(st, Record{"L": {}})
+	if lines, _ := st.LogView(LogVendor); len(lines) != 0 {
+		t.Errorf("an empty vendor answer must replace the tail, got %q", lines)
+	}
+	if lines, _ := st.LogView(LogSyslog); len(lines) != 1 {
+		t.Errorf("the vendor answer disturbed the syslog tail: %q", lines)
 	}
 }

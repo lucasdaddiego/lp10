@@ -13,6 +13,10 @@ import (
 
 var reNum = regexp.MustCompile(`Data:(-?\d+)`)
 
+// reVendorApp is the shape of a vendor app version ("32", "1.4.2-rc1"): digits
+// first, then at most fifteen more version characters.
+var reVendorApp = regexp.MustCompile(`^[0-9][0-9A-Za-z.\-]{0,15}$`)
+
 // joinLines is strings.Join with the single-line case — which is what a per-tick
 // register read (@@p / @@t / @@v) always is — returning the line as-is instead of
 // allocating a copy of it.
@@ -109,6 +113,7 @@ type DevInfo struct {
 	Name                 string // the device's FriendlyName (reg 90); "" when unread
 	DataUsed, DataTotal  string // /lsync (data partition), KB
 	DNS                  string // configured resolver (first nameserver); "" when absent
+	VendorApp            string // the vendor app loader's manifest version (/lsync/app-0.json); "" when unread
 }
 
 // confKeys is the allowlist of capability ids the one-shot @@c block may carry;
@@ -215,8 +220,10 @@ type parsedRecord struct {
 
 	night, nightOK bool // @@n: the multi-band DRC enable readback
 
-	logs   []string // @@l: the device syslog tail, answering a MID-93 request
-	hasLog bool
+	logs    []string // @@l: the device syslog tail, answering a MID-93 "1"
+	hasLog  bool
+	vlogs   []string // @@L: the vendor app's log tail, answering a MID-93 "2"
+	hasVlog bool
 }
 
 // regInt extracts the integer register value from a section's joined lines
@@ -256,17 +263,19 @@ func parseRecord(rec Record) parsedRecord {
 	p.details = parseDevDetails(rec["d"])
 	p.mroom = parseMultiroom(rec["g"])
 	p.night, p.nightOK = parseNight(rec["n"])
-	p.logs, p.hasLog = parseLogs(rec)
+	p.logs, p.hasLog = parseLogs(rec, "l")
+	p.vlogs, p.hasVlog = parseLogs(rec, "L")
 	return p
 }
 
-// parseLogs decodes the @@l section: the device syslog tail. The device prefixes
-// every line with a space so a log line beginning with "@@" cannot be mistaken
-// for a section header, so that one space comes back off here. Present-but-empty
-// is meaningful (the filter matched nothing) and must not read as "no answer",
-// hence the comma-ok on the section rather than a length test.
-func parseLogs(rec Record) ([]string, bool) {
-	lines, ok := rec["l"]
+// parseLogs decodes a log-tail section — "l" (the device syslog) or "L" (the
+// vendor app's /lsync/app.log). The device prefixes every line with a space so
+// a log line beginning with "@@" cannot be mistaken for a section header, so
+// that one space comes back off here. Present-but-empty is meaningful (the
+// filter matched nothing) and must not read as "no answer", hence the comma-ok
+// on the section rather than a length test.
+func parseLogs(rec Record, tag string) ([]string, bool) {
+	lines, ok := rec[tag]
 	if !ok {
 		return nil, false
 	}
@@ -319,6 +328,9 @@ func ApplyRecord(st *State, rec Record) bool {
 	}
 	if p.confinfo != nil {
 		st.confinfo = p.confinfo
+	}
+	if p.hasVlog {
+		st.vlogs, st.vlogsAt = p.vlogs, now
 	}
 	if p.hasLog {
 		st.logs, st.logsAt = p.logs, now
@@ -468,6 +480,13 @@ func parseDevInfo(lines []string) *DevInfo {
 			}
 		case "dns":
 			di.DNS = v
+		case "vapp":
+			// The loop cuts this out of /lsync/app-0.json with no shell-side guard
+			// (bytes), so a manifest without a "version" key hands over some other
+			// quoted token: only a version-shaped value is accepted here.
+			if reVendorApp.MatchString(v) {
+				di.VendorApp = v
+			}
 		}
 	}
 	// An all-junk block (lines present, nothing recognisable) must not wipe a

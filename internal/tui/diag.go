@@ -93,6 +93,12 @@ func collectIdentity(si *protocol.SysInfo, dev *protocol.DevInfo, dt *protocol.D
 			if dev.App != "" {
 				d.build += " · app " + dev.App
 			}
+			// The vendor's Rust app updates on its own schedule, apart from the
+			// firmware OTA (v32 landed five days after the 8530 bundle and brought
+			// presets), so its version is a drift signal in its own right.
+			if dev.VendorApp != "" {
+				d.build += " · vendor app v" + dev.VendorApp
+			}
 		}
 		d.name = dev.Name
 	}

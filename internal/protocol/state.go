@@ -30,8 +30,10 @@ type State struct {
 	confinfo  *ConfInfo   // streaming-capability state (@@c, once per connection)
 	details   *DevDetails // device-details JSON readout (@@d, once per connection)
 	mroom     *Multiroom  // multiroom-group readout (@@g, once per connection)
-	logs      []string    // device syslog tail (@@l, only in answer to MID 93)
+	logs      []string    // device syslog tail (@@l, only in answer to MID 93 "1")
 	logsAt    time.Time   // when that tail arrived (zero == none yet this run)
+	vlogs     []string    // vendor app log tail (@@L, only in answer to MID 93 "2")
+	vlogsAt   time.Time
 
 	posMs    int
 	posAt    time.Time
@@ -596,12 +598,24 @@ func (st *State) ConfView() *ConfInfo {
 	return st.confinfo
 }
 
-// LogView returns the last device syslog tail and when it arrived (nil, zero
-// before any MID-93 answer). The slice is replaced wholesale by the worker and
+// LogSource names one of the two device-side tails MID 93 can fetch: the wire
+// value is the MID-93 payload, so the TUI and the loop agree by construction.
+type LogSource int
+
+const (
+	LogSyslog LogSource = 1 // /var/log/syslog/messages.log (@@l)
+	LogVendor LogSource = 2 // /lsync/app.log, the vendor app's own log (@@L)
+)
+
+// LogView returns the last tail of the given source and when it arrived (nil,
+// zero before any answer). The slice is replaced wholesale by the worker and
 // never mutated in place, so the caller may range it without copying.
-func (st *State) LogView() ([]string, time.Time) {
+func (st *State) LogView(src LogSource) ([]string, time.Time) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if src == LogVendor {
+		return st.vlogs, st.vlogsAt
+	}
 	return st.logs, st.logsAt
 }
 

@@ -226,7 +226,7 @@ func (m *model) openOverlay(which int) {
 		return // no room to draw it; the dashboard keeps the keys
 	}
 	m.diag, m.ov = false, which
-	if which == ovLogs && !m.logAsked {
+	if which == ovLogs && !m.logAsked[m.logSrc] {
 		m.logRequest()
 	}
 }
@@ -291,6 +291,8 @@ func (m *model) overlayKey(ev keyEvent) (quit bool) {
 			m.logScrollBy(-page, page)
 		case ev.kind == kRune && ev.r == 'f':
 			m.logCycleFilter()
+		case ev.kind == kRune && ev.r == 's':
+			m.logCycleSource()
 		case ev.kind == kRune && ev.r == 'r':
 			m.logRequest()
 		}

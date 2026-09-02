@@ -143,12 +143,16 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   at full scale. The pane names that cost rather than hiding it, and always writes
   the Spotify flags as a coherent pair so the vendor's both-set trap is
   unreachable from here.
-- **Device log** (`l`) — the tail of `/var/log/messages`, fetched on demand over
-  the same ssh stream (zero cost while the pane is closed). It is the only place
-  the box records a service *refusing* to start — an init script's "not enabled"
-  line lands there and nowhere else — so it is what turns "the switch did nothing"
-  into an answer. `f` filters to errors and warnings, `r` refetches; the
-  luci_service chatter that is most of the file is dropped at the source.
+- **Device log** (`l`) — the tail of one of the box's own logs, fetched on demand
+  over the same ssh stream (zero cost while the pane is closed). The **device
+  log** (`/var/log/syslog/messages.log`) is the only place the box records a
+  service *refusing* to start — an init script's "not enabled" line lands there
+  and nowhere else — so it is what turns "the switch did nothing" into an answer.
+  `s` switches to the **vendor app log** (`/lsync/app.log`, since firmware 8530):
+  the Arylic app narrates every `:2018` tunnel frame and the MCU's reply, every
+  preset action and every OLED publish, so it is where "the equalizer did nothing"
+  gets answered. `f` filters to errors and warnings, `r` refetches; the
+  luci_service chatter that is most of the syslog is dropped at the source.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -212,7 +216,7 @@ the arrow keys.
 | `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
 | `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
 | `c` | services pane — what each streaming service is really doing, and switch it |
-| `l` | device log — the tail of the box's own syslog |
+| `l` | device log — the tail of the box's syslog, or (`s`) of the vendor app's own log |
 | `?` | diagnostics overlay (see below) |
 | `q` | quit |
 
@@ -288,7 +292,7 @@ stacked column when narrow):
 ┃                                                               link      ethernet · 100 Mbit/s · full duplex          ┃
 ┃  ─ device ──────────────────────────────────────────────      mac       aa:bb:cc:dd:ee:ff                            ┃
 ┃    bt        aa:bb:cc:dd:ee:fe                                multiroom solo                                         ┃
-┃    build     2026-01-12 · app 318                             traffic   rx 58 KB/s · tx 2 KB/s                       ┃
+┃    build     2026-01-12 · app 318 · vendor app v32            traffic   rx 58 KB/s · tx 2 KB/s                       ┃
 ┃    firmware  AR241CE_8530.23.2                                                                                       ┃
 ┃    mcu       v23                                            ─ resources ───────────────────────────────────────────  ┃
 ┃    model     Arylic AR241CE · LS8                             cpu       ━━━─────────  22% 1m 0.44 · 1200 MHz         ┃
@@ -320,7 +324,7 @@ Eight sections, each answering one question, in the alphabetical order they rend
 the **audio** chain (source stream in, DAC out, the ring buffer between), lp10's own
 **connection** to the box (the ssh stream the records ride, the `:2018` control
 tunnel, the target host — readable even while the device is down, which is exactly
-when you need them), **device** identity (model, firmware, build — plus the name,
+when you need them), **device** identity (model, firmware, build and the vendor app's own version — plus the name,
 serial, Bluetooth MAC, and MCU version read from the device's own registers), a
 **hardware** reference (SoC, the DAC situation, the line-out / optical outputs — encoded
 from a full teardown of the unit, corrected by live probes: the DAC is the front-panel

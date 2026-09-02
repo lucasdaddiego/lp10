@@ -109,9 +109,10 @@ func ValidatePayload(mid int, data string) bool {
 		}
 		return svcStates[id][state]
 	case 93:
-		// a bare fetch request — the tail's severity filter is a laptop-side view
-		// over the answer, not something the device is asked to re-run
-		return data == "1"
+		// a bare fetch request naming the source — 1 the device syslog (@@l),
+		// 2 the vendor app's own log (@@L). The severity filter is a laptop-side
+		// view over the answer, not something the device is asked to re-run.
+		return data == "1" || data == "2"
 	}
 	return false
 }

@@ -1,4 +1,4 @@
-// The logs pane ('l'): the tail of the device's own syslog.
+// The logs pane ('l'): the tail of one of the device's own logs.
 //
 // This is the view that answers "the switch did nothing, why". The LP10's init
 // scripts announce their decisions to syslog and nowhere else — "Spotify_hifi
@@ -10,10 +10,17 @@
 // (The file is /var/log/syslog/messages.log, not /var/log/messages — the box
 // touches the latter at boot and then never writes to it.)
 //
+// Since firmware 8530 / vendor app v32 there is a second narrator: the Rust
+// rakoit_app writes /lsync/app.log, where every :2018 tunnel frame and the
+// MCU's reply, every preset (favourite) action and every PlayView publish is
+// recorded — the place to look when the equalizer or a preset key "did
+// nothing". 's' switches between the two tails; each is fetched on first view
+// and kept until refreshed.
+//
 // The log is fetched on demand rather than streamed. It is a request/response
 // on the same single ssh connection the rest of the app rides (MID 93 out, an
-// @@l section back), which keeps the per-tick cost at exactly zero while the
-// pane is closed — the same bargain the diagnostics overlay makes with @@s.
+// @@l / @@L section back), which keeps the per-tick cost at exactly zero while
+// the pane is closed — the same bargain the diagnostics overlay makes with @@s.
 
 package tui
 
@@ -21,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // logFilters are views over the ONE tail the device sends, in the order 'f'
@@ -39,10 +48,22 @@ var logFilters = []struct {
 	}},
 }
 
-// logRequest asks the device for a fresh tail; the answer replaces the held one.
+// logSources are the two device-side tails, in the order 's' steps through
+// them. The wire value is the MID-93 payload (protocol.LogSource), so the loop
+// and this pane can never disagree about which file "2" means.
+var logSources = []struct {
+	label string
+	src   protocol.LogSource
+}{
+	{"device log", protocol.LogSyslog},
+	{"vendor app log", protocol.LogVendor},
+}
+
+// logRequest asks the device for a fresh tail of the selected source; the
+// answer replaces the held one for that source only.
 func (m *model) logRequest() {
-	m.send(93, "1")
-	m.logAsked = true
+	m.send(93, strconv.Itoa(int(logSources[m.logSrc].src)))
+	m.logAsked[m.logSrc] = true
 }
 
 // logCycleFilter steps the view. No fetch: the same tail is simply shown through
@@ -52,13 +73,24 @@ func (m *model) logCycleFilter() {
 	m.logScroll = 0
 }
 
-// logVisible is the held tail through the current filter.
+// logCycleSource switches between the device syslog and the vendor app's log.
+// A source seen before shows its held tail at once; a first visit costs the
+// one round trip, exactly like opening the pane did.
+func (m *model) logCycleSource() {
+	m.logSrc = (m.logSrc + 1) % len(logSources)
+	m.logScroll = 0
+	if !m.logAsked[m.logSrc] {
+		m.logRequest()
+	}
+}
+
+// logVisible is the held tail of the selected source through the current filter.
 func (m *model) logVisible() ([]string, time.Time) {
-	lines, at := m.st.LogView()
+	lines, at := m.st.LogView(logSources[m.logSrc].src)
 	keep := logFilters[m.logFilter].keep
 	out := make([]string, 0, len(lines))
 	for _, ln := range lines {
-		if sev, _, ok := logSeverity(ln); keep(sev, ok) {
+		if _, sev, _, ok := parseLogLine(ln); keep(sev, ok) {
 			out = append(out, ln)
 		}
 	}
@@ -96,6 +128,61 @@ func logSeverity(line string) (sev byte, tagStart int, ok bool) {
 	return 0, 0, false
 }
 
+// vendorLevels maps the vendor app's bracketed level onto the syslog letters
+// the filters and pens already understand, so one severity vocabulary serves
+// both tails. Unknown levels stay undecorated.
+var vendorLevels = map[string]byte{
+	"TRACE": 'D', "DEBUG": 'D', "INFO": 'I', "WARN": 'W', "WARNING": 'W', "ERROR": 'E', "FATAL": 'F',
+}
+
+// parseLogLine splits one line of either tail into its clock, severity letter
+// and the rest (tag + message). Two shapes are known:
+//
+//	syslog:  "Aug 25 15:28:39:871948 I/tag[pid]: msg"      → "15:28:39", 'I', "tag[pid]: msg"
+//	vendor:  "[2026-09-02 00:06:26.775] [DEBUG] [luci-rx] msg" → "00:06:26", 'D', "[luci-rx] msg"
+//
+// ok is false for anything else; such a line renders whole and undecorated.
+func parseLogLine(line string) (clock string, sev byte, rest string, ok bool) {
+	if strings.HasPrefix(line, "[") {
+		end := strings.IndexByte(line, ']')
+		if end < 0 {
+			return "", 0, "", false
+		}
+		stamp := strings.TrimSpace(line[1:end])
+		if i := strings.IndexByte(stamp, ' '); i >= 0 {
+			stamp = stamp[i+1:] // drop the date; every tail is one day
+		}
+		if len(stamp) > 8 {
+			stamp = stamp[:8] // drop the milliseconds
+		}
+		rest = strings.TrimSpace(line[end+1:])
+		if !strings.HasPrefix(rest, "[") {
+			return "", 0, "", false
+		}
+		lend := strings.IndexByte(rest, ']')
+		if lend < 0 {
+			return "", 0, "", false
+		}
+		sev, known := vendorLevels[strings.ToUpper(strings.TrimSpace(rest[1:lend]))]
+		if !known {
+			return "", 0, "", false
+		}
+		return stamp, sev, strings.TrimSpace(rest[lend+1:]), true
+	}
+	sev, tagStart, ok := logSeverity(line)
+	if !ok {
+		return "", 0, "", false
+	}
+	// "Aug 25 15:28:39:871948 I/tag: msg" -> fields[2] is the clock+usec
+	if f := strings.Fields(line); len(f) >= 3 {
+		clock = f[2]
+		if i := strings.LastIndexByte(clock, ':'); i == 8 {
+			clock = clock[:i] // drop ":871948"
+		}
+	}
+	return clock, sev, strings.TrimSpace(line[tagStart:]), true
+}
+
 // logPen picks the row colour from the priority letter: errors and fatals in the
 // fault hue, warnings in the warn hue, everything else muted. The severity is
 // the only part of a log line worth spending colour on — it is what the eye
@@ -111,40 +198,31 @@ func (m *model) logPen(sev byte) func(string) string {
 }
 
 // logRow renders one line: the clock time, then the tag and message in the
-// severity's colour. The date and the microsecond field are dropped — every line
+// severity's colour. The date and the sub-second field are dropped — every line
 // in a tail is from the same day, and six digits of precision earn nothing here.
 func (m *model) logRow(line string, w int) string {
 	t := m.sty.pens()
-	sev, tagStart, ok := logSeverity(line)
+	clock, sev, rest, ok := parseLogLine(line)
 	if !ok {
 		return clipStyled(t.dmr.render(Clip(line, w)), w)
 	}
-	// "Aug 25 15:28:39:871948 I/tag: msg" -> fields[2] is the clock+usec
-	clock := ""
-	if f := strings.Fields(line); len(f) >= 3 {
-		clock = f[2]
-		if i := strings.LastIndexByte(clock, ':'); i == 8 {
-			clock = clock[:i] // drop ":871948"
-		}
-	}
-	rest := strings.TrimSpace(line[tagStart:])
 	row := t.dim.render(padVis(clock, 9)) + m.logPen(sev)(Clip(rest, w-9))
 	return clipStyled(row, w)
 }
 
-// renderLogs draws the pane: a heading carrying the filter and the age of the
-// tail, then the viewport. Before the first answer it says it is waiting rather
-// than showing an empty box that reads as "no logs".
+// renderLogs draws the pane: a heading carrying the source, the filter and the
+// age of the tail, then the viewport. Before the first answer it says it is
+// waiting rather than showing an empty box that reads as "no logs".
 func (m *model) renderLogs(now time.Time, W int) []string {
 	t := m.sty.pens()
 	lines, at := m.logVisible()
 
-	head := m.sectionHead("device log · "+logFilters[m.logFilter].label, W)
+	head := m.sectionHead(logSources[m.logSrc].label+" · "+logFilters[m.logFilter].label, W)
 	var content []string
 	content = append(content, head, "")
 
 	switch {
-	case at.IsZero() && m.logAsked:
+	case at.IsZero() && m.logAsked[m.logSrc]:
 		content = append(content, t.dmr.render("asking the device…"))
 	case at.IsZero():
 		content = append(content, t.dmr.render("press r to fetch"))
@@ -171,7 +249,7 @@ func (m *model) renderLogs(now time.Time, W int) []string {
 			age += " · scrolled " + strconv.Itoa(m.logScroll)
 		}
 	}
-	left := "↑↓ scroll · ←→ page · f filter · r refresh · esc back"
+	left := "↑↓ scroll · ←→ page · s source · f filter · r refresh · esc back"
 	tail := []string{"", between(t.dmr.render(left), DispW(left), t.dmr.render(age), DispW(age), W)}
 	return frameBody(content, tail, m.rows-2, false)
 }

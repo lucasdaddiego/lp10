@@ -99,12 +99,14 @@ type model struct {
 	svcPendingWant string // the state asked for, so the wait ends when it lands
 	svcPendingAt   time.Time
 
-	// logs pane: which device-side tail is requested, how far the viewport is
-	// scrolled up from the newest line, and whether a fetch has been asked for
-	// yet (so an empty view can say "waiting" rather than "no logs").
+	// logs pane: which severity view is shown, which device-side tail (syslog
+	// or the vendor app's log) is selected, how far the viewport is scrolled up
+	// from the newest line, and — per source — whether a fetch has been asked
+	// for yet (so an empty view can say "waiting" rather than "no logs").
 	logFilter int
+	logSrc    int // index into logSources
 	logScroll int
-	logAsked  bool
+	logAsked  [2]bool
 	flash     map[string]time.Time
 
 	// sleep timer (sleep.go): sleepAt is the host-side deadline at which the
