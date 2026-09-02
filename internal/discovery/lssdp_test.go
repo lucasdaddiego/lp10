@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-const liveReply = "HTTP/1.1 200 OK\r\nPORT:7777\r\nTCPPORT:2020\r\nFWVERSION:AR241CE_9243.16.2\r\nDeviceName:Living\r\nState:S\r\nNETMODE:ETH0\r\nSPEAKERTYPE:0\r\nSOURCE_LIST:LS8::01000030\r\nWIFIBAND:ETH\r\nMRAMode:DDMS\r\nUSN:02:e0:3c:10:07:e0\r\n\r\n"
+const liveReply = "HTTP/1.1 200 OK\r\nUSN:d8f710710ad6\r\nHOST:239.255.255.250:1800\r\nVersion:LSSDP 1.0\r\nFN:1\r\nFWVERSION:AR241CE_8530.23.2\r\nCAST_FWVERSION:.\r\nCAST_TIMEZONE:\r\nCAST_MODEL:LP10\r\nPORT:7777\r\nDeviceName:Living\r\nState:S\r\nNETMODE:ETH0\r\nSPEAKERTYPE:Wireless Speaker\r\nTCPPORT:2020\r\nWIFIBAND:ETH\r\nSOURCE_LIST:LS8::01000030\r\nMRAMode:DDMS\r\n\r\n"
 
 func TestParseLSSDP(t *testing.T) {
 	info, ok := parseLSSDP([]byte(liveReply))
-	if !ok || info.Name != "Living" || info.FW != "AR241CE_9243.16.2" || info.State != "S" ||
-		info.NetMode != "ETH0" || info.Sources != "LS8::01000030" || info.USN != "02:e0:3c:10:07:e0" {
+	if !ok || info.Name != "Living" || info.FW != "AR241CE_8530.23.2" || info.State != "S" ||
+		info.NetMode != "ETH0" || info.Sources != "LS8::01000030" || info.USN != "d8f710710ad6" {
 		t.Errorf("parsed %+v ok=%v", info, ok)
 	}
 	if _, ok := parseLSSDP([]byte("NOTIFY * HTTP/1.1\r\nNT:upnp:rootdevice\r\n")); ok {

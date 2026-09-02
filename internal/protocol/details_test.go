@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// the probe-verified reg-92 wire shape (2026-07-01, fw AR241CE_9243.16.2)
-const devDetailsWire = `MID-Read:92 Data:{"macaddress":{"bt":"aa:bb:cc:dd:ee:fe","eth0":"aa:bb:cc:dd:ee:ff","wlan0":"aa:bb:cc:dd:ee:fd"},"serialnumber":{"device_serialnumber":"RKARYLLP100000000000"},"versioninfo":{"devicefwversion":"AR241CE_9243.16.2","mcuversion":"16"}} Length:230`
+// the probe-verified reg-92 wire shape (2026-07-01 on fw AR241CE_9243.16.2;
+// re-checked 2026-09-02 on AR241CE_8530.23.2, identical bar the values)
+const devDetailsWire = `MID-Read:92 Data:{"macaddress":{"bt":"aa:bb:cc:dd:ee:fe","eth0":"aa:bb:cc:dd:ee:ff","wlan0":"aa:bb:cc:dd:ee:fd"},"serialnumber":{"device_serialnumber":"RKARYLLP100000000000"},"versioninfo":{"devicefwversion":"AR241CE_8530.23.2","mcuversion":"23"}} Length:230`
 
 func TestParseDevDetails(t *testing.T) {
 	d := parseDevDetails([]string{devDetailsWire})
@@ -15,13 +16,13 @@ func TestParseDevDetails(t *testing.T) {
 		t.Fatal("probe-shaped reg-92 payload should parse")
 	}
 	if d.Serial != "RKARYLLP100000000000" || d.BTMAC != "aa:bb:cc:dd:ee:fe" ||
-		d.MCU != "16" || d.FW != "AR241CE_9243.16.2" {
+		d.MCU != "23" || d.FW != "AR241CE_8530.23.2" {
 		t.Errorf("parsed details = %+v", d)
 	}
 
 	// a partially matching object keeps what it carries
-	p := parseDevDetails([]string{`MID-Read:92 Data:{"versioninfo":{"mcuversion":16}} Length:34`})
-	if p == nil || p.MCU != "16" || p.Serial != "" {
+	p := parseDevDetails([]string{`MID-Read:92 Data:{"versioninfo":{"mcuversion":23}} Length:34`})
+	if p == nil || p.MCU != "23" || p.Serial != "" {
 		t.Errorf("partial details = %+v, want MCU-only (numeric coerced)", p)
 	}
 

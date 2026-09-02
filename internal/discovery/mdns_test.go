@@ -121,7 +121,7 @@ func TestParsePacketAndDevices(t *testing.T) {
 	b := newPkt(4)
 	b.addPTR(service, inst)
 	b.addSRV(inst, 7000, "Living.local")
-	b.addTXT(inst, "cn=0,1", "am=LP10", "fv=p20.AR241CE_9243.16")
+	b.addTXT(inst, "cn=0,1", "am=LP10", "fv=p20.AR241CE_8530.23")
 	b.addA("Living.local", "192.168.1.40")
 
 	recs, ok := parsePacket(b.buf)

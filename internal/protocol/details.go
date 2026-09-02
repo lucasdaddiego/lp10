@@ -34,13 +34,14 @@ func regJSONStr(block string) any {
 // DevDetails is the once-per-connection identity readout from reg 92
 // (DEVICE_DETAILS): the serial number, the Bluetooth MAC, the MCU firmware
 // version, and the full firmware string — which carries the trailing
-// sub-version (AR241CE_9243.16.2) that the reg-5/6 pair drops.
+// sub-version (AR241CE_8530.23.2) that the reg-5/6 pair drops.
 type DevDetails struct {
 	Serial, BTMAC, MCU, FW string
 }
 
 // parseDevDetails parses the @@d section. The wire shape (probe-verified
-// 2026-07-01 against fw AR241CE_9243.16.2):
+// 2026-07-01 against fw AR241CE_9243.16.2, unchanged on AR241CE_8530.23.2
+// as of 2026-09-02):
 //
 //	{"macaddress":{"bt":…,"eth0":…,"wlan0":…},
 //	 "serialnumber":{"device_serialnumber":…},

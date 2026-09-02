@@ -94,7 +94,7 @@ func TestCov_orDashFirstSegToneStr(t *testing.T) {
 	if orDash("") != "—" || orDash("x") != "x" {
 		t.Error("orDash wrong")
 	}
-	if firstSeg("AR241CE_9243", '_') != "AR241CE" {
+	if firstSeg("AR241CE_8530", '_') != "AR241CE" {
 		t.Error("firstSeg with sep wrong")
 	}
 	if firstSeg("nosep", '_') != "nosep" {
@@ -1010,8 +1010,8 @@ func wifiDev(freq string) string {
 // two Wi-Fi @@s heartbeats (signal/noise/linkq + audio chain + pings); the second
 // bumps the byte counters so the throughput rates compute (RatesOK).
 const (
-	wifiS1 = "@@s\n12350 0.5 0.4 0.3 138500 221064 2 AR241CE_9243.16 Linux-5.15.137 52400 1000 500 -55 50 2.1 0.9 22.4 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 -90\n@@E\n"
-	wifiS2 = "@@s\n12351 0.5 0.4 0.3 138500 221064 2 AR241CE_9243.16 Linux-5.15.137 52400 2000 1500 -55 50 2.2 1.0 23.0 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 -90\n@@E\n"
+	wifiS1 = "@@s\n12350 0.5 0.4 0.3 138500 221064 2 AR241CE_8530.23 Linux-5.15.137 52400 1000 500 -55 50 2.1 0.9 22.4 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 -90\n@@E\n"
+	wifiS2 = "@@s\n12351 0.5 0.4 0.3 138500 221064 2 AR241CE_8530.23 Linux-5.15.137 52400 2000 1500 -55 50 2.2 1.0 23.0 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 -90\n@@E\n"
 )
 
 func applyRaw(st *protocol.State, raw string) {
@@ -1262,7 +1262,7 @@ func TestCov_eqSliderRowTogglePadClamp(t *testing.T) {
 // needs (1=load1m, 6=ncpu, 9=tempmC, 10/11=rx/tx, 12/13=signal/linkq, 14=youPing,
 // 18=bufAvail, 22=bufSize, 25=noise).
 var sBase = []string{
-	"12350", "0.5", "0.4", "0.3", "138500", "221064", "2", "AR241CE_9243.16",
+	"12350", "0.5", "0.4", "0.3", "138500", "221064", "2", "AR241CE_8530.23",
 	"Linux-5.15.137", "52400", "1000", "500", "-55", "50", "2.1", "0.9", "22.4",
 	"RUNNING", "4834", "44100", "S16_LE", "2", "22050", "1200000", "2/237", "-90",
 }

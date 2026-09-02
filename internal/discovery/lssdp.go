@@ -28,7 +28,7 @@ const msearch = "M-SEARCH * HTTP/1.1\r\nHOST:239.255.255.250:1800\r\nMAN:\"ssdp:
 // must control-strip (protocol.Printable) first.
 type LSSDPInfo struct {
 	Name    string // DeviceName
-	FW      string // FWVERSION, e.g. AR241CE_9243.16.2
+	FW      string // FWVERSION, e.g. AR241CE_8530.23.2
 	State   string // State, e.g. S
 	NetMode string // NETMODE, e.g. ETH0 / WLAN0
 	Sources string // SOURCE_LIST, e.g. LS8::01000030 (carries the platform)

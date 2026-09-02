@@ -288,9 +288,9 @@ stacked column when narrow):
 ┃                                                               link      ethernet · 100 Mbit/s · full duplex          ┃
 ┃  ─ device ──────────────────────────────────────────────      mac       aa:bb:cc:dd:ee:ff                            ┃
 ┃    bt        aa:bb:cc:dd:ee:fe                                multiroom solo                                         ┃
-┃    build     2025-12-24 · app 312                             traffic   rx 58 KB/s · tx 2 KB/s                       ┃
-┃    firmware  AR241CE_9243.16.2                                                                                       ┃
-┃    mcu       v16                                            ─ resources ───────────────────────────────────────────  ┃
+┃    build     2026-01-12 · app 318                             traffic   rx 58 KB/s · tx 2 KB/s                       ┃
+┃    firmware  AR241CE_8530.23.2                                                                                       ┃
+┃    mcu       v23                                            ─ resources ───────────────────────────────────────────  ┃
 ┃    model     Arylic AR241CE · LS8                             cpu       ━━━─────────  22% 1m 0.44 · 1200 MHz         ┃
 ┃    name      Living                                           memory    ━━━━────────  37% 135/215 MB free            ┃
 ┃    os        Linux 5.15.137 · 2 cores                         storage   ━━──────────  17% 1228/7168 MB /lsync        ┃
@@ -379,6 +379,14 @@ BusyBox-ash loop on the device streams framed snapshots:
   `Track` schema. The worker runtime owns child handles, shutdown coordination,
   and snapshot persistence; the shared protocol state contains only the
   lock-protected player, device, and liveness model consumed by the UI.
+- **Verified firmware** — `AR241CE_8530.23.2` / MCU v23 (the August 2026 OTA,
+  re-analysed 2026-09-02 against the vendor bundle and the live box) and
+  `AR241CE_9243.16.2` / MCU v16 before it. The OTA changed nothing lp10 speaks:
+  the LUCI registers, the `@@` loop inputs, the `:2018` command table and the
+  preset list are identical across both. What did move: Spotify's ZeroConf
+  endpoint (`:9095` → `:9096`), the Pro engine's SDK (3.205 → 3.211), the
+  factory default for the two Spotify flags (HiFi → Pro, the services-pane
+  story above), and the OTA manifest host.
 
 ### Security & threat model
 

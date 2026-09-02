@@ -550,7 +550,7 @@ func TestPlayingRecordCarriesTrackAndSysinfo(t *testing.T) {
 	if st.Snap().Track == nil {
 		t.Error("track should be set")
 	}
-	if st.sysinfo == nil || st.sysinfo.FW != "AR241CE_9243.16" {
+	if st.sysinfo == nil || st.sysinfo.FW != "AR241CE_8530.23" {
 		t.Errorf("sysinfo = %v", st.sysinfo)
 	}
 }
@@ -669,7 +669,7 @@ func TestRealPlayingRecordApplies(t *testing.T) {
 
 func TestSysinfoSectionParsesButIsNotLuciData(t *testing.T) {
 	st := applyFixture("heartbeat_record.txt")
-	if st.sysinfo.FW != "AR241CE_9243.16" || st.sysinfo.NCPU != "2" || st.sysinfo.OS != "Linux-5.15.137" {
+	if st.sysinfo.FW != "AR241CE_8530.23" || st.sysinfo.NCPU != "2" || st.sysinfo.OS != "Linux-5.15.137" {
 		t.Errorf("sysinfo = %+v", st.sysinfo)
 	}
 	st2 := NewState()
@@ -685,7 +685,7 @@ func TestSysinfoSectionParsesButIsNotLuciData(t *testing.T) {
 func TestDevInfoAndSysinfoExtras(t *testing.T) {
 	st := NewState()
 	feed := "@@i\nnet=eth\niface=eth0\nip=192.168.1.13\nmac=aa:bb:cc:dd:ee:ff\nspeed=100\nduplex=full\nbuild=2025-12-24\napp=312\nplatform=LS8\ndata=11424 232924\n@@E\n" +
-		"@@s\n100 0.5 0.4 0.3 137000 215000 2 AR241CE_9243.16 Linux-5.15.137 43200 1000 500 - - 2.1 14.3 31.4\n@@E\n"
+		"@@s\n100 0.5 0.4 0.3 137000 215000 2 AR241CE_8530.23 Linux-5.15.137 43200 1000 500 - - 2.1 14.3 31.4\n@@E\n"
 	for _, rec := range recordsFrom(splitLines(feed)) {
 		ApplyRecord(st, rec)
 	}
@@ -700,7 +700,7 @@ func TestDevInfoAndSysinfoExtras(t *testing.T) {
 	if si.SignalDBm != "" || si.LinkQ != "" { // '-' placeholders: no Wi-Fi stats on ethernet
 		t.Errorf("ethernet should carry empty wifi stats: %+v", si)
 	}
-	if si.FW != "AR241CE_9243.16" || si.OS != "Linux-5.15.137" {
+	if si.FW != "AR241CE_8530.23" || si.OS != "Linux-5.15.137" {
 		t.Errorf("base sysinfo regressed: %+v", si)
 	}
 }

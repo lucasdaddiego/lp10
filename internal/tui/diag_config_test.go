@@ -107,7 +107,7 @@ func TestDiagVerdictWarnAndFault(t *testing.T) {
 		applyFixtureRecords(st, "device_record.txt")
 		// everything healthy except the SoC temperature (field 9); @@v marks the
 		// session connected + fresh so the verdict is shown.
-		applyRaw(st, "@@s\n100 0.4 0.3 0.3 139000 221064 2 AR241CE_9243.16 Linux-5.15.137 "+
+		applyRaw(st, "@@s\n100 0.4 0.3 0.3 139000 221064 2 AR241CE_8530.23 Linux-5.15.137 "+
 			tempmC+" 1 2 - - 2.0 - - RUNNING 4834 44100 S16_LE 2 22050 1200000 1/200 -\n@@E\n")
 		applyRaw(st, "@@v\nMID-Read:64 Data:44 Length:2\n@@E\n")
 		m, _, _ := modelWith(st)
@@ -130,7 +130,7 @@ func TestDiagIdleBufferNotFault(t *testing.T) {
 	st := protocol.NewState()
 	applyFixtureRecords(st, "device_record.txt")
 	// PcmState SETUP (not RUNNING) + an empty ring (avail == size -> 0% fill).
-	applyRaw(st, "@@s\n100 0.1 0.1 0.1 139000 221064 2 AR241CE_9243.16 Linux-5.15.137 "+
+	applyRaw(st, "@@s\n100 0.1 0.1 0.1 139000 221064 2 AR241CE_8530.23 Linux-5.15.137 "+
 		"49000 1 2 - - 2.0 - - SETUP 22050 44100 S16_LE 2 22050 1200000 1/200 -\n@@E\n")
 	applyRaw(st, "@@v\nMID-Read:64 Data:54 Length:2\n@@E\n")
 	m, _, _ := modelWith(st)

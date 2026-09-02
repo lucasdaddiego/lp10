@@ -34,7 +34,7 @@ func fakeLSSDP(t *testing.T, reply string) string {
 	return c.LocalAddr().String()
 }
 
-const cannedLSSDP = "HTTP/1.1 200 OK\r\nPORT:7777\r\nFWVERSION:AR241CE_9243.16.2\r\nDeviceName:Living\x1b[31m\r\nState:S\r\nNETMODE:ETH0\r\nSOURCE_LIST:LS8::01000030\r\nUSN:aa:bb\r\n\r\n"
+const cannedLSSDP = "HTTP/1.1 200 OK\r\nPORT:7777\r\nFWVERSION:AR241CE_8530.23.2\r\nDeviceName:Living\x1b[31m\r\nState:S\r\nNETMODE:ETH0\r\nSOURCE_LIST:LS8::01000030\r\nUSN:aa:bb\r\n\r\n"
 
 func TestLSSDPWorkerRecordsAnswerAndSilence(t *testing.T) {
 	addr := fakeLSSDP(t, cannedLSSDP)
@@ -58,7 +58,7 @@ func TestLSSDPWorkerRecordsAnswerAndSilence(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	d := st.DiagnosticView(time.Now())
-	if d.LSSDP == nil || d.LSSDP.Name != "Living[31m" || d.LSSDP.FW != "AR241CE_9243.16.2" || d.LSSDP.State != "S" || d.LSSDP.NetMode != "ETH0" {
+	if d.LSSDP == nil || d.LSSDP.Name != "Living[31m" || d.LSSDP.FW != "AR241CE_8530.23.2" || d.LSSDP.State != "S" || d.LSSDP.NetMode != "ETH0" {
 		t.Fatalf("LSSDP info = %+v, want the canned (control-stripped) answer", d.LSSDP)
 	}
 	if d.LSSDPOKAt.IsZero() || d.LSSDPProbeAt.IsZero() {
