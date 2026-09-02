@@ -244,3 +244,40 @@ func TestStateTwoLogSources(t *testing.T) {
 		t.Errorf("the vendor answer disturbed the syslog tail: %q", lines)
 	}
 }
+
+// The firmware-check request is a one-shot flag the overlay raises and the
+// worker takes, carrying the build to ask about: the ssh stream's reg-5 build
+// first, the LSSDP answer's as the fallback, "" before either has arrived.
+func TestStateOTARequest(t *testing.T) {
+	st := NewState()
+	if b, pending := st.TakeOTARequest(); pending || b != "" {
+		t.Errorf("nothing requested yet: %q %v", b, pending)
+	}
+	st.RequestOTA()
+	if !st.OTAPending() || !st.DiagnosticView(time.Now()).OTAPending {
+		t.Error("request not visible as pending")
+	}
+	if b, pending := st.TakeOTARequest(); !pending || b != "" {
+		t.Errorf("no firmware known: %q %v", b, pending)
+	}
+	if st.OTAPending() {
+		t.Error("taking the request must clear it")
+	}
+	st.SetLSSDP(&LSSDPInfo{FW: "AR241CE_8530.23.2"})
+	st.RequestOTA()
+	if b, _ := st.TakeOTARequest(); b != "AR241CE_8530" {
+		t.Errorf("LSSDP fallback build = %q", b)
+	}
+	ApplyRecord(st, Record{"s": {"100 0.5 0.4 0.3 137000 215000 2 AR241CE_9243.16 Linux-5.15.137"}})
+	st.RequestOTA()
+	if b, _ := st.TakeOTARequest(); b != "AR241CE_9243" {
+		t.Errorf("stream build should win = %q", b)
+	}
+	if firmwareBuild("nodots") != "nodots" {
+		t.Error("a dotless string is its own build")
+	}
+	st.SetOTA(OTAInfo{At: time.Now(), Asked: "AR241CE_9243", Offered: "AR241CE_8530\x1b[31m", Err: "no\x07"})
+	if v := st.DiagnosticView(time.Now()).OTA; v == nil || v.Offered != "AR241CE_8530[31m" || v.Err != "no" {
+		t.Errorf("verdict not stored control-stripped: %+v", v)
+	}
+}

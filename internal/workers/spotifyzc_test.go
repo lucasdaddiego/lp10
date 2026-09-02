@@ -5,11 +5,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/discovery"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
@@ -108,5 +111,57 @@ func TestZCResolveAndAtoi(t *testing.T) {
 		if got := atoiOrZero(s); got != want {
 			t.Errorf("atoiOrZero(%q) = %d, want %d", s, got, want)
 		}
+	}
+}
+
+// Without the override the endpoint comes from mDNS: found → probed on the
+// advertised port; not found → a port-0 miss; a probe miss → re-found next
+// time (the engine may have restarted on another port).
+func TestZCWorkerFindsThenRefindsAfterMiss(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":101,"statusString":"OK","remoteName":"Living"}`))
+	}))
+	defer srv.Close()
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	ip := net.ParseIP(host).To4()
+	var finds atomic.Int32
+	found := atomic.Bool{}
+	found.Store(true)
+	orig := zcFind
+	zcFind = func(h string, got net.IP, _ time.Duration) (discovery.SpotifyEndpoint, bool) {
+		finds.Add(1)
+		if h != host || !got.Equal(ip) {
+			t.Errorf("find asked for %q %v, want %q %v", h, got, host, ip)
+		}
+		if !found.Load() {
+			return discovery.SpotifyEndpoint{}, false
+		}
+		return discovery.SpotifyEndpoint{Name: "Living", Host: "Living.local", Port: atoiOrZero(port), IP: ip}, true
+	}
+	defer func() { zcFind = orig }()
+	os.Unsetenv("LP10_ZC_ADDR")
+	t.Setenv("LP10_ZC_ADDR", "x") // register the cleanup, then really unset it
+	os.Unsetenv("LP10_ZC_ADDR")
+
+	_, d := runZC(t, config.Config{Host: host}, func(d protocol.DiagnosticSnapshot) bool { return d.SpotifyZC != nil })
+	if d.SpotifyZC == nil || d.SpotifyZC.RemoteName != "Living" || d.ZCPort != atoiOrZero(port) || finds.Load() != 1 {
+		t.Fatalf("found path: %+v port=%d finds=%d", d.SpotifyZC, d.ZCPort, finds.Load())
+	}
+
+	// nothing advertised: a miss with port 0
+	found.Store(false)
+	_, d = runZC(t, config.Config{Host: host}, func(d protocol.DiagnosticSnapshot) bool { return !d.ZCProbeAt.IsZero() })
+	if d.SpotifyZC != nil || d.ZCPort != 0 {
+		t.Errorf("not-found path: %+v port=%d", d.SpotifyZC, d.ZCPort)
+	}
+
+	// found, but the endpoint is dead: the miss keeps the port and the next
+	// probe looks the endpoint up again rather than trusting the stale address
+	found.Store(true)
+	srv.Close()
+	before := finds.Load()
+	_, d = runZC(t, config.Config{Host: host}, func(d protocol.DiagnosticSnapshot) bool { return !d.ZCProbeAt.IsZero() })
+	if d.SpotifyZC != nil || d.ZCPort != atoiOrZero(port) || finds.Load() != before+1 {
+		t.Errorf("dead-endpoint path: %+v port=%d finds=%d", d.SpotifyZC, d.ZCPort, finds.Load())
 	}
 }

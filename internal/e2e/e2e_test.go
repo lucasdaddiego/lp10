@@ -91,6 +91,7 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 		// during a test run.
 		"LP10_LSSDP_HOST=",
 		"LP10_ZC_ADDR=",
+		"LP10_OTA_URL=",
 		"LP10_STATE_DIR="+stateDir,
 		"XDG_CONFIG_HOME="+cfgDir,
 	)

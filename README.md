@@ -74,7 +74,10 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   health verdict (`healthy` / `warn` / `fault`) and the clock, nothing else —
   over two ruled columns on a wide terminal (a stacked read-out when
   narrow): device & firmware identity (down to the serial, MCU version, and BT
-  address); lp10's own **connection** to the box (ssh stream freshness and the
+  address, plus an **update** line — opening the overlay is the one gesture
+  that asks the vendor's own manifest whether the build is current, the same
+  public endpoint the box polls; the verdict is kept for half an hour, and
+  nothing ever asks on a timer); lp10's own **connection** to the box (ssh stream freshness and the
   `:2018` control-tunnel state, the LSSDP liveness answer, and the Spotify
   engine's own ZeroConf answer — the two readable even while ssh is down); the
   active network link (Wi-Fi or ethernet, with live throughput, error/drop
@@ -226,7 +229,7 @@ the arrow keys.
 | `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
 | `c` | services pane — what each streaming service is really doing, and switch it |
 | `l` | device log — the tail of the box's syslog, or (`s`) of the vendor app's own log |
-| `?` | diagnostics overlay (see below) |
+| `?` | diagnostics overlay (see below) — also asks the vendor whether the firmware is current |
 | `q` | quit |
 
 Inside the services, log or diagnostics overlay, `esc` backs out and the other

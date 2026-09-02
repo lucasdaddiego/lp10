@@ -115,3 +115,55 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 		t.Errorf("services pane lacks the zeroconf line:\n%s", pane)
 	}
 }
+
+// Opening the diagnostics overlay is the one gesture that asks the vendor
+// whether the firmware is current; the device card then carries the verdict.
+func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
+	m, st, _ := makeModel(t)
+	m.sty = newTheme()
+	m.rows, m.cols = 40, 160
+	if st.OTAPending() {
+		t.Fatal("pending before the overlay opened")
+	}
+	m.key(keyEvent{kind: kRune, r: '?'})
+	if !m.diag || !st.OTAPending() {
+		t.Fatal("? did not open the overlay and request a check")
+	}
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "checking…") {
+		t.Errorf("pending check not shown:\n%s", out)
+	}
+	// from inside another overlay too
+	m.diag = false
+	m.openOverlay(ovServices)
+	m.key(keyEvent{kind: kRune, r: '?'})
+	if !m.diag || m.ov != ovNone {
+		t.Fatal("? from the services pane did not switch to diagnostics")
+	}
+	st.TakeOTARequest()
+	now := time.Now()
+	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_8530", UpToDate: true})
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update    up to date · checked") {
+		t.Errorf("up-to-date verdict missing:\n%s", out)
+	}
+	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_9243", Offered: "AR241CE_8530"})
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "AR241CE_8530 available") {
+		t.Errorf("offer missing:\n%s", out)
+	}
+	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_9243"})
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update available") {
+		t.Errorf("bare offer missing:\n%s", out)
+	}
+	st.SetOTA(protocol.OTAInfo{At: now, Err: "vendor unreachable"})
+	out := stripANSI(m.viewContent())
+	if !strings.Contains(out, "check failed · vendor unreachable") {
+		t.Errorf("failure missing:\n%s", out)
+	}
+	m.cols = 70
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "check failed") {
+		t.Errorf("stacked layout lacks the row:\n%s", out)
+	}
+	// never asked: no row at all
+	if f := otaFact(protocol.DiagnosticSnapshot{}, now); f != "" {
+		t.Errorf("unasked fact = %q", f)
+	}
+}

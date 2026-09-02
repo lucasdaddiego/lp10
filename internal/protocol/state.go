@@ -11,6 +11,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -103,6 +104,12 @@ type State struct {
 	zcProbeAt time.Time
 	zcOKAt    time.Time
 
+	// firmware update check: the TUI raises otaWant when the diagnostics
+	// overlay opens, the OTA worker takes it and answers with ota (the vendor
+	// manifest's verdict) — see RequestOTA / TakeOTARequest / SetOTA.
+	otaWant bool
+	ota     *OTAInfo
+
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
 	// distinguish "off" from "never reported".
@@ -142,6 +149,16 @@ type SpotifyZC struct {
 	Status                     int
 	StatusString, ActiveUser   string
 	LibraryVersion, RemoteName string
+}
+
+// OTAInfo is the vendor manifest's verdict on the device's firmware, as last
+// asked: up to date, a newer build on offer, or why the check failed.
+type OTAInfo struct {
+	At       time.Time // when the answer (or failure) landed
+	Asked    string    // the firmware build the check was made for, e.g. "AR241CE_8530"
+	UpToDate bool
+	Offered  string // the build the manifest offers instead ("" when up to date / failed)
+	Err      string // "" on a clean answer; else why there is no verdict
 }
 
 // Snapshot is an immutable view of State for rendering.
@@ -295,6 +312,58 @@ func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
 	st.zcOKAt = now
 }
 
+// RequestOTA asks for a firmware update check. Raised by the TUI when the
+// diagnostics overlay opens — the check contacts the vendor, so it only ever
+// runs on that explicit gesture, never on a timer.
+func (st *State) RequestOTA() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.otaWant = true
+}
+
+// TakeOTARequest hands a pending request to the worker (clearing it), with the
+// firmware build to ask about: the reg-5 build from the ssh stream, else the
+// LSSDP answer's — "" when neither has arrived yet.
+func (st *State) TakeOTARequest() (build string, pending bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !st.otaWant {
+		return "", false
+	}
+	st.otaWant = false
+	if st.sysinfo != nil && st.sysinfo.FW != "" {
+		return firmwareBuild(st.sysinfo.FW), true
+	}
+	if st.lssdp != nil && st.lssdp.FW != "" {
+		return firmwareBuild(st.lssdp.FW), true
+	}
+	return "", true
+}
+
+// OTAPending reports a request the worker has not answered yet.
+func (st *State) OTAPending() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.otaWant
+}
+
+// SetOTA records the worker's verdict (strings control-stripped).
+func (st *State) SetOTA(info OTAInfo) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	info.Asked, info.Offered, info.Err = printable(info.Asked), printable(info.Offered), printable(info.Err)
+	st.ota = &info
+}
+
+// firmwareBuild is the manifest's fwVersion: the build before the first dot
+// ("AR241CE_8530.23.2" → "AR241CE_8530").
+func firmwareBuild(fw string) string {
+	if i := strings.IndexByte(fw, '.'); i >= 0 {
+		return fw[:i]
+	}
+	return fw
+}
+
 // ---- night mode (multi-band DRC) ----
 
 // SetNightLocal records the state lp10 just asked for, so the header flips at
@@ -348,6 +417,11 @@ type DiagnosticSnapshot struct {
 	SpotifyZC         *SpotifyZC
 	ZCPort            int
 	ZCProbeAt, ZCOKAt time.Time
+
+	// OTA is the last firmware-check verdict (nil: never asked this run);
+	// OTAPending is a check the overlay asked for that has not answered yet.
+	OTA        *OTAInfo
+	OTAPending bool
 }
 
 // ---- volume / mute ----
@@ -608,6 +682,8 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		ZCPort:          st.zcPort,
 		ZCProbeAt:       st.zcProbeAt,
 		ZCOKAt:          st.zcOKAt,
+		OTA:             st.ota,
+		OTAPending:      st.otaWant,
 	}
 }
 

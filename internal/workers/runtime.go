@@ -99,6 +99,7 @@ func StartRuntime(st *protocol.State, cfg config.Config) *Runtime {
 	r.wg.Go(func() { artWorker(ctx, r.control, st, cfg) })
 	r.wg.Go(func() { lssdpWorker(ctx, r.control, st, cfg) })
 	r.wg.Go(func() { zcWorker(ctx, r.control, st, cfg) })
+	r.wg.Go(func() { otaWorker(ctx, r.control, st) })
 	return r
 }
 

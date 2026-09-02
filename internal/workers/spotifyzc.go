@@ -61,6 +61,10 @@ func zcResolve(ctx context.Context, host string) net.IP {
 	return nil
 }
 
+// zcFind is the mDNS lookup, a var so tests can stand in a fake advertiser
+// without putting multicast on the wire (mirroring workers.classify).
+var zcFind = discovery.FindSpotifyZC
+
 func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config) {
 	host, fixed, ok := zcTarget(cfg)
 	if !ok {
@@ -74,7 +78,7 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 	}
 	probe := func() {
 		if addr == "" {
-			ep, found := discovery.FindSpotifyZC(host, zcResolve(ctx, host), zcFindTimeout)
+			ep, found := zcFind(host, zcResolve(ctx, host), zcFindTimeout)
 			if !found {
 				st.SetSpotifyZC(nil, 0)
 				return

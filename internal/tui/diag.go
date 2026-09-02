@@ -607,7 +607,7 @@ func fmtAgeShort(d time.Duration) string {
 
 // identityFacts is the present-only identity list both diag layouts render, so
 // the stacked and cards views can't drift apart.
-func identityFacts(d protocol.DiagnosticSnapshot) []kv {
+func identityFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
 	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
 	return presentKVs([]kv{
 		{"bt", id.bt},
@@ -618,11 +618,34 @@ func identityFacts(d protocol.DiagnosticSnapshot) []kv {
 		{"name", id.name},
 		{"os", id.os},
 		{"serial", id.serial},
+		{"update", otaFact(d, now)},
 	})
 }
 
-func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, w int) []string {
-	facts := identityFacts(d)
+// otaFact is the device card's firmware-check line: "" until the overlay has
+// asked, "checking…" while the vendor is being asked, then the verdict with its
+// age — "up to date", "AR241CE_9xxx available", or why there is none.
+func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.OTA == nil {
+		if d.OTAPending {
+			return "checking…"
+		}
+		return ""
+	}
+	age := " · checked " + fmtAgeShort(now.Sub(d.OTA.At)) + " ago"
+	switch {
+	case d.OTA.Err != "":
+		return "check failed · " + d.OTA.Err + age
+	case d.OTA.UpToDate:
+		return "up to date" + age
+	case d.OTA.Offered != "":
+		return d.OTA.Offered + " available" + age
+	}
+	return "update available" + age
+}
+
+func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, w int) []string {
+	facts := identityFacts(d, now)
 	rows := make([]string, 0, (len(facts)+1)/2)
 	for i := 0; i < len(facts); i += 2 {
 		k2, v2 := "", ""
@@ -772,7 +795,7 @@ func (m *model) diagStackedContent(d protocol.DiagnosticSnapshot, v diagVitals, 
 	lines := []string{between(t.sAcc.Bold(true).Render("diagnostics"), DispW("diagnostics"), hr, hrW, w), ""}
 	lines = m.appendDiagStackedSection(lines, "audio", m.diagStackedAudioRows(d, v, w, gaugeW), w)
 	lines = m.appendDiagStackedSection(lines, "connection", m.diagStackedConnectionRows(d, now), w)
-	lines = m.appendDiagStackedSection(lines, "device", m.diagStackedDeviceRows(d, w), w)
+	lines = m.appendDiagStackedSection(lines, "device", m.diagStackedDeviceRows(d, now, w), w)
 	lines = m.appendDiagStackedSection(lines, "hardware", m.diagStackedHardwareRows(w), w)
 	lines = m.appendDiagStackedSection(lines, "network", m.diagStackedNetworkRows(d, w, gaugeW), w)
 	lines = m.appendDiagStackedSection(lines, "resources", m.diagStackedResourceRows(d, v, w, gaugeW), w)
@@ -881,8 +904,8 @@ func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, no
 	return between(left, leftW, hr, hrW, w)
 }
 
-func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, f diagCardFmt) []string {
-	facts := identityFacts(d)
+func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
+	facts := identityFacts(d, now)
 	rows := make([]string, 0, len(facts))
 	for _, fact := range facts {
 		rows = append(rows, f.plain(fact.k, fact.v, m.sty.sTxt))
@@ -1044,7 +1067,7 @@ func (m *model) diagCardSections(d protocol.DiagnosticSnapshot, v diagVitals, no
 	candidates := []diagSection{
 		{"audio", m.diagCardAudioRows(d, v, f)},
 		{"connection", m.diagCardConnectionRows(d, now, f)},
-		{"device", m.diagCardDeviceRows(d, f)},
+		{"device", m.diagCardDeviceRows(d, now, f)},
 		{"hardware", m.diagCardHardwareRows(f)},
 		{"latency", m.diagCardLatencyRows(d)},
 		{"network", m.diagCardNetworkRows(d, f)},
