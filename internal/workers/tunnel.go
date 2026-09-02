@@ -17,6 +17,13 @@ const (
 	tunnelDialTimeout = 3 * time.Second
 	// tunnelSeedSpacing paces the on-connect queries: the device only answers a
 	// query reliably when they aren't sent back-to-back in one burst.
+	//
+	// The same goes for connections. tcptunnelling serialises its clients: a
+	// burst of one-shot connect/query/close cycles (measured 2026-09-02 on
+	// MCU 23: 26 in a row) left the NEXT connect hanging past 8 s, and it only
+	// answered again once the backlog drained. This worker therefore holds ONE
+	// connection for its whole life, seeds over it, and reconnects only through
+	// waitBackoff — never a tight retry, never a second parallel socket.
 	tunnelSeedSpacing = 150 * time.Millisecond
 	tunnelPoll        = 250 * time.Millisecond // write-loop wake to re-check Stop
 	tunnelCarryMax    = 8192                   // bound a separator-free read

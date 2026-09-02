@@ -206,7 +206,7 @@ func (m *model) key(ev keyEvent) (quit bool) {
 				m.pane = paneEQ
 			}
 		case '?':
-			m.diag, m.ov = true, ovNone
+			m.openDiag()
 		case 'c':
 			m.openOverlay(ovServices)
 		case 'l':
@@ -214,6 +214,15 @@ func (m *model) key(ev keyEvent) (quit bool) {
 		}
 	}
 	return false
+}
+
+// openDiag engages the diagnostics overlay. Opening it is also the one gesture
+// that asks the vendor whether the firmware is current: the check leaves the
+// LAN, so it runs on this explicit request and never on a timer (the worker
+// answers from its last verdict when one is recent).
+func (m *model) openDiag() {
+	m.diag, m.ov = true, ovNone
+	m.st.RequestOTA()
 }
 
 // openOverlay engages one interactive pane, closing whatever else was open —
@@ -226,7 +235,7 @@ func (m *model) openOverlay(which int) {
 		return // no room to draw it; the dashboard keeps the keys
 	}
 	m.diag, m.ov = false, which
-	if which == ovLogs && !m.logAsked {
+	if which == ovLogs && !m.logAsked[m.logSrc] {
 		m.logRequest()
 	}
 }
@@ -264,7 +273,7 @@ func (m *model) overlayKey(ev keyEvent) (quit bool) {
 			m.toggleOverlay(ovLogs)
 			return false
 		case '?':
-			m.diag, m.ov = true, ovNone
+			m.openDiag()
 			return false
 		}
 	}
@@ -291,6 +300,8 @@ func (m *model) overlayKey(ev keyEvent) (quit bool) {
 			m.logScrollBy(-page, page)
 		case ev.kind == kRune && ev.r == 'f':
 			m.logCycleFilter()
+		case ev.kind == kRune && ev.r == 's':
+			m.logCycleSource()
 		case ev.kind == kRune && ev.r == 'r':
 			m.logRequest()
 		}

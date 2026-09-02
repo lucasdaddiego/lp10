@@ -11,8 +11,9 @@ import (
 // the device-details (reg 92) and multiroom-group (reg 39) JSON. All four are
 // sent once per connection. 'n' is the night-mode (multi-band DRC enable)
 // readback: once at connect and again after every MID-91 set. 'l' is the device
-// syslog tail, sent only in answer to a MID-93 request.
-var tags = map[byte]bool{'B': true, 'p': true, 't': true, 'v': true, 's': true, 'i': true, 'c': true, 'd': true, 'g': true, 'n': true, 'l': true}
+// syslog tail and 'L' the vendor app's own log (/lsync/app.log), each sent only
+// in answer to a MID-93 request (data 1 / 2).
+var tags = map[byte]bool{'B': true, 'p': true, 't': true, 'v': true, 's': true, 'i': true, 'c': true, 'd': true, 'g': true, 'n': true, 'l': true, 'L': true}
 
 const maxRecLines = 200 // a legitimate record is ~30 lines
 

@@ -87,8 +87,11 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 		"LP10_HOST=127.0.0.1",
 		// Keep the control tunnel hermetic independently of host resolution.
 		"LP10_TUNNEL_ADDR=127.0.0.1:0",
-		// No UDP liveness probes leave the laptop during a test run.
+		// No UDP liveness probes or mDNS/HTTP ZeroConf probes leave the laptop
+		// during a test run.
 		"LP10_LSSDP_HOST=",
+		"LP10_ZC_ADDR=",
+		"LP10_OTA_URL=",
 		"LP10_STATE_DIR="+stateDir,
 		"XDG_CONFIG_HOME="+cfgDir,
 	)

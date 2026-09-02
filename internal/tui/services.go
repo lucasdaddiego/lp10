@@ -392,7 +392,7 @@ func (m *model) renderServices(now time.Time, W int) []string {
 	}
 
 	content = append(content, "", m.sectionHead("spotify engine", W), "")
-	content = append(content, m.spotifyInsight(cv, W)...)
+	content = append(content, m.spotifyInsight(cv, m.st.DiagnosticView(now), now, W)...)
 	content = append(content, "", m.sectionHead(svcRows[m.svcFocus].label, W), "")
 	for _, d := range svcRows[m.svcFocus].detail {
 		content = append(content, t.dmr.render(Clip(d, W)))
@@ -405,7 +405,7 @@ func (m *model) renderServices(now time.Time, W int) []string {
 // receive. The eSDK version is the only honest signal for the codec ceiling —
 // both engines link libFLAC, but only the newer one negotiates FLAC delivery, so
 // "has a FLAC decoder" says nothing about what arrives over the wire.
-func (m *model) spotifyInsight(cv *protocol.ConfInfo, W int) []string {
+func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
 	t := m.sty.pens()
 	var out []string
 	eng := cv.Engine()
@@ -426,6 +426,9 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, W int) []string {
 	if cv.Cfg() == "both" {
 		out = append(out, m.diagLine("config", m.sty.sevs[2].Render(
 			"both engine flags set — each init script is blocked by the other, so neither starts")))
+	}
+	if zc := m.zcReadout(d, now); zc != "" {
+		out = append(out, m.diagLine("zeroconf", zc))
 	}
 	for i, l := range out {
 		out[i] = clipStyled(l, W)

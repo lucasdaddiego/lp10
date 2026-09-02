@@ -74,9 +74,12 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   health verdict (`healthy` / `warn` / `fault`) and the clock, nothing else —
   over two ruled columns on a wide terminal (a stacked read-out when
   narrow): device & firmware identity (down to the serial, MCU version, and BT
-  address); lp10's own **connection** to the box (ssh stream freshness and the
-  `:2018` control-tunnel state, and the LSSDP liveness answer — readable even
-  while the device is down); the
+  address, plus an **update** line — opening the overlay is the one gesture
+  that asks the vendor's own manifest whether the build is current, the same
+  public endpoint the box polls; the verdict is kept for half an hour, and
+  nothing ever asks on a timer); lp10's own **connection** to the box (ssh stream freshness and the
+  `:2018` control-tunnel state, the LSSDP liveness answer, and the Spotify
+  engine's own ZeroConf answer — the two readable even while ssh is down); the
   active network link (Wi-Fi or ethernet, with live throughput, error/drop
   counters as session deltas, the multiroom group state, Wi-Fi **SNR**, and
   round-trip latency — average, jitter, and a spike-flagging peak — to your laptop,
@@ -101,6 +104,15 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   "connecting…" screen says whether the device is **up on the LAN but refusing
   ssh** (its sshd rate-limits rapid reconnects) or not answering at all — and
   the diagnostics overlay's connection section shows the last answer.
+- **Spotify ZeroConf** — the running Spotify engine advertises
+  `_spotify-connect._tcp` and answers an unauthenticated `getInfo` on the
+  advertised port (9096 since firmware 8530, 9095 before — the port is taken from
+  the SRV record every time, never remembered). lp10 asks it every 30 s (10 s
+  while disconnected), again with no ssh in the loop: it is the one surface that
+  says whether the engine is *actually up*, on which eSDK build, and **who is
+  signed in**. The answer sits in the diagnostics connection section and in the
+  services pane's engine section; "not advertised" there means no engine is
+  running, whatever the env flag claims.
 - **Sleep timer** — `s` arms a "pause in N minutes" countdown (15 → 30 → 45 →
   60 → 90 min, one step per press; `S` cancels), shown beside the clock. It lives
   entirely in lp10 — at the deadline it sends the same pause the space bar does —
@@ -143,12 +155,16 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   at full scale. The pane names that cost rather than hiding it, and always writes
   the Spotify flags as a coherent pair so the vendor's both-set trap is
   unreachable from here.
-- **Device log** (`l`) — the tail of `/var/log/messages`, fetched on demand over
-  the same ssh stream (zero cost while the pane is closed). It is the only place
-  the box records a service *refusing* to start — an init script's "not enabled"
-  line lands there and nowhere else — so it is what turns "the switch did nothing"
-  into an answer. `f` filters to errors and warnings, `r` refetches; the
-  luci_service chatter that is most of the file is dropped at the source.
+- **Device log** (`l`) — the tail of one of the box's own logs, fetched on demand
+  over the same ssh stream (zero cost while the pane is closed). The **device
+  log** (`/var/log/syslog/messages.log`) is the only place the box records a
+  service *refusing* to start — an init script's "not enabled" line lands there
+  and nowhere else — so it is what turns "the switch did nothing" into an answer.
+  `s` switches to the **vendor app log** (`/lsync/app.log`, since firmware 8530):
+  the Arylic app narrates every `:2018` tunnel frame and the MCU's reply, every
+  preset action and every OLED publish, so it is where "the equalizer did nothing"
+  gets answered. `f` filters to errors and warnings, `r` refetches; the
+  luci_service chatter that is most of the syslog is dropped at the source.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -212,8 +228,8 @@ the arrow keys.
 | `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
 | `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
 | `c` | services pane — what each streaming service is really doing, and switch it |
-| `l` | device log — the tail of the box's own syslog |
-| `?` | diagnostics overlay (see below) |
+| `l` | device log — the tail of the box's syslog, or (`s`) of the vendor app's own log |
+| `?` | diagnostics overlay (see below) — also asks the vendor whether the firmware is current |
 | `q` | quit |
 
 Inside the services, log or diagnostics overlay, `esc` backs out and the other
@@ -288,7 +304,7 @@ stacked column when narrow):
 ┃                                                               link      ethernet · 100 Mbit/s · full duplex          ┃
 ┃  ─ device ──────────────────────────────────────────────      mac       aa:bb:cc:dd:ee:ff                            ┃
 ┃    bt        aa:bb:cc:dd:ee:fe                                multiroom solo                                         ┃
-┃    build     2026-01-12 · app 318                             traffic   rx 58 KB/s · tx 2 KB/s                       ┃
+┃    build     2026-01-12 · app 318 · vendor app v32            traffic   rx 58 KB/s · tx 2 KB/s                       ┃
 ┃    firmware  AR241CE_8530.23.2                                                                                       ┃
 ┃    mcu       v23                                            ─ resources ───────────────────────────────────────────  ┃
 ┃    model     Arylic AR241CE · LS8                             cpu       ━━━─────────  22% 1m 0.44 · 1200 MHz         ┃
@@ -320,7 +336,7 @@ Eight sections, each answering one question, in the alphabetical order they rend
 the **audio** chain (source stream in, DAC out, the ring buffer between), lp10's own
 **connection** to the box (the ssh stream the records ride, the `:2018` control
 tunnel, the target host — readable even while the device is down, which is exactly
-when you need them), **device** identity (model, firmware, build — plus the name,
+when you need them), **device** identity (model, firmware, build and the vendor app's own version — plus the name,
 serial, Bluetooth MAC, and MCU version read from the device's own registers), a
 **hardware** reference (SoC, the DAC situation, the line-out / optical outputs — encoded
 from a full teardown of the unit, corrected by live probes: the DAC is the front-panel

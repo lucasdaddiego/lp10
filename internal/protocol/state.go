@@ -11,6 +11,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,8 +31,10 @@ type State struct {
 	confinfo  *ConfInfo   // streaming-capability state (@@c, once per connection)
 	details   *DevDetails // device-details JSON readout (@@d, once per connection)
 	mroom     *Multiroom  // multiroom-group readout (@@g, once per connection)
-	logs      []string    // device syslog tail (@@l, only in answer to MID 93)
+	logs      []string    // device syslog tail (@@l, only in answer to MID 93 "1")
 	logsAt    time.Time   // when that tail arrived (zero == none yet this run)
+	vlogs     []string    // vendor app log tail (@@L, only in answer to MID 93 "2")
+	vlogsAt   time.Time
 
 	posMs    int
 	posAt    time.Time
@@ -93,6 +96,20 @@ type State struct {
 	lssdpProbeAt time.Time
 	lssdpOKAt    time.Time
 
+	// Spotify ZeroConf (the engine's own unauthenticated HTTP endpoint, found
+	// over mDNS): the last answer, the port it was found on, and the probe
+	// bookkeeping mirroring LSSDP's.
+	zc        *SpotifyZC
+	zcPort    int
+	zcProbeAt time.Time
+	zcOKAt    time.Time
+
+	// firmware update check: the TUI raises otaWant when the diagnostics
+	// overlay opens, the OTA worker takes it and answers with ota (the vendor
+	// manifest's verdict) — see RequestOTA / TakeOTARequest / SetOTA.
+	otaWant bool
+	ota     *OTAInfo
+
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
 	// distinguish "off" from "never reported".
@@ -123,6 +140,25 @@ func NewState() *State {
 // the strings are control-stripped on the way in.
 type LSSDPInfo struct {
 	Name, FW, State, NetMode string
+}
+
+// SpotifyZC is the Spotify engine's ZeroConf getInfo answer (see
+// discovery.ProbeSpotifyZC): whether it is up, its eSDK build, who is signed
+// in. Strings are control-stripped on the way in.
+type SpotifyZC struct {
+	Status                     int
+	StatusString, ActiveUser   string
+	LibraryVersion, RemoteName string
+}
+
+// OTAInfo is the vendor manifest's verdict on the device's firmware, as last
+// asked: up to date, a newer build on offer, or why the check failed.
+type OTAInfo struct {
+	At       time.Time // when the answer (or failure) landed
+	Asked    string    // the firmware build the check was made for, e.g. "AR241CE_8530"
+	UpToDate bool
+	Offered  string // the build the manifest offers instead ("" when up to date / failed)
+	Err      string // "" on a clean answer; else why there is no verdict
 }
 
 // Snapshot is an immutable view of State for rendering.
@@ -255,6 +291,79 @@ func (st *State) SetLSSDP(info *LSSDPInfo) {
 	st.lssdpOKAt = now
 }
 
+// SetSpotifyZC records a ZeroConf probe: the engine's answer (control-stripped)
+// and the port it answered on, or nil for an unanswered probe (port 0 when the
+// endpoint could not even be found over mDNS).
+func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := time.Now()
+	st.zcProbeAt = now
+	st.zcPort = port
+	if info == nil {
+		st.zc = nil
+		return
+	}
+	st.zc = &SpotifyZC{
+		Status: info.Status, StatusString: printable(info.StatusString),
+		ActiveUser: printable(info.ActiveUser), LibraryVersion: printable(info.LibraryVersion),
+		RemoteName: printable(info.RemoteName),
+	}
+	st.zcOKAt = now
+}
+
+// RequestOTA asks for a firmware update check. Raised by the TUI when the
+// diagnostics overlay opens — the check contacts the vendor, so it only ever
+// runs on that explicit gesture, never on a timer.
+func (st *State) RequestOTA() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.otaWant = true
+}
+
+// TakeOTARequest hands a pending request to the worker (clearing it), with the
+// firmware build to ask about: the reg-5 build from the ssh stream, else the
+// LSSDP answer's — "" when neither has arrived yet.
+func (st *State) TakeOTARequest() (build string, pending bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !st.otaWant {
+		return "", false
+	}
+	st.otaWant = false
+	if st.sysinfo != nil && st.sysinfo.FW != "" {
+		return firmwareBuild(st.sysinfo.FW), true
+	}
+	if st.lssdp != nil && st.lssdp.FW != "" {
+		return firmwareBuild(st.lssdp.FW), true
+	}
+	return "", true
+}
+
+// OTAPending reports a request the worker has not answered yet.
+func (st *State) OTAPending() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.otaWant
+}
+
+// SetOTA records the worker's verdict (strings control-stripped).
+func (st *State) SetOTA(info OTAInfo) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	info.Asked, info.Offered, info.Err = printable(info.Asked), printable(info.Offered), printable(info.Err)
+	st.ota = &info
+}
+
+// firmwareBuild is the manifest's fwVersion: the build before the first dot
+// ("AR241CE_8530.23.2" → "AR241CE_8530").
+func firmwareBuild(fw string) string {
+	if i := strings.IndexByte(fw, '.'); i >= 0 {
+		return fw[:i]
+	}
+	return fw
+}
+
 // ---- night mode (multi-band DRC) ----
 
 // SetNightLocal records the state lp10 just asked for, so the header flips at
@@ -302,6 +411,17 @@ type DiagnosticSnapshot struct {
 	// probed); LSSDPProbeAt / LSSDPOKAt time the last probe and last answer.
 	LSSDP                   *LSSDPInfo
 	LSSDPProbeAt, LSSDPOKAt time.Time
+
+	// SpotifyZC is the engine's last ZeroConf answer (nil: unanswered or never
+	// probed); ZCPort the port it was found on (0: not found over mDNS).
+	SpotifyZC         *SpotifyZC
+	ZCPort            int
+	ZCProbeAt, ZCOKAt time.Time
+
+	// OTA is the last firmware-check verdict (nil: never asked this run);
+	// OTAPending is a check the overlay asked for that has not answered yet.
+	OTA        *OTAInfo
+	OTAPending bool
 }
 
 // ---- volume / mute ----
@@ -558,6 +678,12 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		LSSDP:           st.lssdp,
 		LSSDPProbeAt:    st.lssdpProbeAt,
 		LSSDPOKAt:       st.lssdpOKAt,
+		SpotifyZC:       st.zc,
+		ZCPort:          st.zcPort,
+		ZCProbeAt:       st.zcProbeAt,
+		ZCOKAt:          st.zcOKAt,
+		OTA:             st.ota,
+		OTAPending:      st.otaWant,
 	}
 }
 
@@ -596,12 +722,24 @@ func (st *State) ConfView() *ConfInfo {
 	return st.confinfo
 }
 
-// LogView returns the last device syslog tail and when it arrived (nil, zero
-// before any MID-93 answer). The slice is replaced wholesale by the worker and
+// LogSource names one of the two device-side tails MID 93 can fetch: the wire
+// value is the MID-93 payload, so the TUI and the loop agree by construction.
+type LogSource int
+
+const (
+	LogSyslog LogSource = 1 // /var/log/syslog/messages.log (@@l)
+	LogVendor LogSource = 2 // /lsync/app.log, the vendor app's own log (@@L)
+)
+
+// LogView returns the last tail of the given source and when it arrived (nil,
+// zero before any answer). The slice is replaced wholesale by the worker and
 // never mutated in place, so the caller may range it without copying.
-func (st *State) LogView() ([]string, time.Time) {
+func (st *State) LogView(src LogSource) ([]string, time.Time) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if src == LogVendor {
+		return st.vlogs, st.vlogsAt
+	}
 	return st.logs, st.logsAt
 }
 

@@ -501,7 +501,7 @@ func TestSpotifyInsightPerEngine(t *testing.T) {
 		protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=" + c.eng, "spotify.cfg=hifi"}})
 		m, _, _ := modelWith(st)
 		m.rows, m.cols, m.sty = 44, 120, newTheme()
-		got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), 114), "\n"))
+		got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), m.st.DiagnosticView(time.Now()), time.Now(), 114), "\n"))
 		if !strings.Contains(got, c.want) {
 			t.Errorf("engine %q readout %q, want it to contain %q", c.eng, got, c.want)
 		}
@@ -687,7 +687,7 @@ func TestServicesPaneUnknownEngineFallsBackSafely(t *testing.T) {
 	m.openOverlay(ovServices)
 	m.svcFocus = 0
 	// the engine readout names it verbatim rather than guessing
-	if got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), 114), "\n")); !strings.Contains(got, "weirdengine") {
+	if got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), m.st.DiagnosticView(time.Now()), time.Now(), 114), "\n")); !strings.Contains(got, "weirdengine") {
 		t.Errorf("unknown engine not reported: %q", got)
 	}
 	// A pending target the row cannot interpret must settle rather than wedge the
@@ -723,5 +723,91 @@ func TestDiagStripDivergenceMatchesPane(t *testing.T) {
 	// there too, so DLNA is never singled out.
 	if cv := m.st.ConfView(); cv.Divergent("dlna") {
 		t.Error("an uncarried flag was treated as a divergence")
+	}
+}
+
+// 's' switches the pane between the device syslog and the vendor app's log.
+// Each source is fetched once on first view (MID 93 with its own wire value)
+// and then shown from the tail in hand; 'r' refreshes the selected one.
+func TestLogsPaneSourceSwitch(t *testing.T) {
+	m, st, collect := paneModel(t, ovLogs)
+	m.key(keyEvent{kind: kRune, r: 's'})
+	got := collect()
+	if len(got) != 1 || got[0].Mid != 93 || got[0].Data != "2" {
+		t.Fatalf("switching to the vendor log sent %+v, want one MID 93 \"2\"", got)
+	}
+	if !strings.Contains(strings.Join(m.renderLogs(time.Now(), 100), "\n"), "vendor app log") {
+		t.Error("heading does not name the vendor source")
+	}
+	protocol.ApplyRecord(st, protocol.Record{"L": {
+		" [2026-09-02 00:06:26.775] [DEBUG] [luci-rx][tunnel] MB#112 payload=\"TRE;\"",
+		" [2026-09-02 00:06:26.779] [ERROR] [preset-current] publish failed: nope",
+	}})
+	flat := strings.Join(m.renderLogs(time.Now(), 100), "\n")
+	for _, want := range []string{"00:06:26", "[luci-rx][tunnel] MB#112", "publish failed"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("vendor tail not rendered: missing %q in\n%s", want, flat)
+		}
+	}
+	if strings.Contains(flat, "2026-09-02") || strings.Contains(flat, ".775") {
+		t.Error("the date and the milliseconds should be dropped from the clock column")
+	}
+	// The severity filter understands the vendor levels too.
+	m.logCycleFilter()
+	if lines, _ := m.logVisible(); len(lines) != 1 || !strings.Contains(lines[0], "[ERROR]") {
+		t.Errorf("errors filter over the vendor tail = %q", lines)
+	}
+	m.logCycleFilter()
+	// Back to syslog: shown from the tail in hand, no second fetch; 'r' refreshes
+	// the selected source with its own wire value.
+	m.key(keyEvent{kind: kRune, r: 's'})
+	if got := collect(); len(got) != 0 {
+		t.Errorf("returning to a fetched source re-fetched: %+v", got)
+	}
+	m.key(keyEvent{kind: kRune, r: 'r'})
+	if got := collect(); len(got) != 1 || got[0].Data != "1" {
+		t.Errorf("refresh on syslog sent %+v, want MID 93 \"1\"", got)
+	}
+	m.key(keyEvent{kind: kRune, r: 's'})
+	m.key(keyEvent{kind: kRune, r: 'r'})
+	if got := collect(); len(got) != 1 || got[0].Data != "2" {
+		t.Errorf("refresh on the vendor log sent %+v, want MID 93 \"2\"", got)
+	}
+}
+
+func TestParseLogLine(t *testing.T) {
+	cases := []struct {
+		line, clock, rest string
+		sev               byte
+		ok                bool
+	}{
+		{"Aug 25 15:28:39:871948 I/luci_service[284]: hi", "15:28:39", "luci_service[284]: hi", 'I', true},
+		{"[2026-09-02 00:06:26.775] [DEBUG] [luci-rx] MB#112", "00:06:26", "[luci-rx] MB#112", 'D', true},
+		{"[2026-09-02 00:06:26.775] [WARN] slow", "00:06:26", "slow", 'W', true},
+		{"[2026-09-02 00:06:26.775] [INFO] up", "00:06:26", "up", 'I', true},
+		{"[2026-09-02 00:06:26.775] [FATAL] down", "00:06:26", "down", 'F', true},
+		{"[2026-09-02 00:06:26.775] [WHAT] odd level", "", "", 0, false},
+		{"[2026-09-02 00:06:26.775] no level", "", "", 0, false},
+		{"[unterminated", "", "", 0, false},
+		{"[00:06:26] [DEBUG", "", "", 0, false},
+		{"plain text", "", "", 0, false},
+	}
+	for _, c := range cases {
+		clock, sev, rest, ok := parseLogLine(c.line)
+		if clock != c.clock || sev != c.sev || rest != c.rest || ok != c.ok {
+			t.Errorf("parseLogLine(%q) = (%q, %q, %q, %v), want (%q, %q, %q, %v)",
+				c.line, clock, sev, rest, ok, c.clock, c.sev, c.rest, c.ok)
+		}
+	}
+}
+
+// The vendor app's version sits on the device card beside the firmware build,
+// because it moves on its own schedule.
+func TestDeviceCardShowsVendorApp(t *testing.T) {
+	st := protocol.NewState()
+	applyRaw(st, "@@i\nnet=eth\nbuild=2026-01-12\napp=318\nvapp=32\n@@E\n")
+	id := collectIdentity(nil, st.DiagnosticView(time.Now()).DevInfo, nil)
+	if id.build != "2026-01-12 · app 318 · vendor app v32" {
+		t.Errorf("build line = %q", id.build)
 	}
 }

@@ -33,6 +33,11 @@ done < /proc/cpuinfo;
 read -r kt < /proc/sys/kernel/ostype;
 read -r kr < /proc/sys/kernel/osrelease;
 nl=$(printf '\nx'); nl=${nl%x};
+# E() ends a record section; tl() is the shared log-tail pipe (last 160 lines,
+# space-prefixed). Both exist for bytes: the loop rides one ssh exec request and
+# sits just under dropbear's 9000-byte MAX_CMD_LEN.
+E() { echo @@E; };
+tl() { tail -160 | sed 's/^/ /'; };
 cip=${SSH_CLIENT%% *};
 
 # ── pg(): one ICMP ping — the avg RTT (ms) via shared $o ("-" on failure), plus the
@@ -60,6 +65,9 @@ case "$ir" in
     case "$r" in *" dev "*) dv=${r#* dev }; dv=${dv%% *};; esac;;
 esac;
 [ -z "$dv" ] && dv=eth0;
+# The per-tick counter reads share one prefix: six spelled-out paths cost ~150
+# bytes of the ssh command-length budget the loop sits just under.
+sd=/sys/class/net/$dv/statistics;
 mac=; read -r mac 2>/dev/null < /sys/class/net/$dv/address;
 ip=$(ip -o -4 addr show $dv 2>/dev/null); ip=${ip#*inet }; ip=${ip%%/*};
 net=eth; sp=; dx=; ss=; fq=; rt=;
@@ -83,6 +91,16 @@ while IFS= read -r ln; do
   esac;
 done 2>/dev/null < /etc/fwVersion.conf;
 
+# ── vendor app version ──
+# /lsync/app-0.json is the vendor app loader's manifest ("version": "32"): the
+# Rust rakoit_app updates on its OWN schedule, separately from the firmware OTA
+# (v32 landed five days after the 8530 bundle), so its version is a real drift
+# signal next to the build. The file is ~130 bytes, so it is read whole and cut
+# with parameter expansion. No shell-side guard: a file without a "version" key
+# yields some other quoted token, and the laptop's parser (parseDevInfo) only
+# accepts a version-shaped value — validating there is free, here it costs bytes.
+va=$(cat /lsync/app-0.json 2>/dev/null); va=${va#*\"version\"}; va=${va#*\"}; va=${va%%\"*};
+
 # ── resolver + /lsync usage, then emit the @@i key=value block ──
 dns=;
 while read -r dk dvv drest; do
@@ -95,8 +113,8 @@ done 2>/dev/null < /etc/resolv.conf;
 set -- $(df -k /lsync 2>/dev/null | tail -1);
 if [ $# -ge 6 ]; then duk=$3; dtk=$2; elif [ $# -eq 5 ]; then duk=$2; dtk=$1; else duk=; dtk=; fi;
 echo @@i;
-printf 'net=%s\niface=%s\nip=%s\nmac=%s\ngw=%s\nspeed=%s\nduplex=%s\nssid=%s\nfreq=%s\nrate=%s\nbuild=%s\napp=%s\nplatform=%s\nname=%s\ndata=%s %s\ndns=%s\n' "$net" "$dv" "$ip" "$mac" "$gw" "$sp" "$dx" "$ss" "$fq" "$rt" "$bd" "$ap" "$pf" "$fn" "$duk" "$dtk" "$dns";
-echo @@E;
+printf 'net=%s\niface=%s\nip=%s\nmac=%s\ngw=%s\nspeed=%s\nduplex=%s\nssid=%s\nfreq=%s\nrate=%s\nbuild=%s\napp=%s\nplatform=%s\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\n' "$net" "$dv" "$ip" "$mac" "$gw" "$sp" "$dx" "$ss" "$fq" "$rt" "$bd" "$ap" "$pf" "$fn" "$duk" "$dtk" "$dns" "$va";
+E;
 
 # ── @@c capability block ──
 # Two independent truths per service, because they diverge and the divergence IS
@@ -200,7 +218,7 @@ ct() {
   gv qobuz.env QobuzConnectEnabled;
   gv usb USBEnable;
   lp;
-  echo @@E;
+  E;
 };
 ct;
 
@@ -259,20 +277,29 @@ tg() {
 # not here — it is a view over the same tail, applied laptop-side with no second
 # round trip. sed prefixes every line with a space: a log line that itself began
 # with "@@" would otherwise be read as a section header and break record framing.
-lg() { grep " [EWIDNF]/" /var/log/syslog/messages.log 2>/dev/null | grep -v luci_serv | tail -160 | sed 's/^/ /'; };
+#
+# MID 93 with data 2 answers instead with @@L: the tail of /lsync/app.log, the
+# Rust rakoit_app's own log (since app v32 on fw 8530) — every :2018 tunnel frame
+# and MCU reply, preset (favourite) actions, PlayView publishes. Same space-prefix
+# guard, no severity grep (the laptop filters on its "[LEVEL]" field). Inlined in
+# the dispatcher rather than a second function: the loop rides one ssh exec
+# request and sits a few hundred bytes under dropbear's 9000-byte ceiling.
+lg() { grep " [EWIDNF]/" /var/log/syslog/messages.log 2>/dev/null | grep -v luci_serv | tl; };
+
 
 # ── @@d device details (reg 92 JSON: serial / MACs / MCU + full fw version) and
 # @@g multiroom group (reg 39 JSON: linked devices) — both once per connection,
 # shipped raw and parsed laptop-side ──
-echo @@d; LUCI_local -r 92 2>/dev/null; echo @@E;
-echo @@g; LUCI_local -r 39 2>/dev/null; echo @@E;
+echo @@d; LUCI_local -r 92 2>/dev/null; E;
+echo @@g; LUCI_local -r 39 2>/dev/null; E;
 
 # ── @@n night mode: the SoC's multi-band DRC enable (ALSA boolean on the AED
 # block — the one host-writable audio effect on this box; the EQ/DRC coefficient
 # tables are read-only and the WM8904 controls drive a chip that isn't there).
 # Read once at connect (the value quit restores) and again after every MID-91
 # set, so the laptop only ever paints what the device reports. nm() is shared. ──
-nm() { echo @@n; amixer -c0 cget name='AED Multi-band DRC enable' 2>/dev/null; echo @@E; };
+an='AED Multi-band DRC enable';
+nm() { echo @@n; amixer -c0 cget name="$an" 2>/dev/null; E; };
 nm;
 
 # ── main streaming loop ── (state: i=metadata countdown, idl=idle ticks, bw=burst
@@ -306,14 +333,14 @@ while :; do
     done < /proc/meminfo;
     read -r up r3 < /proc/uptime;
     tp=; read -r tp 2>/dev/null < /sys/class/thermal/thermal_zone0/temp;
-    rxb=; read -r rxb 2>/dev/null < /sys/class/net/$dv/statistics/rx_bytes;
-    txb=; read -r txb 2>/dev/null < /sys/class/net/$dv/statistics/tx_bytes;
+    rxb=; read -r rxb 2>/dev/null < $sd/rx_bytes;
+    txb=; read -r txb 2>/dev/null < $sd/tx_bytes;
     # cumulative error/drop counters (the laptop shows session deltas, so the
     # powerline link's boot-lifetime noise never reads as a live fault)
-    rxe=; read -r rxe 2>/dev/null < /sys/class/net/$dv/statistics/rx_errors;
-    txe=; read -r txe 2>/dev/null < /sys/class/net/$dv/statistics/tx_errors;
-    rxd=; read -r rxd 2>/dev/null < /sys/class/net/$dv/statistics/rx_dropped;
-    txd=; read -r txd 2>/dev/null < /sys/class/net/$dv/statistics/tx_dropped;
+    rxe=; read -r rxe 2>/dev/null < $sd/rx_errors;
+    txe=; read -r txe 2>/dev/null < $sd/tx_errors;
+    rxd=; read -r rxd 2>/dev/null < $sd/rx_dropped;
+    txd=; read -r txd 2>/dev/null < $sd/tx_dropped;
     # Wi-Fi signal / link-quality / noise from /proc/net/wireless (the active iface)
     sg=-; lq=-; ns=-;
     if [ "$net" = wifi ]; then
@@ -355,7 +382,7 @@ while :; do
   # is visible at once) and once a few ticks later, because a daemon needs a
   # moment to appear in pidof and the pane must never settle on a stale "off".
   [ $cq -gt 0 ] && { cq=$((cq-1)); [ $cq = 0 ] && ct; };
-  echo @@E;
+  E;
 
   # tick bookkeeping: countdown, and force an immediate metadata re-read (i=0) on a
   # detected backward position jump (track skip), a play-state change, or a burst.
@@ -383,9 +410,9 @@ while :; do
       case "$mid" in
         __MIDS__) LUCI_local "$mid" "$data" >/dev/null 2>&1; pc=1;;
         90) case "$data" in 1) dg=1;; *) dg=0;; esac;;
-        91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name='AED Multi-band DRC enable' $nv >/dev/null 2>&1; nm;;
+        91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name="$an" $nv >/dev/null 2>&1; nm;;
         92) tg "$data";;
-        93) echo @@l; lg; echo @@E;;
+        93) case "$data" in 2) echo @@L; tl 2>/dev/null < /lsync/app.log;; *) echo @@l; lg;; esac; E;;
       esac;
       read -r -t 0 || break;
       read -r -t 1 mid data || break;

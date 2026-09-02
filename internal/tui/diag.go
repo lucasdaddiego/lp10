@@ -93,6 +93,12 @@ func collectIdentity(si *protocol.SysInfo, dev *protocol.DevInfo, dt *protocol.D
 			if dev.App != "" {
 				d.build += " · app " + dev.App
 			}
+			// The vendor's Rust app updates on its own schedule, apart from the
+			// firmware OTA (v32 landed five days after the 8530 bundle and brought
+			// presets), so its version is a drift signal in its own right.
+			if dev.VendorApp != "" {
+				d.build += " · vendor app v" + dev.VendorApp
+			}
 		}
 		d.name = dev.Name
 	}
@@ -500,6 +506,9 @@ func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now tim
 	if lr := m.lssdpReadout(d, now); lr != "" {
 		rows = append(rows, m.diagLine("lssdp", lr))
 	}
+	if zr := m.zcReadout(d, now); zr != "" {
+		rows = append(rows, m.diagLine("spotify", zr))
+	}
 	return append(rows,
 		m.diagLine("ssh", m.sshReadout(status, d.ConnectAttempts)),
 		m.diagLine("tunnel", m.tunnelReadout(status)),
@@ -538,6 +547,49 @@ func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) strin
 	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
 }
 
+// zcReadout is the row for the Spotify engine's ZeroConf endpoint — the other
+// ssh-free signal, and the only one that knows who is signed in: "answered 4s
+// ago · :9096 · signed in as x · eSDK 3.203.239" (accent), or after a miss
+// "no answer · :9096 · probed 12s ago" / "not advertised · probed 12s ago"
+// (warn: the engine is not up, whatever the env flag says). "" until the
+// first probe has run. Shared by the diag connection block and the services
+// pane's engine section.
+func (m *model) zcReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.ZCProbeAt.IsZero() {
+		return ""
+	}
+	ps := m.sty.pens()
+	if d.SpotifyZC == nil {
+		txt := "not advertised"
+		if d.ZCPort > 0 {
+			txt = "no answer · :" + strconv.Itoa(d.ZCPort)
+		}
+		if !d.ZCOKAt.IsZero() {
+			txt += fmt.Sprintf(" · last %s ago", fmtAgeShort(now.Sub(d.ZCOKAt)))
+		}
+		return ps.warn.render(txt) + ps.dim.render(fmt.Sprintf(" · probed %s ago", fmtAgeShort(now.Sub(d.ZCProbeAt))))
+	}
+	zc := d.SpotifyZC
+	facts := []string{fmt.Sprintf("answered %s ago", fmtAgeShort(now.Sub(d.ZCOKAt)))}
+	if d.ZCPort > 0 {
+		facts = append(facts, ":"+strconv.Itoa(d.ZCPort))
+	}
+	switch {
+	case zc.ActiveUser != "":
+		facts = append(facts, "signed in as "+zc.ActiveUser)
+	case zc.StatusString != "" && zc.StatusString != "OK":
+		facts = append(facts, strings.ToLower(zc.StatusString))
+	default:
+		facts = append(facts, "nobody signed in")
+	}
+	// The build goes last so a narrow card clips it first: the services pane
+	// carries the full string, and here the user and the port are the news.
+	if v, _, _ := strings.Cut(zc.LibraryVersion, "-g"); v != "" {
+		facts = append(facts, "eSDK "+v)
+	}
+	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
+}
+
 // fmtAgeShort renders a duration as "0.6s" / "12s" / "3m" / "2h".
 func fmtAgeShort(d time.Duration) string {
 	switch {
@@ -555,7 +607,7 @@ func fmtAgeShort(d time.Duration) string {
 
 // identityFacts is the present-only identity list both diag layouts render, so
 // the stacked and cards views can't drift apart.
-func identityFacts(d protocol.DiagnosticSnapshot) []kv {
+func identityFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
 	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
 	return presentKVs([]kv{
 		{"bt", id.bt},
@@ -566,11 +618,34 @@ func identityFacts(d protocol.DiagnosticSnapshot) []kv {
 		{"name", id.name},
 		{"os", id.os},
 		{"serial", id.serial},
+		{"update", otaFact(d, now)},
 	})
 }
 
-func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, w int) []string {
-	facts := identityFacts(d)
+// otaFact is the device card's firmware-check line: "" until the overlay has
+// asked, "checking…" while the vendor is being asked, then the verdict with its
+// age — "up to date", "AR241CE_9xxx available", or why there is none.
+func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.OTA == nil {
+		if d.OTAPending {
+			return "checking…"
+		}
+		return ""
+	}
+	age := " · checked " + fmtAgeShort(now.Sub(d.OTA.At)) + " ago"
+	switch {
+	case d.OTA.Err != "":
+		return "check failed · " + d.OTA.Err + age
+	case d.OTA.UpToDate:
+		return "up to date" + age
+	case d.OTA.Offered != "":
+		return d.OTA.Offered + " available" + age
+	}
+	return "update available" + age
+}
+
+func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, w int) []string {
+	facts := identityFacts(d, now)
 	rows := make([]string, 0, (len(facts)+1)/2)
 	for i := 0; i < len(facts); i += 2 {
 		k2, v2 := "", ""
@@ -720,7 +795,7 @@ func (m *model) diagStackedContent(d protocol.DiagnosticSnapshot, v diagVitals, 
 	lines := []string{between(t.sAcc.Bold(true).Render("diagnostics"), DispW("diagnostics"), hr, hrW, w), ""}
 	lines = m.appendDiagStackedSection(lines, "audio", m.diagStackedAudioRows(d, v, w, gaugeW), w)
 	lines = m.appendDiagStackedSection(lines, "connection", m.diagStackedConnectionRows(d, now), w)
-	lines = m.appendDiagStackedSection(lines, "device", m.diagStackedDeviceRows(d, w), w)
+	lines = m.appendDiagStackedSection(lines, "device", m.diagStackedDeviceRows(d, now, w), w)
 	lines = m.appendDiagStackedSection(lines, "hardware", m.diagStackedHardwareRows(w), w)
 	lines = m.appendDiagStackedSection(lines, "network", m.diagStackedNetworkRows(d, w, gaugeW), w)
 	lines = m.appendDiagStackedSection(lines, "resources", m.diagStackedResourceRows(d, v, w, gaugeW), w)
@@ -829,8 +904,8 @@ func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, no
 	return between(left, leftW, hr, hrW, w)
 }
 
-func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, f diagCardFmt) []string {
-	facts := identityFacts(d)
+func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
+	facts := identityFacts(d, now)
 	rows := make([]string, 0, len(facts))
 	for _, fact := range facts {
 		rows = append(rows, f.plain(fact.k, fact.v, m.sty.sTxt))
@@ -843,6 +918,9 @@ func (m *model) diagCardConnectionRows(d protocol.DiagnosticSnapshot, now time.T
 	rows := []string{f.plain("host", m.hostReadout(d.DevInfo), m.sty.sTxt)}
 	if lr := m.lssdpReadout(d, now); lr != "" {
 		rows = append(rows, f.styled("lssdp", lr))
+	}
+	if zr := m.zcReadout(d, now); zr != "" {
+		rows = append(rows, f.styled("spotify", zr))
 	}
 	return append(rows,
 		f.styled("ssh", m.sshReadout(ls, d.ConnectAttempts)),
@@ -989,7 +1067,7 @@ func (m *model) diagCardSections(d protocol.DiagnosticSnapshot, v diagVitals, no
 	candidates := []diagSection{
 		{"audio", m.diagCardAudioRows(d, v, f)},
 		{"connection", m.diagCardConnectionRows(d, now, f)},
-		{"device", m.diagCardDeviceRows(d, f)},
+		{"device", m.diagCardDeviceRows(d, now, f)},
 		{"hardware", m.diagCardHardwareRows(f)},
 		{"latency", m.diagCardLatencyRows(d)},
 		{"network", m.diagCardNetworkRows(d, f)},

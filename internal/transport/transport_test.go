@@ -134,7 +134,7 @@ func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 		t.Error("gv must strip getenv's \" [ KEY ]: \" prefix before comparing")
 	}
 	// The two config-writing commands and the log fetch.
-	for _, want := range []string{`92) tg "$data"`, "93) echo @@l; lg;", "@@l"} {
+	for _, want := range []string{`92) tg "$data"`, `93) case "$data" in 2) echo @@L; tl 2>/dev/null < /lsync/app.log`, "*) echo @@l; lg;;", "@@l"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing service/log command %q", want)
 		}
@@ -266,8 +266,8 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// protocol's TestSysStatsFieldOrder)
 		`echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--} ${sv:--}"`,
 		// the one-shot raw register ships (device details + multiroom group)
-		`echo @@d; LUCI_local -r 92 2>/dev/null; echo @@E;`,
-		`echo @@g; LUCI_local -r 39 2>/dev/null; echo @@E;`,
+		`echo @@d; LUCI_local -r 92 2>/dev/null; E;`,
+		`echo @@g; LUCI_local -r 39 2>/dev/null; E;`,
 		// the FriendlyName read keeps spaces (suffix-strip, not first-word)
 		`case "$fn" in *Data:*) fn=${fn#*Data:}; fn=${fn% Length:*};; *) fn=;; esac;`,
 		// the new diag-gated gathers (all default to "-" so absent paths don't break the line)
@@ -278,7 +278,7 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// the @@i block is ONE printf: seventeen of them cost ~230 bytes of the
 		// ssh command-length budget, and the loop sits at dropbear's ceiling.
 		`printf 'net=%s\niface=%s\nip=%s\n`,
-		`\nname=%s\ndata=%s %s\ndns=%s\n' "$net"`,
+		`\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\n' "$net"`,
 		`if [ "$dg" = 1 ]; then`,
 		`90) case "$data" in 1) dg=1;; *) dg=0;; esac;;`,
 		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; }`,
@@ -370,7 +370,7 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 // earlier stub echoed a bare value, which let a gv() that never matched anything
 // pass: on the device every env-gated service was reported "off" regardless.
 func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
-	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); v=${v##*: }; case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pz() { pl=" "; for pf in /proc/[0-9]*/comm; do read -r pc < $pf 2>/dev/null && pl="$pl$pc "; done; }; pr() { case "$pl" in *" $2 "*) echo "$1=on";; *) echo "$1=off";; esac; }; sy() { eng=; case "$pl" in *" spotifymusicpro "*) eng=spotifymusicpro;; *" newspotifyhifi "*) eng=newspotifyhifi;; esac; echo "spotify.eng=$eng"; sl=; case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac; [ "$eng" = "$sle" ] || { sle=$eng; sk=; [ -n "$sl" ] && sk=$(grep -aom1 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1); }; echo "spotify.sdk=${sk#esdk:}"; se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null); case "${se##*: }/${sr##*: }" in 0/1) sc=pro;; 1/0) sc=hifi;; 1/1) sc=both;; *) sc=none;; esac; echo "spotify.cfg=$sc"; }; lp() { xp=; for f in /proc/net/tcp /proc/net/tcp6; do while read -r sl2 la ra stt rest; do [ "$stt" = 0A ] && xp="$xp${la##*:} "; done 2>/dev/null < $f; done; for e in telnet:0017 adb:15B3 web:0050 control:07E2; do case "$xp" in *"${e#*:} "*) echo "${e%%:*}=on";; *) echo "${e%%:*}=off";; esac; done; }; ct() { pz; echo @@c; sy; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; pr cast cast_sample_app; pr tidal tidalConnect; gv tidal.env TidalEnabled; pr qobuz qobuzConnect; gv qobuz.env QobuzConnectEnabled; gv usb USBEnable; lp; echo @@E; }; ct;`
+	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); v=${v##*: }; case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pz() { pl=" "; for pf in /proc/[0-9]*/comm; do read -r pc < $pf 2>/dev/null && pl="$pl$pc "; done; }; pr() { case "$pl" in *" $2 "*) echo "$1=on";; *) echo "$1=off";; esac; }; sy() { eng=; case "$pl" in *" spotifymusicpro "*) eng=spotifymusicpro;; *" newspotifyhifi "*) eng=newspotifyhifi;; esac; echo "spotify.eng=$eng"; sl=; case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac; [ "$eng" = "$sle" ] || { sle=$eng; sk=; [ -n "$sl" ] && sk=$(grep -aom1 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1); }; echo "spotify.sdk=${sk#esdk:}"; se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null); case "${se##*: }/${sr##*: }" in 0/1) sc=pro;; 1/0) sc=hifi;; 1/1) sc=both;; *) sc=none;; esac; echo "spotify.cfg=$sc"; }; lp() { xp=; for f in /proc/net/tcp /proc/net/tcp6; do while read -r sl2 la ra stt rest; do [ "$stt" = 0A ] && xp="$xp${la##*:} "; done 2>/dev/null < $f; done; for e in telnet:0017 adb:15B3 web:0050 control:07E2; do case "$xp" in *"${e#*:} "*) echo "${e%%:*}=on";; *) echo "${e%%:*}=off";; esac; done; }; ct() { pz; echo @@c; sy; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; pr cast cast_sample_app; pr tidal tidalConnect; gv tidal.env TidalEnabled; pr qobuz qobuzConnect; gv qobuz.env QobuzConnectEnabled; gv usb USBEnable; lp; E; }; ct;`
 	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
 		t.Fatal("capability-probe snippet not found verbatim in the loop")
 	}
@@ -404,7 +404,7 @@ func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
 		"/proc/net/tcp6", filepath.Join(dir, "tcp6"),
 		"/proc/net/tcp", filepath.Join(dir, "tcp"),
 	).Replace(snip)
-	const stub = `getenv() { case "$1" in ` +
+	const stub = `E() { echo @@E; }; getenv() { case "$1" in ` +
 		`TidalEnabled) echo " [ TidalEnabled ]: 0";; USBEnable) echo " [ USBEnable ]: off";; ` +
 		`SpotifyEnabled) echo " [ SpotifyEnabled ]: 1";; SpotifyProEnabled) echo " [ SpotifyProEnabled ]: 0";; ` +
 		`esac; }; `
