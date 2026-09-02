@@ -548,12 +548,17 @@ func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) strin
 }
 
 // zcReadout is the row for the Spotify engine's ZeroConf endpoint — the other
-// ssh-free signal, and the only one that knows who is signed in: "answered 4s
-// ago · :9096 · signed in as x · eSDK 3.203.239" (accent), or after a miss
-// "no answer · :9096 · probed 12s ago" / "not advertised · probed 12s ago"
-// (warn: the engine is not up, whatever the env flag says). "" until the
-// first probe has run. Shared by the diag connection block and the services
-// pane's engine section.
+// ssh-free signal: "answered 4s ago · :9095" (accent), plus "signed in as x"
+// on the rare answer that names a user, or after a miss "no answer · :9095 ·
+// probed 12s ago" / "not advertised · probed 12s ago" (warn: the engine is not
+// up, whatever the env flag says). "" until the first probe has run. Shared by
+// the diag connection block and the services pane's engine section.
+//
+// Deliberately terse. The eSDK build already sits in the services card, and an
+// empty activeUser is NOT "nobody signed in": the Pro engine leaves it empty
+// while it is playing a session, so the field can only ever add a fact, never
+// assert an absence. Both were tried and clipped the row on a two-column
+// terminal for nothing.
 func (m *model) zcReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
 	if d.ZCProbeAt.IsZero() {
 		return ""
@@ -579,13 +584,9 @@ func (m *model) zcReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
 		facts = append(facts, "signed in as "+zc.ActiveUser)
 	case zc.StatusString != "" && zc.StatusString != "OK":
 		facts = append(facts, strings.ToLower(zc.StatusString))
-	default:
-		facts = append(facts, "nobody signed in")
 	}
-	// The build goes last so a narrow card clips it first: the services pane
-	// carries the full string, and here the user and the port are the news.
-	if v, _, _ := strings.Cut(zc.LibraryVersion, "-g"); v != "" {
-		facts = append(facts, "eSDK "+v)
+	if len(facts) == 1 {
+		return ps.acc.render(facts[0])
 	}
 	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
 }
@@ -1250,7 +1251,7 @@ func alphabetical(rows []svcDef) []svcDef {
 // memory/link usage is the resources/network cards' job, so nothing here
 // repeats a live gauge.
 var confHardware = []struct{ k, v string }{
-	{"dac", "MVSilicon BP10xx (the MCU) · I2S in · tone/EQ/balance on-chip"},
+	{"dac", "MVSilicon BP10xx MCU · I2S in · tone/EQ/balance on-chip"},
 	{"line in", "3.5 mm aux · ADC unidentified (WM8904 declared, absent)"},
 	{"line out", "3.5 mm · 1 Vrms (no power amp)"},
 	{"optical", "S/PDIF TOSLINK ≤ 24-bit/192 kHz"},

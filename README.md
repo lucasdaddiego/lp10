@@ -106,13 +106,14 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   the diagnostics overlay's connection section shows the last answer.
 - **Spotify ZeroConf** — the running Spotify engine advertises
   `_spotify-connect._tcp` and answers an unauthenticated `getInfo` on the
-  advertised port (9096 since firmware 8530, 9095 before — the port is taken from
-  the SRV record every time, never remembered). lp10 asks it every 30 s (10 s
-  while disconnected), again with no ssh in the loop: it is the one surface that
-  says whether the engine is *actually up*, on which eSDK build, and **who is
-  signed in**. The answer sits in the diagnostics connection section and in the
-  services pane's engine section; "not advertised" there means no engine is
-  running, whatever the env flag claims.
+  advertised port (the port is per engine — 9095 for the new one, 9096 for the
+  legacy one — so it is taken from the SRV record every time, never remembered).
+  lp10 asks it every 30 s (10 s while disconnected), again with no ssh in the
+  loop: it says whether the engine is *actually up*, on which eSDK build, and —
+  when the engine reports it — who is signed in. The answer sits in the
+  diagnostics connection section and in the services pane's engine section;
+  "not advertised" there means no engine is running, whatever the env flag
+  claims.
 - **Sleep timer** — `s` arms a "pause in N minutes" countdown (15 → 30 → 45 →
   60 → 90 min, one step per press; `S` cancels), shown beside the clock. It lives
   entirely in lp10 — at the deadline it sends the same pause the space bar does —
@@ -149,12 +150,12 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   only until the next boot; Bluetooth is never offered because the LP10's remote
   control *is* a Bluetooth device; Google Cast lives in a config layer `setenv`
   cannot reach. Spotify is a three-way — **off · legacy (hifi) · new** — because
-  its two engines are not interchangeable: the legacy one drives the box's ALSA
-  softvol so the volume works but tops out at Ogg/AAC, while the newer eSDK is the
-  only one that negotiates FLAC and bypasses softvol entirely, pinning the output
-  at full scale. The pane names that cost rather than hiding it, and always writes
-  the Spotify flags as a coherent pair so the vendor's both-set trap is
-  unreachable from here.
+  its two engines are not interchangeable: the legacy one tops out at Ogg/AAC,
+  while the newer eSDK is the only one that negotiates FLAC. (Right after the
+  8530 OTA the new engine bypassed the softvol and pinned the output at full
+  scale; since vendor app v32 its volume works like the legacy one's.) The pane
+  always writes the Spotify flags as a coherent pair so the vendor's both-set
+  trap is unreachable from here.
 - **Device log** (`l`) — the tail of one of the box's own logs, fetched on demand
   over the same ssh stream (zero cost while the pane is closed). The **device
   log** (`/var/log/syslog/messages.log`) is the only place the box records a
@@ -313,7 +314,7 @@ stacked column when narrow):
 ┃    serial    RKARYLLP100000000000                             tasks     2 running · 237 total                        ┃
 ┃                                                               temp      ━━━━━━━─────  52 °C SoC                      ┃
 ┃  ─ hardware ────────────────────────────────────────────      uptime    3h 25m                                       ┃
-┃    dac       MVSilicon BP10xx (the MCU) · I2S in · tone/EQ/balance on-chip                                           ┃
+┃    dac       MVSilicon BP10xx MCU · I2S in · tone/EQ/balance on-chip                                                  ┃
 ┃    line in   3.5 mm aux · ADC unidentified (WM8904 declare… ─ services ────────────────────────────────────────────  ┃
 ┃    line out  3.5 mm · 1 Vrms (no power amp)                   on  ● AirPlay 2 ● Bluetooth ● DLNA / UPnP ● Spotify    ┃
 ┃    optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz                  off ○ Google Cast ○ Qobuz ○ Tidal ○ USB playback       ┃
