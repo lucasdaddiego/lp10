@@ -209,7 +209,7 @@ func TestDevInfoVendorApp(t *testing.T) {
 		{"32", "32"},
 		{"1.4.2-rc1", "1.4.2-rc1"},
 		{"", ""},
-		{"rakoit_app", ""},              // the "name" value of a version-less manifest
+		{"rakoit_app", ""},             // the "name" value of a version-less manifest
 		{"9aa7f360179db64ab10853", ""}, // an md5 is too long to be a version
 		{"32; rm -rf", ""},
 	} {

@@ -506,6 +506,9 @@ func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now tim
 	if lr := m.lssdpReadout(d, now); lr != "" {
 		rows = append(rows, m.diagLine("lssdp", lr))
 	}
+	if zr := m.zcReadout(d, now); zr != "" {
+		rows = append(rows, m.diagLine("spotify", zr))
+	}
 	return append(rows,
 		m.diagLine("ssh", m.sshReadout(status, d.ConnectAttempts)),
 		m.diagLine("tunnel", m.tunnelReadout(status)),
@@ -540,6 +543,49 @@ func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) strin
 	}
 	if d.LSSDP.NetMode != "" {
 		facts = append(facts, strings.ToLower(d.LSSDP.NetMode))
+	}
+	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
+}
+
+// zcReadout is the row for the Spotify engine's ZeroConf endpoint — the other
+// ssh-free signal, and the only one that knows who is signed in: "answered 4s
+// ago · :9096 · signed in as x · eSDK 3.203.239" (accent), or after a miss
+// "no answer · :9096 · probed 12s ago" / "not advertised · probed 12s ago"
+// (warn: the engine is not up, whatever the env flag says). "" until the
+// first probe has run. Shared by the diag connection block and the services
+// pane's engine section.
+func (m *model) zcReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.ZCProbeAt.IsZero() {
+		return ""
+	}
+	ps := m.sty.pens()
+	if d.SpotifyZC == nil {
+		txt := "not advertised"
+		if d.ZCPort > 0 {
+			txt = "no answer · :" + strconv.Itoa(d.ZCPort)
+		}
+		if !d.ZCOKAt.IsZero() {
+			txt += fmt.Sprintf(" · last %s ago", fmtAgeShort(now.Sub(d.ZCOKAt)))
+		}
+		return ps.warn.render(txt) + ps.dim.render(fmt.Sprintf(" · probed %s ago", fmtAgeShort(now.Sub(d.ZCProbeAt))))
+	}
+	zc := d.SpotifyZC
+	facts := []string{fmt.Sprintf("answered %s ago", fmtAgeShort(now.Sub(d.ZCOKAt)))}
+	if d.ZCPort > 0 {
+		facts = append(facts, ":"+strconv.Itoa(d.ZCPort))
+	}
+	switch {
+	case zc.ActiveUser != "":
+		facts = append(facts, "signed in as "+zc.ActiveUser)
+	case zc.StatusString != "" && zc.StatusString != "OK":
+		facts = append(facts, strings.ToLower(zc.StatusString))
+	default:
+		facts = append(facts, "nobody signed in")
+	}
+	// The build goes last so a narrow card clips it first: the services pane
+	// carries the full string, and here the user and the port are the news.
+	if v, _, _ := strings.Cut(zc.LibraryVersion, "-g"); v != "" {
+		facts = append(facts, "eSDK "+v)
 	}
 	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
 }
@@ -849,6 +895,9 @@ func (m *model) diagCardConnectionRows(d protocol.DiagnosticSnapshot, now time.T
 	rows := []string{f.plain("host", m.hostReadout(d.DevInfo), m.sty.sTxt)}
 	if lr := m.lssdpReadout(d, now); lr != "" {
 		rows = append(rows, f.styled("lssdp", lr))
+	}
+	if zr := m.zcReadout(d, now); zr != "" {
+		rows = append(rows, f.styled("spotify", zr))
 	}
 	return append(rows,
 		f.styled("ssh", m.sshReadout(ls, d.ConnectAttempts)),

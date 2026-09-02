@@ -75,8 +75,8 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   over two ruled columns on a wide terminal (a stacked read-out when
   narrow): device & firmware identity (down to the serial, MCU version, and BT
   address); lp10's own **connection** to the box (ssh stream freshness and the
-  `:2018` control-tunnel state, and the LSSDP liveness answer — readable even
-  while the device is down); the
+  `:2018` control-tunnel state, the LSSDP liveness answer, and the Spotify
+  engine's own ZeroConf answer — the two readable even while ssh is down); the
   active network link (Wi-Fi or ethernet, with live throughput, error/drop
   counters as session deltas, the multiroom group state, Wi-Fi **SNR**, and
   round-trip latency — average, jitter, and a spike-flagging peak — to your laptop,
@@ -101,6 +101,15 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   "connecting…" screen says whether the device is **up on the LAN but refusing
   ssh** (its sshd rate-limits rapid reconnects) or not answering at all — and
   the diagnostics overlay's connection section shows the last answer.
+- **Spotify ZeroConf** — the running Spotify engine advertises
+  `_spotify-connect._tcp` and answers an unauthenticated `getInfo` on the
+  advertised port (9096 since firmware 8530, 9095 before — the port is taken from
+  the SRV record every time, never remembered). lp10 asks it every 30 s (10 s
+  while disconnected), again with no ssh in the loop: it is the one surface that
+  says whether the engine is *actually up*, on which eSDK build, and **who is
+  signed in**. The answer sits in the diagnostics connection section and in the
+  services pane's engine section; "not advertised" there means no engine is
+  running, whatever the env flag claims.
 - **Sleep timer** — `s` arms a "pause in N minutes" countdown (15 → 30 → 45 →
   60 → 90 min, one step per press; `S` cancels), shown beside the clock. It lives
   entirely in lp10 — at the deadline it sends the same pause the space bar does —

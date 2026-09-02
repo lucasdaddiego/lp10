@@ -324,6 +324,7 @@ type rr struct {
 	name   string
 	typ    uint16
 	target string   // PTR/SRV target name
+	port   uint16   // SRV port
 	txt    []string // TXT strings
 	ip     net.IP   // A address
 }
@@ -452,6 +453,7 @@ func parsePacket(msg []byte) ([]rr, bool) {
 			if rdlen >= 7 { // priority(2) weight(2) port(2) target
 				if target, end, ok := parseName(msg, rdStart+6); ok && end <= rdStart+rdlen {
 					r.target = target
+					r.port = be16(msg, rdStart+4)
 				}
 			}
 		case typeTXT:

@@ -95,6 +95,14 @@ type State struct {
 	lssdpProbeAt time.Time
 	lssdpOKAt    time.Time
 
+	// Spotify ZeroConf (the engine's own unauthenticated HTTP endpoint, found
+	// over mDNS): the last answer, the port it was found on, and the probe
+	// bookkeeping mirroring LSSDP's.
+	zc        *SpotifyZC
+	zcPort    int
+	zcProbeAt time.Time
+	zcOKAt    time.Time
+
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
 	// distinguish "off" from "never reported".
@@ -125,6 +133,15 @@ func NewState() *State {
 // the strings are control-stripped on the way in.
 type LSSDPInfo struct {
 	Name, FW, State, NetMode string
+}
+
+// SpotifyZC is the Spotify engine's ZeroConf getInfo answer (see
+// discovery.ProbeSpotifyZC): whether it is up, its eSDK build, who is signed
+// in. Strings are control-stripped on the way in.
+type SpotifyZC struct {
+	Status                     int
+	StatusString, ActiveUser   string
+	LibraryVersion, RemoteName string
 }
 
 // Snapshot is an immutable view of State for rendering.
@@ -257,6 +274,27 @@ func (st *State) SetLSSDP(info *LSSDPInfo) {
 	st.lssdpOKAt = now
 }
 
+// SetSpotifyZC records a ZeroConf probe: the engine's answer (control-stripped)
+// and the port it answered on, or nil for an unanswered probe (port 0 when the
+// endpoint could not even be found over mDNS).
+func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := time.Now()
+	st.zcProbeAt = now
+	st.zcPort = port
+	if info == nil {
+		st.zc = nil
+		return
+	}
+	st.zc = &SpotifyZC{
+		Status: info.Status, StatusString: printable(info.StatusString),
+		ActiveUser: printable(info.ActiveUser), LibraryVersion: printable(info.LibraryVersion),
+		RemoteName: printable(info.RemoteName),
+	}
+	st.zcOKAt = now
+}
+
 // ---- night mode (multi-band DRC) ----
 
 // SetNightLocal records the state lp10 just asked for, so the header flips at
@@ -304,6 +342,12 @@ type DiagnosticSnapshot struct {
 	// probed); LSSDPProbeAt / LSSDPOKAt time the last probe and last answer.
 	LSSDP                   *LSSDPInfo
 	LSSDPProbeAt, LSSDPOKAt time.Time
+
+	// SpotifyZC is the engine's last ZeroConf answer (nil: unanswered or never
+	// probed); ZCPort the port it was found on (0: not found over mDNS).
+	SpotifyZC         *SpotifyZC
+	ZCPort            int
+	ZCProbeAt, ZCOKAt time.Time
 }
 
 // ---- volume / mute ----
@@ -560,6 +604,10 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		LSSDP:           st.lssdp,
 		LSSDPProbeAt:    st.lssdpProbeAt,
 		LSSDPOKAt:       st.lssdpOKAt,
+		SpotifyZC:       st.zc,
+		ZCPort:          st.zcPort,
+		ZCProbeAt:       st.zcProbeAt,
+		ZCOKAt:          st.zcOKAt,
 	}
 }
 

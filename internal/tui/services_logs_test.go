@@ -501,7 +501,7 @@ func TestSpotifyInsightPerEngine(t *testing.T) {
 		protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=" + c.eng, "spotify.cfg=hifi"}})
 		m, _, _ := modelWith(st)
 		m.rows, m.cols, m.sty = 44, 120, newTheme()
-		got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), 114), "\n"))
+		got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), m.st.DiagnosticView(time.Now()), time.Now(), 114), "\n"))
 		if !strings.Contains(got, c.want) {
 			t.Errorf("engine %q readout %q, want it to contain %q", c.eng, got, c.want)
 		}
@@ -687,7 +687,7 @@ func TestServicesPaneUnknownEngineFallsBackSafely(t *testing.T) {
 	m.openOverlay(ovServices)
 	m.svcFocus = 0
 	// the engine readout names it verbatim rather than guessing
-	if got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), 114), "\n")); !strings.Contains(got, "weirdengine") {
+	if got := clean(strings.Join(m.spotifyInsight(m.st.ConfView(), m.st.DiagnosticView(time.Now()), time.Now(), 114), "\n")); !strings.Contains(got, "weirdengine") {
 		t.Errorf("unknown engine not reported: %q", got)
 	}
 	// A pending target the row cannot interpret must settle rather than wedge the
