@@ -63,10 +63,10 @@ var svcRows = []svcDef{
 	{
 		id: "spotify", label: "Spotify", gate: gateEngine,
 		detail: []string{
-			"legacy (hifi) drives this box's ALSA softvol, so the volume works — from the app,",
-			"the phone and the physical remote. it tops out at Ogg/AAC: no lossless, ever.",
-			"new (pro) is the newer eSDK and the only one that negotiates FLAC, but on this",
-			"firmware it bypasses softvol: output pins at full scale and NOTHING attenuates.",
+			"legacy (hifi) is the older eSDK: it tops out at Ogg/AAC — no lossless, ever.",
+			"new (pro) is the newer eSDK and the only one that negotiates FLAC. its volume",
+			"was broken right after the 8530 OTA (output pinned at full scale); with vendor",
+			"app v32 it drives the softvol like hifi does, from the app, phone and remote.",
 		},
 	},
 	{
@@ -129,7 +129,7 @@ var svcRows = []svcDef{
 var spotifyStates = []struct{ wire, label string }{
 	{"off", "off"},
 	{"hifi", "legacy (hifi)"},
-	{"pro", "new (volume problem)"},
+	{"pro", "new (FLAC)"},
 }
 
 // svcPendingFor bounds how long a row can sit on "applying…" when the device
@@ -312,9 +312,6 @@ func (m *model) svcAction(row svcDef, cv *protocol.ConfInfo, focused, pending bo
 	switch {
 	case row.gate == gateEngine:
 		dest = svcLabelFor(row, want)
-		if want == "pro" {
-			return t.dmr.render("enter → ") + m.sty.sevs[1].Render(dest)
-		}
 	case want == "1":
 		dest = "turn on"
 	default:
@@ -404,7 +401,9 @@ func (m *model) renderServices(now time.Time, W int) []string {
 // engine actually loaded, its Spotify eSDK build, and what that build can
 // receive. The eSDK version is the only honest signal for the codec ceiling —
 // both engines link libFLAC, but only the newer one negotiates FLAC delivery, so
-// "has a FLAC decoder" says nothing about what arrives over the wire.
+// "has a FLAC decoder" says nothing about what arrives over the wire. (The Pro
+// engine's volume, broken right after the 8530 OTA, works since vendor app v32:
+// verified 2026-09-02 with softvol tracking every step.)
 func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
 	t := m.sty.pens()
 	var out []string
@@ -413,10 +412,9 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnaps
 	case "":
 		out = append(out, m.diagLine("engine", t.dim.render("none running")))
 	case "newspotifyhifi":
-		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · legacy · Ogg/AAC only · volume works")))
+		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · legacy · Ogg/AAC only")))
 	case "spotifymusicpro":
-		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · new · FLAC capable · ")+
-			m.sty.sevs[2].Render("volume does not attenuate")))
+		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · new · FLAC capable")))
 	default:
 		out = append(out, m.diagLine("engine", t.txt.render(eng)))
 	}

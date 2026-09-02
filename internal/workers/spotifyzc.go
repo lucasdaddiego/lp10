@@ -4,8 +4,8 @@
 // actually up, on which eSDK, signed in as whom" while the box's sshd is
 // refusing lp10 — and it is the only surface that reports the signed-in user
 // at all. The port comes from the SRV record every time the endpoint is
-// (re)found: firmware 8530 moved it from 9095 to 9096, and the next OTA may
-// move it again.
+// (re)found: it is per engine (the new one answers on 9095, the legacy one on
+// 9096), so switching engines in the services pane moves it.
 
 package workers
 

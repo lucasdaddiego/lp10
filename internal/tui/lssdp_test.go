@@ -79,14 +79,18 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 	}
 	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 101, StatusString: "OK", LibraryVersion: "3.203.239-g1d6bd565", ActiveUser: "lucas"}, 9096)
 	out := stripANSI(m.viewContent())
-	for _, want := range []string{"answered", ":9096", "eSDK 3.203.239", "signed in as lucas"} {
+	for _, want := range []string{"answered", ":9096", "signed in as lucas"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("answered row missing %q:\n%s", want, out)
 		}
 	}
-	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 101, StatusString: "OK"}, 9096)
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "nobody signed in") {
-		t.Errorf("no-user row missing:\n%s", out)
+	// An empty activeUser is not "nobody": the Pro engine leaves it empty while
+	// playing, so the row says nothing about users rather than asserting an
+	// absence — and never carries the eSDK build, which the services card has.
+	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 101, StatusString: "OK", LibraryVersion: "3.211.130-g110e3e03"}, 9096)
+	if out := stripANSI(m.viewContent()); strings.Contains(out, "signed in") || strings.Contains(out, "3.211") ||
+		!strings.Contains(out, "answered") {
+		t.Errorf("no-user row wrong:\n%s", out)
 	}
 	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 102, StatusString: "ERROR-SPOTIFY"}, 9096)
 	if out := stripANSI(m.viewContent()); !strings.Contains(out, "error-spotify") {

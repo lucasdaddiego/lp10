@@ -34,7 +34,7 @@ func TestServicesPaneShowsStateAndAction(t *testing.T) {
 		"USB playback", "Bluetooth", "Google Cast",
 		"● on", "○ off",
 		"legacy (hifi)",                            // the engine, not a boolean
-		"enter → new (volume problem)",             // and what enter does to the focused row
+		"enter → new (FLAC)",                       // and what enter does to the focused row
 		"reported only · not switchable from here", // its own group, not a broken row
 		"the remote control runs on it",            // and why, in the action column
 		"─ spotify engine",                         // the deep readout
@@ -358,12 +358,12 @@ func TestServicesPanePendingClearsOnDeviceAnswer(t *testing.T) {
 	m.svcFocus = 0 // Spotify: the fixture has it on hifi, so enter asks for pro
 	m.svcToggle(now)
 	// pending shows the state it is HEADING TO, not a blank "applying"
-	if !strings.Contains(clean(m.renderJoin(now)), "… new (volume problem)") {
+	if !strings.Contains(clean(m.renderJoin(now)), "… new (FLAC)") {
 		t.Fatal("a just-toggled row did not read as pending")
 	}
 	// the device reports something else: still waiting
 	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "spotify.cfg=hifi"}})
-	if !strings.Contains(clean(m.renderJoin(now)), "… new (volume problem)") {
+	if !strings.Contains(clean(m.renderJoin(now)), "… new (FLAC)") {
 		t.Error("pending cleared on an answer that was not the state asked for")
 	}
 	// the device reports the state that was asked for: done, well inside the window
@@ -491,8 +491,8 @@ func TestLogsPaneEmptyStates(t *testing.T) {
 // is running — the row it replaces would otherwise imply Spotify simply works.
 func TestSpotifyInsightPerEngine(t *testing.T) {
 	cases := []struct{ eng, want string }{
-		{"newspotifyhifi", "legacy · Ogg/AAC only · volume works"},
-		{"spotifymusicpro", "volume does not attenuate"},
+		{"newspotifyhifi", "legacy · Ogg/AAC only"},
+		{"spotifymusicpro", "new · FLAC capable"},
 		{"", "none running"},
 		{"somethingelse", "somethingelse"},
 	}
@@ -574,7 +574,7 @@ func TestServicesPaneCyclesFasterThanTheDevice(t *testing.T) {
 		t.Errorf("presses asked for %v, want %v", asked, want)
 	}
 	// The row shows where it is heading, not a blank "applying".
-	if got := clean(m.renderJoin(now)); !strings.Contains(got, "… new (volume problem)") {
+	if got := clean(m.renderJoin(now)); !strings.Contains(got, "… new (FLAC)") {
 		t.Error("a pending row did not show the state it is heading to")
 	}
 	// And a burst reaches the device as one command carrying the final choice.

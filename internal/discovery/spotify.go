@@ -4,9 +4,9 @@
 // serves a small unauthenticated HTTP endpoint at the advertised port
 // (GET /zc?action=getInfo). Its answer carries what no other surface does
 // without a root shell: whether the engine is up at all, which eSDK build it is
-// running, and who is signed in. Firmware 8530 moved the port from 9095 to
-// 9096, which is exactly why the port is taken from the SRV record rather than
-// remembered.
+// running, and (when it says so) who is signed in. The port is per engine —
+// the new engine answers on 9095, the legacy one on 9096 — which is exactly why
+// it is taken from the SRV record rather than remembered.
 
 package discovery
 
