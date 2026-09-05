@@ -103,3 +103,27 @@ func TestLSSDPWorkerRecordsAnswerAndSilence(t *testing.T) {
 		t.Errorf("no host should disable: %q %v", h, ok)
 	}
 }
+
+// A shutdown with a probe in flight must not sit out the probe's budget: the
+// runtime's ctx closes the socket under the read (and bounds a hostname's
+// lookup). A silent target keeps every probe waiting its full 1.5 s.
+func TestLSSDPWorkerStopsMidProbe(t *testing.T) {
+	t.Setenv("LP10_LSSDP_HOST", fakeLSSDP(t, ""))
+	st := protocol.NewState()
+	control := newRunControl()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { lssdpWorker(ctx, control, st, config.Config{}); close(done) }()
+	time.Sleep(lssdpFirstProbeLag + 200*time.Millisecond) // inside the first probe's read
+	control.stop.Set()
+	cancel()
+	start := time.Now()
+	select {
+	case <-done:
+		if el := time.Since(start); el > 500*time.Millisecond {
+			t.Errorf("worker took %v to stop with a probe in flight", el)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop with a probe in flight")
+	}
+}

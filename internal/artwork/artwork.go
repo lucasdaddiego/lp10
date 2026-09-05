@@ -124,6 +124,29 @@ func blockedIP(ip net.IP) bool {
 	return false
 }
 
+// lookupIP is the resolver behind dialVetted, a var so tests can stand in
+// resolver failures without a network round-trip.
+var lookupIP = net.DefaultResolver.LookupIP
+
+// resolveErr classifies a failed lookup. A name that does not exist is as
+// deterministic as a blocked host — ErrUndecodable, never retried for the
+// url — while a resolver timeout, a SERVFAIL, or a lookup cut short by the
+// fetch deadline is a transient the art worker retries: a wifi blip must not
+// blank the cover for the rest of the track.
+func resolveErr(host string, err error) error {
+	if nameNotFound(err) {
+		return fmt.Errorf("%w: resolve %s: %v", ErrUndecodable, host, err)
+	}
+	return fmt.Errorf("art: resolve %s: %w", host, err)
+}
+
+// nameNotFound reports a definitive "no such host" (NXDOMAIN, or a name the
+// resolver rejects outright), as opposed to a lookup that merely failed.
+func nameNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
 // dialVetted is the transport's DialContext: resolve the hostname, filter every
 // candidate address through blockedIP, and dial only a vetted IP. The configured
 // device (allowHost, via the request context) is exempt — matched by
@@ -140,9 +163,9 @@ func dialVetted(ctx context.Context, network, addr string) (net.Conn, error) {
 	if allow != "" && strings.EqualFold(host, allow) {
 		return d.DialContext(ctx, network, addr)
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	ips, err := lookupIP(ctx, "ip", host)
 	if err != nil {
-		return nil, fmt.Errorf("%w: resolve %s: %v", ErrUndecodable, host, err)
+		return nil, resolveErr(host, err)
 	}
 	var allowIPs []net.IP // resolved lazily: only a blocked candidate needs it
 	allowLooked := false
@@ -150,8 +173,12 @@ func dialVetted(ctx context.Context, network, addr string) (net.Conn, error) {
 	for _, ip := range ips {
 		if blockedIP(ip) {
 			if !allowLooked && allow != "" {
-				allowIPs, _ = net.DefaultResolver.LookupIP(ctx, "ip", allow)
 				allowLooked = true
+				if allowIPs, err = lookupIP(ctx, "ip", allow); err != nil && !nameNotFound(err) {
+					// The exemption couldn't be judged this time; the candidate
+					// isn't blocked for the session over it.
+					return nil, resolveErr(allow, err)
+				}
 			}
 			if !slices.ContainsFunc(allowIPs, ip.Equal) {
 				continue
@@ -174,8 +201,9 @@ func dialVetted(ctx context.Context, network, addr string) (net.Conn, error) {
 // HTTP(S), decodes (gif/jpeg/png), and populates the cache. dir == "" disables
 // the cache (network only). The caller's ctx bounds the network wait. allowHost
 // is the one host exempt from the private-address SSRF block (the configured
-// device). A url with a non-http(s) scheme, a blocked/unresolvable host, or an
-// image that fails to decode or exceeds maxArtPixels, returns ErrUndecodable.
+// device). A url with a non-http(s) scheme, a blocked or nonexistent host, or
+// an image that fails to decode or exceeds maxArtPixels, returns
+// ErrUndecodable; a lookup that merely failed is transient, like a dial.
 func Get(ctx context.Context, rawurl, dir, allowHost string) (image.Image, error) {
 	if u, err := url.Parse(rawurl); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, fmt.Errorf("%w: scheme %q", ErrUndecodable, rawurl)

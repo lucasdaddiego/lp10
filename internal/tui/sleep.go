@@ -10,8 +10,6 @@ package tui
 import (
 	"strconv"
 	"time"
-
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // sleepPresets are the minutes 's' cycles through, in order; one more press
@@ -62,18 +60,22 @@ func (m *model) bedtimeCycle(now time.Time) {
 }
 
 // sleepFire is the tick hook: once the deadline passes it pauses the player —
-// via the same optimistic toggle the space bar uses, so the screen flips at once
-// and the device's echo is held off — and disarms. Already paused or idle, it
-// just disarms: a timer must never RESUME (the toggle is a flip, so the play
-// state is checked first). One-shot by construction. No note is posted: the
-// seek row's amber "Paused" and the countdown leaving the header say it all,
-// and State's note slot renders as the red error line.
-func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
+// optimistically, like the space bar, so the screen flips at once and the
+// device's echo is held off — and disarms. Already paused or idle, it just
+// disarms. The pause is one-way and decided inside State under its lock
+// (PauseOptimistic): a timer must never RESUME, and a device-side pause
+// landing between the tick's snapshot and the flip would have turned the
+// space bar's toggle into exactly that. It also needs no track metadata, so a
+// source playing without @@B still goes quiet. One-shot by construction. No
+// note is posted: the seek row's amber "Paused" and the countdown leaving the
+// header say it all, and State's note slot renders as the red error line.
+func (m *model) sleepFire(now time.Time) {
 	if m.sleepAt.IsZero() || now.Before(m.sleepAt) {
 		return
 	}
-	if s.Playing == 0 && s.Track != nil {
-		m.do("toggle")
+	if m.st.PauseOptimistic() {
+		m.flash["toggle"] = now.Add(FlashDuration)
+		m.send(40, "PAUSE")
 	}
 	m.sleepCancel() // after the pause: also restores night mode after a bedtime arming
 }

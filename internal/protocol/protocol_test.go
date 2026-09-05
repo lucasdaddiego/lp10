@@ -1139,3 +1139,25 @@ func TestPayloadWhitelist(t *testing.T) {
 		}
 	}
 }
+
+// PauseOptimistic is the sleep timer's one-way flip: it pauses a playing
+// player, decided under the lock, and is a no-op — never a resume — otherwise.
+func TestPauseOptimisticIsOneWay(t *testing.T) {
+	st := NewState() // starts "not playing"
+	if st.PauseOptimistic() {
+		t.Fatal("a paused player must not be paused again (that would send PAUSE)")
+	}
+	if st.Snap().Playing != 2 {
+		t.Fatalf("Playing = %d, want 2 untouched", st.Snap().Playing)
+	}
+	st.ToggleOptimistic() // playing — with no track: metadata is not required
+	if !st.PauseOptimistic() {
+		t.Fatal("a playing player must pause")
+	}
+	if p := st.Snap().Playing; p != 2 {
+		t.Errorf("Playing = %d after the pause, want 2", p)
+	}
+	if st.PauseOptimistic() {
+		t.Error("the second call must be a no-op: one-shot, never RESUME")
+	}
+}

@@ -10,7 +10,9 @@
 package discovery
 
 import (
+	"context"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -82,15 +84,20 @@ func parseLSSDP(b []byte) (LSSDPInfo, bool) {
 }
 
 // ProbeLSSDP sends one unicast M-SEARCH to host (a bare host uses the LSSDP
-// port; an explicit host:port is honoured, for tests) and waits up to timeout
-// for its reply. One datagram each way; false on no/garbage answer.
-func ProbeLSSDP(host string, timeout time.Duration) (LSSDPInfo, bool) {
-	target := host
-	if _, _, err := net.SplitHostPort(host); err != nil {
-		target = net.JoinHostPort(host, "1800")
-	}
-	raddr, err := net.ResolveUDPAddr("udp4", target)
+// port; an explicit host:port is honoured, for tests) and waits for its reply.
+// timeout is the whole probe's budget, a hostname's lookup included: the
+// .local name of an absent box can hold the resolver for seconds, and that
+// wait must neither outlive the probe nor — ctx being the runtime's — a
+// shutdown. One datagram each way; false on no/garbage answer.
+func ProbeLSSDP(ctx context.Context, host string, timeout time.Duration) (LSSDPInfo, bool) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	h, port, err := net.SplitHostPort(host)
 	if err != nil {
+		h, port = host, strconv.Itoa(LSSDPPort)
+	}
+	raddr, ok := resolveUDP4(ctx, h, port)
+	if !ok {
 		return LSSDPInfo{}, false
 	}
 	c, err := net.DialUDP("udp4", nil, raddr)
@@ -98,10 +105,12 @@ func ProbeLSSDP(host string, timeout time.Duration) (LSSDPInfo, bool) {
 		return LSSDPInfo{}, false
 	}
 	defer c.Close()
+	// The deadline, or the runtime cancelling ctx, closes the socket — which
+	// is what unblocks the read.
+	defer context.AfterFunc(ctx, func() { c.Close() })()
 	if _, err := c.Write([]byte(msearch)); err != nil {
 		return LSSDPInfo{}, false
 	}
-	_ = c.SetReadDeadline(time.Now().Add(timeout))
 	buf := make([]byte, 2048)
 	n, err := c.Read(buf)
 	if err != nil {
@@ -110,6 +119,31 @@ func ProbeLSSDP(host string, timeout time.Duration) (LSSDPInfo, bool) {
 	info, ok := parseLSSDP(buf[:n])
 	info.IP = raddr.IP
 	return info, ok
+}
+
+// resolveUDP4 is net.ResolveUDPAddr("udp4") under a context: an IP literal is
+// used as is, a name goes through the resolver bounded by ctx.
+func resolveUDP4(ctx context.Context, host, port string) (*net.UDPAddr, bool) {
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return nil, false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			return &net.UDPAddr{IP: ip4, Port: p}, true
+		}
+		return nil, false
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, false
+	}
+	for _, a := range addrs {
+		if ip4 := a.IP.To4(); ip4 != nil {
+			return &net.UDPAddr{IP: ip4, Port: p, Zone: a.Zone}, true
+		}
+	}
+	return nil, false
 }
 
 // FindLP10LSSDP is the mDNS fallback: a multicast M-SEARCH out every
