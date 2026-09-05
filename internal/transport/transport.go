@@ -1,6 +1,5 @@
-// Package transport handles SSH: Keychain/askpass auth, the ssh argv, the
-// on-device streaming loop, and stderr classification. Port of
-// lp10lib/transport.py.
+// Package transport handles SSH: secret-store/askpass auth, the ssh argv, the
+// on-device streaming loop, and stderr classification.
 //
 // The surface is split by concern: keychain.go (secret-store lookup + askpass
 // child), secret_{darwin,linux}.go (per-OS store integration), remote_loop.{go,sh}

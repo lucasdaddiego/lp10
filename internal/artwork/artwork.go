@@ -45,8 +45,9 @@ const (
 	maxArtBytes = 8 << 20
 	// maxArtPixels caps the *decoded* dimensions (Width×Height): the byte cap above
 	// bounds the compressed payload, but a tiny crafted PNG can declare enormous
-	// dimensions and force a multi-GB pixel buffer. A 12×6-cell box never needs
-	// more than a handful of megapixels, so reject anything larger up front.
+	// dimensions and force a multi-GB pixel buffer. A cover box a few dozen
+	// cells wide never needs more than a handful of megapixels, so reject
+	// anything larger up front.
 	maxArtPixels = 16 << 20
 )
 

@@ -78,14 +78,14 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 	}
 	probe := func() {
 		if addr == "" {
-			ep, found := zcFind(host, zcResolve(ctx, host), zcFindTimeout)
+			ep, found := zcFind(ctx, host, zcResolve(ctx, host), zcFindTimeout)
 			if !found {
 				st.SetSpotifyZC(nil, 0)
 				return
 			}
 			addr, port = ep.Addr(), ep.Port
 		}
-		info, ok := discovery.ProbeSpotifyZC(addr, zcProbeTimeout)
+		info, ok := discovery.ProbeSpotifyZC(ctx, addr, zcProbeTimeout)
 		if !ok {
 			st.SetSpotifyZC(nil, port)
 			if fixed == "" {
@@ -93,10 +93,7 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 			}
 			return
 		}
-		st.SetSpotifyZC(&protocol.SpotifyZC{
-			Status: info.Status, StatusString: info.StatusString, ActiveUser: info.ActiveUser,
-			LibraryVersion: info.LibraryVersion, RemoteName: info.RemoteName,
-		}, port)
+		st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: info.StatusString, ActiveUser: info.ActiveUser}, port)
 	}
 	wait := zcFirstProbeLag
 	for !control.stop.IsSet() && ctx.Err() == nil {

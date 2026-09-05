@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
@@ -341,4 +342,22 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// State files key on the host as configured, so discovery rewriting Host to
+// the address the box holds today (a new DHCP lease) keeps the pre-mute level
+// and the first-paint snapshot; a Config built without Load keys on Host.
+func TestStatePathsKeyOnConfiguredHost(t *testing.T) {
+	t.Setenv("LP10_STATE_DIR", t.TempDir())
+	cfg := Config{Host: "192.168.0.27", StateKey: "lp10.local"}
+	if !strings.HasSuffix(PremutePath(cfg), "premute-lp10.local") || !strings.HasSuffix(SnapshotPath(cfg), "snapshot-lp10.local.json") {
+		t.Errorf("paths = %q %q, want keyed on lp10.local", PremutePath(cfg), SnapshotPath(cfg))
+	}
+	if !strings.HasSuffix(PremutePath(Config{Host: "box"}), "premute-box") {
+		t.Error("without a StateKey the host keys the files")
+	}
+	t.Setenv(HostEnv, "10.0.0.5")
+	if got := Load(); got.StateKey != "10.0.0.5" || got.Host != "10.0.0.5" {
+		t.Errorf("Load: StateKey %q Host %q, want the LP10_HOST value for both", got.StateKey, got.Host)
+	}
 }

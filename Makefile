@@ -6,8 +6,13 @@ INSTALL_DIR := $(HOME)/.bin
 # Release build: strip symbols/DWARF (-s -w) and local paths (-trimpath).
 RELEASE     := -trimpath -ldflags "-s -w"
 
+# CI pins the toolchain to go.mod's `go` line (setup-go go-version-file), so the
+# ci target runs under the same one: staticcheck in particular reads export data
+# and refuses a newer local toolchain.
+CI_GO       := go$(shell awk '/^go /{print $$2}' go.mod)
+
 .DEFAULT_GOAL := help
-.PHONY: help build run test cover install generate
+.PHONY: help build run test ci cover install generate
 
 help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -21,6 +26,14 @@ run: ## Launch the live TUI (needs a terminal + Keychain item)
 test: ## Vet and run the test suite
 	go vet ./...
 	go test ./...
+
+ci: ## Everything CI runs, in CI's order and toolchain: gofmt, vet, go fix -diff, staticcheck, govulncheck, race tests
+	@unformatted="$$(gofmt -l .)"; if [ -n "$$unformatted" ]; then echo "These files need gofmt:"; echo "$$unformatted"; exit 1; fi
+	GOTOOLCHAIN=$(CI_GO) go vet ./...
+	GOTOOLCHAIN=$(CI_GO) go fix -diff ./...
+	GOTOOLCHAIN=$(CI_GO) go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+	GOTOOLCHAIN=$(CI_GO) go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+	GOTOOLCHAIN=$(CI_GO) go test -race ./...
 
 generate: ## Regenerate embedded files (remote_loop.sh from remote_loop.src.sh)
 	go generate ./...

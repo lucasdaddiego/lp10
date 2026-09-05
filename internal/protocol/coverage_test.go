@@ -298,11 +298,11 @@ func TestCov_ConnectionLivenessAccessors(t *testing.T) {
 	}
 
 	// A fresh spawn is writable within the live window.
-	if !st.WriterLive(time.Now(), spawned, 5*time.Second) {
+	if live, _ := st.WriterLive(time.Now(), spawned, 5*time.Second); !live {
 		t.Error("WriterLive should accept a fresh connection")
 	}
 	// Far past the live window with no data -> not live.
-	if st.WriterLive(time.Now().Add(time.Hour), spawned, time.Second) {
+	if live, _ := st.WriterLive(time.Now().Add(time.Hour), spawned, time.Second); live {
 		t.Error("WriterLive should reject a long-silent connection")
 	}
 
@@ -444,25 +444,25 @@ func TestCov_UpdateNetRingTrim(t *testing.T) {
 func TestCov_WriterLiveDatalessStreak(t *testing.T) {
 	st := NewState()
 	st.StartConnection()
-	if !st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+	if live, _ := st.WriterLive(time.Now(), time.Now(), 5*time.Second); !live {
 		t.Fatal("first young spawn should have the handshake grace")
 	}
 	st.Disconnect() // died without data
 	st.Disconnect() // idempotent: must not double-count the same connection
 	st.StartConnection()
-	if st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+	if live, _ := st.WriterLive(time.Now(), time.Now(), 5*time.Second); live {
 		t.Error("young-spawn grace should be withheld while the dataless streak runs")
 	}
 
 	// Data clears the streak: the writer is live again, and after a later
 	// (data-ful) death the next young spawn gets the grace back.
 	ApplyRecord(st, Record{"v": {"Data:44"}})
-	if !st.WriterLive(time.Now(), time.Time{}, 5*time.Second) {
+	if live, _ := st.WriterLive(time.Now(), time.Time{}, 5*time.Second); !live {
 		t.Error("fresh data should make the writer live")
 	}
 	st.Disconnect()
 	st.StartConnection()
-	if !st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+	if live, _ := st.WriterLive(time.Now(), time.Now(), 5*time.Second); !live {
 		t.Error("a young spawn after a data-ful session should have the grace")
 	}
 }
@@ -480,7 +480,7 @@ func TestCov_StaleDataDeathArmsStreak(t *testing.T) {
 	ApplyRecord(st, Record{"v": {"Data:44"}})
 	st.Disconnect() // data present but stale at death
 	st.StartConnection()
-	if st.WriterLive(time.Now(), time.Now(), 5*time.Second) {
+	if live, _ := st.WriterLive(time.Now(), time.Now(), 5*time.Second); live {
 		t.Error("first respawn after a stale-data death should not have the grace")
 	}
 }

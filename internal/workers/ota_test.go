@@ -78,7 +78,7 @@ func TestOTACheckVerdicts(t *testing.T) {
 	}
 	// nothing leaves for a build that is missing or not build-shaped
 	before := hits.Load()
-	if v := otaCheck(ctx, srv.URL, ""); v.Err != "firmware not read yet" {
+	if v := otaCheck(ctx, srv.URL, ""); v.Err != "unrecognised firmware string" {
 		t.Errorf("no build: %+v", v)
 	}
 	if v := otaCheck(ctx, srv.URL, "AR241CE_8530; drop"); v.Err != "unrecognised firmware string" {
@@ -135,7 +135,7 @@ func TestOTAWorkerOnDemandAndFresh(t *testing.T) {
 		t.Fatalf("unrequested check: %+v hits=%d", d.OTA, hits.Load())
 	}
 	st.RequestOTA()
-	if !st.OTAPending() {
+	if !st.DiagnosticView(time.Now()).OTAPending {
 		t.Fatal("request not pending")
 	}
 	d = runOTA(t, st, func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil })
@@ -193,19 +193,36 @@ func TestOTAWorkerDisabledAndNoFirmware(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("a disabled worker should return at once")
 	}
-	if !st.OTAPending() {
+	if !st.DiagnosticView(time.Now()).OTAPending {
 		t.Error("a disabled worker consumed the request")
 	}
-	// enabled but the firmware is unknown yet: a verdict that says so, no request out
+	// enabled but the firmware is unknown yet: the request is held (the
+	// overlay keeps "checking…"), nothing goes out — and the check runs the
+	// moment a build lands, from the same request.
 	var hits atomic.Int32
 	srv := otaServer(t, &hits, func(string) (int, string) { return 200, `{"errorCode":1001}` })
 	t.Setenv("LP10_OTA_URL", srv.URL)
 	st = protocol.NewState()
 	st.RequestOTA()
-	d := runOTA(t, st, func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil })
-	if d.OTA == nil || d.OTA.Err != "firmware not read yet" || hits.Load() != 0 {
-		t.Errorf("unknown firmware: %+v hits=%d", d.OTA, hits.Load())
+	ctl := newRunControl()
+	wctx, wcancel := context.WithCancel(context.Background())
+	wdone := make(chan struct{})
+	go func() { otaWorker(wctx, ctl, st); close(wdone) }()
+	time.Sleep(3 * otaPoll)
+	if d := st.DiagnosticView(time.Now()); d.OTA != nil || !d.OTAPending || hits.Load() != 0 {
+		t.Errorf("unknown firmware: verdict %+v pending=%v hits=%d, want the request held", d.OTA, d.OTAPending, hits.Load())
 	}
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && st.DiagnosticView(time.Now()).OTA == nil {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if d := st.DiagnosticView(time.Now()); d.OTA == nil || !d.OTA.UpToDate || d.OTAPending || hits.Load() != 1 {
+		t.Errorf("build landed: verdict %+v pending=%v hits=%d, want one check", d.OTA, d.OTAPending, hits.Load())
+	}
+	ctl.stop.Set()
+	wcancel()
+	<-wdone
 	if u, ok := otaURL(); !ok || u != srv.URL {
 		t.Errorf("otaURL override = %q %v", u, ok)
 	}

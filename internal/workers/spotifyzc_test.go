@@ -47,8 +47,7 @@ func TestZCWorkerRecordsAnswerAndSilence(t *testing.T) {
 	_, port, _ := net.SplitHostPort(addr)
 	t.Setenv("LP10_ZC_ADDR", addr)
 	_, d := runZC(t, config.Config{Host: "ignored"}, func(d protocol.DiagnosticSnapshot) bool { return d.SpotifyZC != nil })
-	if d.SpotifyZC == nil || d.SpotifyZC.ActiveUser != "lucas" || d.SpotifyZC.LibraryVersion != "3.203.239-g1d6bd565" ||
-		d.SpotifyZC.Status != 101 || d.SpotifyZC.RemoteName != "Living" {
+	if d.SpotifyZC == nil || d.SpotifyZC.ActiveUser != "lucas" || d.SpotifyZC.StatusString != "OK" {
 		t.Fatalf("ZeroConf info = %+v, want the (control-stripped) answer", d.SpotifyZC)
 	}
 	if d.ZCPort != atoiOrZero(port) || d.ZCPort == 0 {
@@ -128,7 +127,7 @@ func TestZCWorkerFindsThenRefindsAfterMiss(t *testing.T) {
 	found := atomic.Bool{}
 	found.Store(true)
 	orig := zcFind
-	zcFind = func(h string, got net.IP, _ time.Duration) (discovery.SpotifyEndpoint, bool) {
+	zcFind = func(_ context.Context, h string, got net.IP, _ time.Duration) (discovery.SpotifyEndpoint, bool) {
 		finds.Add(1)
 		if h != host || !got.Equal(ip) {
 			t.Errorf("find asked for %q %v, want %q %v", h, got, host, ip)
@@ -144,7 +143,7 @@ func TestZCWorkerFindsThenRefindsAfterMiss(t *testing.T) {
 	os.Unsetenv("LP10_ZC_ADDR")
 
 	_, d := runZC(t, config.Config{Host: host}, func(d protocol.DiagnosticSnapshot) bool { return d.SpotifyZC != nil })
-	if d.SpotifyZC == nil || d.SpotifyZC.RemoteName != "Living" || d.ZCPort != atoiOrZero(port) || finds.Load() != 1 {
+	if d.SpotifyZC == nil || d.SpotifyZC.StatusString != "OK" || d.ZCPort != atoiOrZero(port) || finds.Load() != 1 {
 		t.Fatalf("found path: %+v port=%d finds=%d", d.SpotifyZC, d.ZCPort, finds.Load())
 	}
 

@@ -1,39 +1,45 @@
 package tui
 
 import (
+	"strings"
 	"testing"
-	"unicode"
 
-	"golang.org/x/text/width"
+	"github.com/charmbracelet/x/ansi"
 )
 
-// charW short-circuits every rune below U+0300 to width 1 instead of consulting
-// any table (no combining block below it, and the first East Asian
-// Wide/Fullwidth block starts at U+1100); Mn/Me combining marks measure 0 like
-// ansi.StringWidth. Sweep the whole fast-path range plus a margin above it
-// against the same rules so a future x/text update that widened something lower
-// down fails here rather than silently tearing the layout by a column.
-func TestCharWFastPathMatchesTable(t *testing.T) {
-	table := func(r rune) int {
-		if unicode.In(r, unicode.Mn, unicode.Me) {
-			return 0
+// DispW measures like ansi.StringWidth — what lipgloss, frameLines and the
+// terminal go by — on everything the sanitizer lets through: emoji with a
+// presentation selector, ZWJ sequences, combining marks, East Asian wide
+// glyphs, and the plain ASCII fast path. Clip and dispWindow honour the same
+// widths, so a heart in a title can no longer grow the frame a column.
+func TestDispWAgreesWithANSI(t *testing.T) {
+	samples := []string{
+		"plain ascii", "café", "naïve ﬁ", "漢字テスト", "한글",
+		"❤️", "1️⃣", "👨‍👩‍👧‍👦", "e\u0301\u0301x", "ก้อน",
+		strings.Repeat("❤️", 18) + " Love", "a❤️b漢c👨‍👩‍👧‍👦d",
+		"▶ ⏸ ◀◀ ▶▶ ♪ ⚠ ☾ ◐ ━ ─ ╭ ● ·",
+	}
+	for _, s := range samples {
+		if got, want := DispW(s), ansi.StringWidth(s); got != want {
+			t.Errorf("DispW(%q) = %d, want %d", s, got, want)
 		}
-		switch width.LookupRune(r).Kind() {
-		case width.EastAsianWide, width.EastAsianFullwidth:
-			return 2
-		default:
-			return 1
+		full := ansi.StringWidth(s)
+		for w := 1; w <= full+1; w++ {
+			if c := Clip(s, w); ansi.StringWidth(c) > w {
+				t.Errorf("Clip(%q, %d) = %q measures %d", s, w, c, ansi.StringWidth(c))
+			}
+			for off := 0; off <= full; off++ {
+				if win := dispWindow(s, off, w); ansi.StringWidth(win) != w {
+					t.Errorf("dispWindow(%q, %d, %d) = %q measures %d, want %d", s, off, w, win, ansi.StringWidth(win), w)
+				}
+			}
+		}
+		if c := Clip(s, full); c != s {
+			t.Errorf("Clip(%q, its own width) = %q, want unchanged", s, c)
 		}
 	}
-	for r := range rune(0x1200) {
-		if got, want := charW(r), table(r); got != want {
-			t.Fatalf("charW(%U) = %d, want %d — the fast-path bound is wrong", r, got, want)
-		}
-	}
-	// spot-check that wide runes above the bound are still measured as 2
-	for _, r := range []rune{'漢', '字', 'あ', '한', '％'} {
-		if charW(r) != 2 {
-			t.Errorf("charW(%U) = %d, want 2", r, charW(r))
-		}
+	// the narrow fast path is exactly "every rune below U+0300"
+	if !narrow("plain ascii \u02ff") || narrow("\u0300") || narrow("❤️") {
+		t.Error("narrow() boundary wrong")
 	}
 }

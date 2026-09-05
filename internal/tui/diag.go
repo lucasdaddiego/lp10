@@ -1119,15 +1119,9 @@ func diagColumn(f diagCardFmt, sections []diagSection, w int) []string {
 
 // ---- the two layouts ------------------------------------------------------------
 
-// renderDiag picks the diagnostics layout by width: a two-column card grid on a
-// wide terminal (filling the space and surfacing the audio-chain metrics), the
-// stacked single-column read-out when narrow.
-func (m *model) renderDiag(s protocol.Snapshot, now time.Time, W int) []string {
-	d := m.st.DiagnosticView(now)
-	d.Snapshot = s // preserve the explicit snapshot contract used by focused tests
-	return m.renderDiagnostic(d, now, W)
-}
-
+// renderDiagnostic picks the diagnostics layout by width: a two-column card
+// grid on a wide terminal (filling the space and surfacing the audio-chain
+// metrics), the stacked single-column read-out when narrow.
 func (m *model) renderDiagnostic(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
 	if W >= diagCardsMinW {
 		return m.renderDiagCardsSnapshot(d, now, W)
@@ -1166,12 +1160,6 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 // No card boxes — the section rule + a left gutter of aligned labels carry the
 // structure, so it reads faster and sits a couple lines shorter than the old
 // 7-card grid.
-func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) []string {
-	d := m.st.DiagnosticView(now)
-	d.Snapshot = s
-	return m.renderDiagCardsSnapshot(d, now, W)
-}
-
 func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
 	t := m.sty
 	s := d.Snapshot
@@ -1202,7 +1190,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 		content = append(content, l+gut+r)
 	}
 
-	// footer + a small colour legend so the verdict/ribbon hues decode at a glance.
+	// footer + a small colour legend so the verdict hues decode at a glance.
 	legend := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") + t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
 	var tail []string
 	if line, ok := diagErrLine(s, now, W); ok {
@@ -1259,15 +1247,11 @@ var confHardware = []struct{ k, v string }{
 	{"soc", "Amlogic A113L · 2× Cortex-A35"},
 }
 
-// serviceStrip renders the capability matrix (from ConfView) as dense grouped
+// serviceStripFor renders the capability matrix as dense grouped
 // rows — "on  ● a ● b …" / "off ○ c ○ d …" — plus the env-gating note. A group
 // that outgrows the column WRAPS onto aligned continuation rows (flowGroup)
 // rather than clipping, so no service is ever hidden and the dots keep their
 // colours at any width. Degrades to a "reading…" line until @@c arrives.
-func (m *model) serviceStrip(w int) []string {
-	return m.serviceStripFor(m.st.ConfView(), w)
-}
-
 func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
 	if cv == nil {
 		return []string{clipStyled(m.sty.pens().dmr.render("reading from device…"), w)}
@@ -1420,8 +1404,8 @@ func (m *model) diagLine(label, value string) string {
 
 // diagGauge renders "label  [gauge]  value detail", clipping the dim detail to the
 // body width w so a long detail (e.g. the cpu load triplet at a narrow terminal)
-// can't size the row past the frame — the stacked counterpart to the cards cg()
-// detail clip. Pass detail="" for a gauge with no trailing note.
+// can't size the row past the frame — the stacked counterpart to the cards'
+// diagCardFmt.gauge detail clip. Pass detail="" for a gauge with no trailing note.
 func (m *model) diagGauge(label, gauge, value, detail string, w int) string {
 	row := m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + gauge + "  " + value
 	if detail != "" {
@@ -1471,7 +1455,7 @@ func fmtLatencyMs(ms float64) string {
 // ragged block glyphs on fonts whose block elements don't fill the cell.
 func (m *model) latencyRow(name string, ps protocol.PingStat) string {
 	t := m.sty
-	return t.pens().dim.render(padDisp(name, latNameW)) +
+	return t.pens().dim.render(padDisp(Clip(name, latNameW), latNameW)) +
 		t.pens().txt.render(rpadDisp(fmtLatencyMs(ps.Avg), latAvgW)+latAvgUnit) + " " +
 		t.pens().dmr.render(padDisp("±"+fmtLatencyMs(ps.Jitter), latJitW)) + " " +
 		m.latencyPeakPen(ps).Render("max "+fmtLatencyMs(ps.Peak))

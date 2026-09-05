@@ -4,6 +4,7 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
@@ -17,6 +18,9 @@ type process struct {
 	Stdin  io.WriteCloser
 	Stdout io.ReadCloser
 	Done   chan struct{}
+
+	spawned    time.Time   // set by processSlot.start
+	graceWrite atomic.Bool // a command went into stdin on the young-spawn grace alone
 }
 
 func (p *process) waitTimeout(d time.Duration) bool {
@@ -50,6 +54,7 @@ func (s *processSlot) start(st *protocol.State, p *process) {
 
 	s.writeMu.Lock()
 	s.mu.Lock()
+	p.spawned = now
 	s.proc, s.spawned = p, now
 	s.mu.Unlock()
 	s.writeMu.Unlock()
@@ -90,9 +95,18 @@ func (s *processSlot) write(st *protocol.State, now time.Time, liveTimeout time.
 	defer s.writeMu.Unlock()
 
 	p, spawned := s.current()
-	if p == nil || p.Stdin == nil || !st.WriterLive(now, spawned, liveTimeout) {
+	if p == nil || p.Stdin == nil {
 		return false
 	}
-	_, err := io.WriteString(p.Stdin, data)
-	return err == nil
+	live, grace := st.WriterLive(now, spawned, liveTimeout)
+	if !live {
+		return false
+	}
+	if _, err := io.WriteString(p.Stdin, data); err != nil {
+		return false
+	}
+	if grace {
+		p.graceWrite.Store(true)
+	}
+	return true
 }

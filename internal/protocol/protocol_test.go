@@ -690,7 +690,7 @@ func TestDevInfoAndSysinfoExtras(t *testing.T) {
 		ApplyRecord(st, rec)
 	}
 	di := st.DiagnosticView(time.Now()).DevInfo
-	if di == nil || di.Net != "eth" || di.Iface != "eth0" || di.IP != "192.168.1.13" || di.Speed != "100" || di.Duplex != "full" || di.Platform != "LS8" || di.DataUsed != "11424" || di.DataTotal != "232924" {
+	if di == nil || di.Net != "eth" || di.IP != "192.168.1.13" || di.Speed != "100" || di.Duplex != "full" || di.Platform != "LS8" || di.DataUsed != "11424" || di.DataTotal != "232924" {
 		t.Errorf("devinfo = %+v", di)
 	}
 	si := st.sysinfo
@@ -713,7 +713,7 @@ func TestDevInfoWifiPath(t *testing.T) {
 		ApplyRecord(st, rec)
 	}
 	di := st.DiagnosticView(time.Now()).DevInfo
-	if di == nil || di.Net != "wifi" || di.Iface != "wlan0" || di.SSID != "MyWiFi 5G" || di.Freq != "5180" || di.Rate != "780" {
+	if di == nil || di.Net != "wifi" || di.SSID != "MyWiFi 5G" || di.Freq != "5180" || di.Rate != "780" {
 		t.Errorf("wifi devinfo = %+v", di)
 	}
 	if si := st.sysinfo; si == nil || si.SignalDBm != "-55" || si.LinkQ != "63" {
@@ -866,7 +866,7 @@ func TestDeviceRecordFixtureParses(t *testing.T) {
 		ApplyRecord(st, rec)
 	}
 	di := st.DiagnosticView(time.Now()).DevInfo
-	if di == nil || di.Net != "eth" || di.Iface != "eth0" || di.IP != "192.168.1.13" || di.Speed != "100" || di.Duplex != "full" ||
+	if di == nil || di.Net != "eth" || di.IP != "192.168.1.13" || di.Speed != "100" || di.Duplex != "full" ||
 		di.DataUsed != "1258291" || di.DataTotal != "7340032" {
 		t.Errorf("devinfo = %+v", di)
 	}

@@ -105,7 +105,7 @@ const sysRequired = sfOS
 // DevInfo holds the static device/network info from the one-shot @@i section
 // (key=value lines), refreshed once per connection.
 type DevInfo struct {
-	Net, Iface           string // "eth"|"wifi" medium, and the active interface name
+	Net                  string // "eth"|"wifi" medium
 	IP, MAC, Gateway     string
 	Speed, Duplex        string // ethernet link: Mbit/s, "full"|"half"
 	SSID, Freq, Rate     string // Wi-Fi link: network name, MHz, tx Mbit/s
@@ -320,7 +320,15 @@ func ApplyRecord(st *State, rec Record) bool {
 	st.lastRx = now
 	if p.sysinfo != nil {
 		st.updateNet(p.sysinfo, now)
-		st.updateLevel(p.sysinfo)
+		// The softvol sample was read alongside this record's @@v, so it is
+		// judged against THAT volume, not the previous tick's (or the local
+		// optimistic value under volHold): a slow external ramp would otherwise
+		// flag every step as a mismatch.
+		ref := st.vol
+		if p.volOK {
+			ref = clamp100(p.vol)
+		}
+		st.updateLevel(p.sysinfo, ref)
 		st.sysinfo = p.sysinfo
 	}
 	if p.devinfo != nil {
@@ -342,13 +350,17 @@ func ApplyRecord(st *State, rec Record) bool {
 		st.mroom = p.mroom
 	}
 	if p.nightOK {
-		st.night, st.nightKnown = p.night, true
 		if !st.nightOrigKnown {
 			// The first readback of the State's lifetime is the value to put
-			// back on quit. Later @@n sections are echoes of lp10's own sets
-			// (or a reconnect's re-read of a value lp10 already changed), so
-			// they must not move the baseline.
+			// back on quit — even when it lands inside a local set's hold: it
+			// was read before that set reached the device, so it IS the
+			// pre-toggle truth. Later @@n sections are echoes of lp10's own
+			// sets (or a reconnect's re-read of a value lp10 already changed),
+			// so they must not move the baseline.
 			st.nightOrig, st.nightOrigKnown = p.night, true
+		}
+		if !now.Before(st.nightHold) {
+			st.night, st.nightKnown = p.night, true
 		}
 	}
 	if p.hasB {
@@ -381,7 +393,14 @@ func ApplyRecord(st *State, rec Record) bool {
 		st.playing = p.play
 	}
 	if p.volOK && !now.Before(st.volHold) {
-		st.vol = clamp100(p.vol)
+		v := clamp100(p.vol)
+		if v == 0 && st.vol > 0 {
+			// An external mute (phone app, remote): remember the level so the
+			// TUI's unmute restores it, not the stale level of the last LOCAL
+			// mute (or the default) persisted on disk.
+			st.premute = st.vol
+		}
+		st.vol = v
 	}
 	if p.hadData {
 		st.lastData = now
@@ -449,7 +468,7 @@ func parseDevInfo(lines []string) *DevInfo {
 		case "net":
 			di.Net = v
 		case "iface":
-			di.Iface = v
+			// the active interface name: shipped by the loop, shown nowhere
 		case "ip":
 			di.IP = v
 		case "mac":

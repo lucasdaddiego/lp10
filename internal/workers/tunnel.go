@@ -87,12 +87,8 @@ func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, 
 	}
 }
 
-// tunnelOnce is one connection lifecycle, returning the next reconnect backoff.
-func tunnelOnce(control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration) time.Duration {
-	next, _ := tunnelOnceContext(context.Background(), control, st, cfg, eqcmds, backoff, nil)
-	return next
-}
-
+// tunnelOnceContext is one connection lifecycle, returning the next reconnect
+// backoff and the command to carry into the next connection.
 func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration, carry *EQCommand) (time.Duration, *EQCommand) {
 	// A command carried from a dead connection ages like any queued one; while
 	// the tunnel stays down, expired intent is dropped visibly here rather than
@@ -183,11 +179,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		case <-done:
 			dead = true
 		case <-ctx.Done():
-		case cmd, ok := <-eqcmds:
-			if !ok {
-				eqcmds = nil // disable this select arm; a closed channel is always ready
-				continue
-			}
+		case cmd := <-eqcmds: // never closed: Runtime.Close stops the worker via ctx/stop
 			carry, dead = tunnelSend(st, conn, cmd)
 		case <-poll.C:
 		}

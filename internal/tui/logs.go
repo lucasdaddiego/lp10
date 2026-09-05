@@ -97,6 +97,13 @@ func (m *model) logVisible() ([]string, time.Time) {
 	return out, at
 }
 
+// logPage is the viewport height the logs pane draws: the frame's inner rows
+// minus the heading, its blank, and the two-line tail — the same figure the
+// keys page by, so ←/→ move exactly one screenful.
+func (m *model) logPage() int {
+	return max(m.rows-6, 1)
+}
+
 // logScrollBy moves the viewport. The offset counts lines UP from the bottom,
 // because a log is read from its tail: 0 pins to the newest line and stays there
 // when a refresh brings more.
@@ -231,8 +238,8 @@ func (m *model) renderLogs(now time.Time, W int) []string {
 	}
 
 	// The viewport is whatever the frame leaves after the heading, the blank and
-	// the two-line tail; the offset counts up from the newest line.
-	page := max(m.rows-2-len(content)-2, 1)
+	// the two-line tail (logPage); the offset counts up from the newest line.
+	page := m.logPage()
 	if len(lines) > 0 {
 		end := len(lines) - m.logScroll
 		end = min(max(end, 1), len(lines))

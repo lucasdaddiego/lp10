@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -809,5 +810,89 @@ func TestDeviceCardShowsVendorApp(t *testing.T) {
 	id := collectIdentity(nil, st.DiagnosticView(time.Now()).DevInfo, nil)
 	if id.build != "2026-01-12 · app 318 · vendor app v32" {
 		t.Errorf("build line = %q", id.build)
+	}
+}
+
+// A second enter on a row toggled before the device has reported its services
+// (no @@c yet) finds the row pending with no capability block to settle it
+// against; that used to dereference the missing block and take the program
+// down. It must simply keep the row pending.
+func TestServicesPaneSecondEnterBeforeCapabilitiesDoesNotPanic(t *testing.T) {
+	m, _, collect := modelWith(protocol.NewState())
+	m.rows, m.cols = 44, 120
+	m.openOverlay(ovServices)
+	for i, row := range svcRows {
+		if row.gate == gateFixed {
+			continue
+		}
+		m.svcFocus = i
+		m.svcToggle(time.Now())
+		m.svcToggle(time.Now())
+		if m.svcPending != row.id || !m.svcPendingRow(row.id, nil, time.Now()) {
+			t.Errorf("%s: second press must leave the row pending (nothing has settled it)", row.id)
+		}
+	}
+	if got := collect(); len(got) == 0 {
+		t.Error("the blind toggle before @@c is an existing contract: something must have been sent")
+	}
+}
+
+// Switching Spotify off settles the instant the loop reports the pair as
+// cfg=none (its word for "neither engine configured"); it used to wait out the
+// whole pending backstop for a literal "off" that never comes.
+func TestServicesPaneSpotifyOffSettlesOnCfgNone(t *testing.T) {
+	m, st, _ := paneModel(t, ovServices)
+	now := time.Now()
+	m.svcFocus = 0   // Spotify, on hifi in the fixture
+	m.svcToggle(now) // -> pro
+	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=spotifymusicpro", "spotify.cfg=pro"}})
+	m.svcToggle(now) // -> off
+	if m.svcPendingWant != "off" {
+		t.Fatalf("second press asked for %q, want off", m.svcPendingWant)
+	}
+	if !strings.Contains(clean(m.renderJoin(now)), "…") {
+		t.Fatal("the off toggle did not read as pending")
+	}
+	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "spotify.cfg=none"}})
+	if strings.Contains(clean(m.renderJoin(now)), "…") {
+		t.Error("pending survived the device reporting cfg=none")
+	}
+}
+
+// The keys and the viewport page by the same figure, so ←/→ move exactly one
+// screenful with no overlap and no gap.
+func TestLogsPaneKeysAndViewportAgreeOnPageSize(t *testing.T) {
+	st := protocol.NewState()
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = " Aug 25 15:28:39:000001 I/x: line-" + strconv.Itoa(i)
+	}
+	protocol.ApplyRecord(st, protocol.Record{"l": lines})
+	m, _, _ := modelWith(st)
+	m.rows, m.cols = 30, 120
+	m.sty = newTheme()
+	m.openOverlay(ovLogs)
+	page := m.logPage()
+	shown := func() []int {
+		var idx []int
+		for _, row := range m.renderLogs(time.Now(), 116) {
+			row = strings.TrimRight(clean(row), " ")
+			if i := strings.LastIndex(row, "line-"); i >= 0 {
+				n, err := strconv.Atoi(row[i+len("line-"):])
+				if err == nil {
+					idx = append(idx, n)
+				}
+			}
+		}
+		return idx
+	}
+	// bottom: the newest page
+	if got := shown(); len(got) != page || got[0] != 100-page || got[len(got)-1] != 99 {
+		t.Fatalf("bottom page = %v (page %d)", got, page)
+	}
+	// one page up: exactly the page before, no overlap
+	m.key(keyEvent{kind: kLeft})
+	if got := shown(); len(got) != page || got[0] != 100-2*page || got[len(got)-1] != 100-page-1 {
+		t.Errorf("after one page up = %v, want [%d..%d]", got, 100-2*page, 100-page-1)
 	}
 }

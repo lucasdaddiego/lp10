@@ -3,6 +3,7 @@ package protocol
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidatePayloadNight(t *testing.T) {
@@ -74,12 +75,15 @@ func TestApplyRecordNightAndBaseline(t *testing.T) {
 	if !needed || orig {
 		t.Errorf("restore = (orig=%v needed=%v), want off needed", orig, needed)
 	}
-	// a reconnect re-reads the value lp10 set: still not the baseline
+	lapse := func() { st.mu.Lock(); st.nightHold = time.Time{}; st.mu.Unlock() }
+	// a reconnect re-reads the value lp10 set (after the hold): still not the baseline
+	lapse()
 	ApplyRecord(st, Record{"n": {"  : values=on"}})
 	if orig, needed := st.NightRestore(); !needed || orig {
 		t.Errorf("after reconnect echo: restore = (orig=%v needed=%v), want off needed", orig, needed)
 	}
 	// back to the baseline: nothing to restore
+	lapse()
 	ApplyRecord(st, Record{"n": {"  : values=off"}})
 	if _, needed := st.NightRestore(); needed {
 		t.Error("at the baseline no restore is needed")
@@ -96,5 +100,32 @@ func TestApplyRecordNightGarbageLeavesState(t *testing.T) {
 	ApplyRecord(st, Record{"n": {"garbage"}})
 	if s := st.Snap(); !s.NightKnown || !s.Night {
 		t.Errorf("an unparseable @@n must not disturb the last good state: %+v", s.Night)
+	}
+}
+
+// A device read-back landing inside a local set's hold is the pre-set truth
+// (the connect-time prologue parsed late): it fixes the quit-time baseline but
+// must not undo the optimistic flip — that left the badge off and the room
+// compressed after quit when 'd' was pressed in the first second of a run.
+func TestNightLocalSetHoldsOffALateReadback(t *testing.T) {
+	st := NewState()
+	st.SetNightLocal(true) // 'd' before the first @@n: assumes off, asks for on
+	ApplyRecord(st, Record{"n": {"numid=68,iface=MIXER,name='AED Multi-band DRC enable'", "  ; type=BOOLEAN,access=rw------,values=1", "  : values=off"}})
+	if s := st.Snap(); !s.NightKnown || !s.Night {
+		t.Fatalf("late read-back undid the flip: %+v", s)
+	}
+	if orig, needed := st.NightRestore(); orig || !needed {
+		t.Errorf("restore = (%v, %v), want (off, needed): the read-back is the baseline", orig, needed)
+	}
+	// once the hold is over the device is authoritative again
+	st.mu.Lock()
+	st.nightHold = time.Time{}
+	st.mu.Unlock()
+	ApplyRecord(st, Record{"n": {"numid=68,iface=MIXER,name='AED Multi-band DRC enable'", "  ; type=BOOLEAN,access=rw------,values=1", "  : values=off"}})
+	if s := st.Snap(); s.Night {
+		t.Error("after the hold a read-back must land")
+	}
+	if _, needed := st.NightRestore(); needed {
+		t.Error("device back at its baseline: nothing to restore")
 	}
 }

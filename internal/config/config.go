@@ -1,5 +1,5 @@
 // Package config handles the config file, paths, and persistent-state IO
-// (premute level, snapshot cache, atomic writes). Port of lp10lib/config.py.
+// (premute level, snapshot cache, atomic writes).
 package config
 
 import (
@@ -34,8 +34,8 @@ func homeDir() string {
 	return ""
 }
 
-// Defaults mirror config.DEFAULTS. Field order is irrelevant; types drive the
-// strict TOML coercion below.
+// Defaults. Field order is irrelevant; types drive the strict TOML coercion
+// below.
 const (
 	// defHost is only a fallback: discovery (on by default) resolves the device's
 	// real address at startup, so it works out of the box even as the DHCP lease
@@ -66,6 +66,7 @@ const HostEnv = "LP10_HOST"
 // problem to surface in the UI (empty string == no warning).
 type Config struct {
 	Host       string
+	StateKey   string // the host as configured (file or LP10_HOST): keys the state files; discovery may rewrite Host
 	User       string
 	Name       string
 	VolStep    int
@@ -77,9 +78,9 @@ type Config struct {
 	Warn       string
 }
 
-// Load reads ~/.config/lp10/config.toml (honoring XDG_CONFIG_HOME), applies the
-// same strict per-field typing as the Python version, clamps vol_step, and lets
-// LP10_HOST override the host for a single run.
+// Load reads ~/.config/lp10/config.toml (honoring XDG_CONFIG_HOME), applies
+// strict per-field typing, clamps vol_step, and lets LP10_HOST override the
+// host for a single run.
 func Load() Config {
 	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode}
 
@@ -113,6 +114,7 @@ func Load() Config {
 	if h := os.Getenv(HostEnv); h != "" {
 		cfg.Host = h
 	}
+	cfg.StateKey = cfg.Host
 	return cfg
 }
 
@@ -183,20 +185,31 @@ func slug(host string) string {
 	return slugRe.ReplaceAllString(host, "_")
 }
 
-// PremutePath / SnapshotPath are per-host files under the state dir, or "" when
-// there is no usable state dir.
+// PremutePath / SnapshotPath are per-device files under the state dir, or ""
+// when there is no usable state dir. They key on StateKey — the host as
+// configured — not on Host, which discovery rewrites to whatever address the
+// box holds today: keyed on the address, a new DHCP lease lost the pre-mute
+// level and the first-paint snapshot.
 func PremutePath(cfg Config) string {
 	if d := StateDir(); d != "" {
-		return filepath.Join(d, "premute-"+slug(cfg.Host))
+		return filepath.Join(d, "premute-"+slug(cfg.stateKey()))
 	}
 	return ""
 }
 
 func SnapshotPath(cfg Config) string {
 	if d := StateDir(); d != "" {
-		return filepath.Join(d, "snapshot-"+slug(cfg.Host)+".json")
+		return filepath.Join(d, "snapshot-"+slug(cfg.stateKey())+".json")
 	}
 	return ""
+}
+
+// stateKey is StateKey, or Host for a Config built without Load (tests).
+func (cfg Config) stateKey() string {
+	if cfg.StateKey != "" {
+		return cfg.StateKey
+	}
+	return cfg.Host
 }
 
 // ArtCacheDir is the album-art cache directory (state dir /art), created on

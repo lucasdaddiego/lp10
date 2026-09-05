@@ -224,10 +224,16 @@ func (m *model) svcToggle(now time.Time) {
 }
 
 // svcSettled reports whether the device has confirmed the pending toggle, so the
-// row can stop saying "applying…" the instant the answer lands.
+// row can stop saying "applying…" the instant the answer lands. The loop reports
+// the engine pair as cfg=none|hifi|pro|both, so "off" settles on "none".
 func (m *model) svcSettled(cv *protocol.ConfInfo) bool {
+	if cv == nil {
+		return false
+	}
 	switch m.svcPendingWant {
-	case "off", "hifi", "pro":
+	case "off":
+		return cv.Cfg() == "none"
+	case "hifi", "pro":
 		return cv.Cfg() == m.svcPendingWant
 	case "1":
 		return cv.Svc[m.svcPending] == "on"

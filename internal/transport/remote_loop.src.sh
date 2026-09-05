@@ -144,7 +144,7 @@ gv() {
 pz() {
   pl=" ";
   for pf in /proc/[0-9]*/comm; do
-    read -r pc < $pf 2>/dev/null && pl="$pl$pc ";
+    read -r pzc 2>/dev/null < $pf && pl="$pl$pzc ";
   done;
 };
 # pr() reports a running daemon by looking it up in that one scan.

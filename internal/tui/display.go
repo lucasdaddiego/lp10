@@ -1,5 +1,5 @@
 // Package tui is the Bubble Tea terminal UI: rendering, input dispatch, and the
-// display-formatting helpers. Port of lp10lib/tui.py.
+// display-formatting helpers.
 package tui
 
 import (
@@ -8,14 +8,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"unicode"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
-	"golang.org/x/text/width"
 )
 
-// localeAmb is 2 under a CJK locale, 1 otherwise. It no longer affects width
-// measurement (charW fixes ambiguous glyphs at 1 to match lipgloss); it only
+// localeAmb is 2 under a CJK locale, 1 otherwise. It does not affect width
+// measurement (DispW fixes ambiguous glyphs at 1 to match lipgloss); it only
 // selects the glyph set — under localeAmb==2, GL falls back to ASCII glyphs so a
 // terminal that *does* render ambiguous double-width still stays aligned.
 var localeAmb = detectAmb()
@@ -68,51 +68,36 @@ func FmtMs(ms int) string {
 	return string([]byte{'0' + byte(mm/10), '0' + byte(mm%10), ':', '0' + byte(ss/10), '0' + byte(ss%10)})
 }
 
-// charW is the rendered width of one rune: W/F -> 2, everything else -> 1.
-//
-// East Asian *Ambiguous* glyphs (●, ·, the box/block/meter glyphs lp10 draws)
-// are width 1 here regardless of locale. lipgloss — which does the actual
-// rendering and padding — always measures them as 1, and so does a modern
-// terminal (Ghostty); counting them as 2 under a CJK locale made DispW disagree
-// with lipgloss and tore the layout by a column. Glyph *selection* still adapts
-// to a CJK locale via `localeAmb` / the GL ASCII fallbacks (defensive for terminals
-// configured to render ambiguous double-width); only measurement is fixed at 1.
-// Nonspacing/enclosing combining marks (Mn/Me) measure 0, agreeing with
-// ansi.StringWidth: the sanitizer NFC-composes device strings, but marks with
-// no precomposed form (Thai tone stacks, U+20E3 keycaps) legitimately remain,
-// and counting them as 1 clipped a fitting line one column early and could
-// start the marquee on a line that actually fits.
-func charW(r rune) int {
-	// Fast path: no combining block below U+0300 and the first East Asian
-	// Wide/Fullwidth block is Hangul Jamo at U+1100, so everything below
-	// U+0300 is width 1 without consulting any table. That covers every rune
-	// the UI itself draws and almost all track metadata; DispW runs dozens of
-	// times per rendered frame. TestCharWFastPath sweeps the boundary against
-	// the table to keep the two in agreement.
-	if r < 0x300 {
-		return 1
+// narrow reports whether every rune of s is below U+0300 — no combining
+// marks, no wide glyphs, no emoji, no joiners — so each rune is one cell and
+// the byte-level fast paths apply. U+0300 encodes as CC 80, so a byte ≥ 0xCC
+// can only start a rune at or above it. That covers every string the UI
+// itself draws and almost all track metadata; DispW runs dozens of times per
+// rendered frame.
+func narrow(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0xCC {
+			return false
+		}
 	}
-	if unicode.In(r, unicode.Mn, unicode.Me) {
-		return 0
-	}
-	if r < 0x1100 {
-		return 1
-	}
-	switch width.LookupRune(r).Kind() {
-	case width.EastAsianWide, width.EastAsianFullwidth:
-		return 2
-	default:
-		return 1
-	}
+	return true
 }
 
-// DispW is the total rendered width of a string.
+// DispW is the rendered width of a string. Outside the narrow fast path it is
+// ansi.StringWidth — what lipgloss, frameLines and the terminal itself measure
+// by: graphemes, with emoji presentation (U+FE0F), ZWJ sequences and combining
+// marks counted as the terminal draws them, and East Asian *Ambiguous* glyphs
+// (●, ·, the box/meter glyphs lp10 draws) at 1 regardless of locale. The
+// sanitizer deliberately keeps VS16 and ZWJ, so a "❤️" in a Spotify title
+// reaches here as two cells; a per-rune table used to count it as one, and
+// every heart grew the frame a column. (Glyph *selection* still adapts to a
+// CJK locale via localeAmb / the GL ASCII fallbacks; only measurement is
+// fixed.) TestDispWAgreesWithANSI pins the agreement.
 func DispW(s string) int {
-	w := 0
-	for _, r := range s {
-		w += charW(r)
+	if narrow(s) {
+		return utf8.RuneCountInString(s)
 	}
-	return w
+	return ansi.StringWidth(s)
 }
 
 // Clip truncates s to display width w, appending the ellipsis glyph when it
@@ -131,40 +116,60 @@ func Clip(s string, w int) string {
 		// CJK terminal at w<3): hard-truncate to width w, no ellipsis.
 		ell, budget = "", w
 	}
-	// Find the byte offset where the budget runs out and slice there, rather than
-	// rebuilding the prefix rune by rune — Clip runs on nearly every line of every
-	// frame, so this is one allocation instead of a Builder's several.
-	cut, used := len(s), 0
-	for i, ch := range s {
-		cw := charW(ch)
+	if narrow(s) {
+		// Every rune is one cell: slice at the byte offset of the budget-th
+		// rune rather than rebuilding the prefix — Clip runs on nearly every
+		// line of every frame, so this is one allocation.
+		n := 0
+		for i := range s {
+			if n == budget {
+				return s[:i] + ell
+			}
+			n++
+		}
+	}
+	// Grapheme by grapheme with the same measure as DispW (ansi.Truncate
+	// sizes a keycap sequence differently from ansi.StringWidth and would
+	// let a 2-cell "1️⃣" through a 1-cell budget).
+	var b strings.Builder
+	used := 0
+	for rest := s; rest != ""; {
+		seg, cw := ansi.FirstGraphemeCluster(rest, ansi.GraphemeWidth)
 		if used+cw > budget {
-			cut = i
 			break
 		}
+		b.WriteString(seg)
 		used += cw
+		rest = rest[len(seg):]
 	}
-	return s[:cut] + ell
+	return b.String() + ell
 }
 
 // dispWindow returns the run of s covering display columns [off, off+w),
-// space-padded to exactly w columns so callers stay aligned. A double-width
-// rune straddling either edge is rendered as spaces for its visible cells.
+// space-padded to exactly w columns so callers stay aligned. A wide grapheme
+// straddling either edge is rendered as spaces for its visible cells.
 func dispWindow(s string, off, w int) string {
 	if w <= 0 {
 		return ""
 	}
+	fast := narrow(s)
 	var b strings.Builder
 	col, taken := 0, 0
-	for _, r := range s {
-		if taken >= w {
-			break
+	for rest := s; rest != "" && taken < w; {
+		var seg string
+		var cw int
+		if fast {
+			_, n := utf8.DecodeRuneInString(rest)
+			seg, cw = rest[:n], 1
+		} else {
+			seg, cw = ansi.FirstGraphemeCluster(rest, ansi.GraphemeWidth)
 		}
-		cw := charW(r)
+		rest = rest[len(seg):]
 		end := col + cw
 		switch {
 		case end <= off: // entirely before the window
 		case col >= off && taken+cw <= w: // entirely inside
-			b.WriteRune(r)
+			b.WriteString(seg)
 			taken += cw
 		default: // straddles an edge — fill its visible cells with spaces
 			lo, hi := off, off+w

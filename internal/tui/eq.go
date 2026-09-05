@@ -1,6 +1,7 @@
 // The equalizer pane: display order, the control verbs that ride the :2018
-// tunnel, and the three renderers (full-dashboard sliders, the compact one-line
-// summary, and the diagnostics readout).
+// tunnel, and its two renderers (the full-dashboard slider rows and the
+// compact one-line summary); the diagnostics readout is diag.go's
+// tunnelReadout.
 
 package tui
 

@@ -39,8 +39,8 @@ const (
 	// the full size -> a compact dashboard with no art and a one-line EQ.
 	MiniRows = 9
 	MiniCols = 58
-	FullRows = 25 // full dashboard (art + graphic EQ + volume slider) needs the height
-	FullCols = 70 // 7 EQ bands need ≥9 cols each so "Deep Bass" fits its column
+	FullRows = 25 // full dashboard (art + the EQ slider rows + volume rail) needs the height
+	FullCols = 70 // the cover, a usable metadata column and the volume rail side by side
 )
 
 // actions is the focusable transport-button order in the now-playing pane.
@@ -132,9 +132,9 @@ type model struct {
 	motifBlk []string
 	motifKey [3]int // w, h, frame the cache was built for
 
-	// album-art cache: rasterizing the cover to half-blocks is keyed by
-	// (url,w,h), so a steady cover reuses the last raster rather than
-	// re-rasterizing every frame. Cleared implicitly when the key changes.
+	// album-art cache: rasterizing the cover is keyed by artKey (url, box and
+	// cell geometry, mode), so a steady cover reuses the last raster rather
+	// than re-rasterizing every frame. Cleared implicitly when the key changes.
 	artBlk []string
 	artKey artKey
 
@@ -160,14 +160,14 @@ type model struct {
 	volBlk []string
 	volKey volRailKey
 
-	// ambient tint: the seek bar / cover frame / status dot recoloured to the
+	// ambient tint: the seek bar and cover frame recoloured to the
 	// current cover's dominant hue. amb is nil for the theme default (no cover,
 	// greyscale art, or art disabled); ambKey is the CoverURL it was computed for
 	// (recompute only on a cover change, including a deliberate nil result).
 	amb    *ambientTint
 	ambKey string
 
-	interrupted bool // Ctrl-C, so Run can exit 130 like Python's KeyboardInterrupt
+	interrupted bool // Ctrl-C, so Run can exit 130 (128 + SIGINT)
 
 	sty *theme
 }

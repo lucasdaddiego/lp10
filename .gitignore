@@ -1,7 +1,5 @@
 /lp10
-/lp10go
 *.test
 *.out
 *.log
-/dist/
 .DS_Store

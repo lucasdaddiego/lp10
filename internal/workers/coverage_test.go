@@ -8,6 +8,7 @@ package workers
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -562,5 +563,42 @@ func TestCov_ArtUndecodableGivesUp(t *testing.T) {
 	}
 	if n := hits.Load(); n != 1 {
 		t.Errorf("hits=%d want 1 (undecodable never retried)", n)
+	}
+}
+
+// A command written on the young-spawn grace alone rides a pipe into an ssh
+// that may never connect. When that session dies without a single data record
+// the command is gone, and the user hears so; a session that did produce data
+// delivered it, and stays quiet.
+func TestGraceWriteNotedWhenSessionDiesDataless(t *testing.T) {
+	spawn := func(st *protocol.State) (*processSlot, *process) {
+		procs := newProcessSlot()
+		pr, pw := io.Pipe()
+		go io.Copy(io.Discard, pr)
+		p := &process{Stdin: pw, Done: make(chan struct{})}
+		procs.start(st, p)
+		return procs, p
+	}
+	st := protocol.NewState()
+	procs, p := spawn(st)
+	if !procs.write(st, time.Now(), LiveSessionTimeout, "40 PAUSE\n") {
+		t.Fatal("a young spawn must accept the write (the grace)")
+	}
+	close(p.Done)
+	reap(st, procs, p)
+	if e := st.Snap().Error; e != "command not delivered" {
+		t.Errorf("dataless death after a grace write: note %q, want \"command not delivered\"", e)
+	}
+
+	st2 := protocol.NewState()
+	procs2, p2 := spawn(st2)
+	if !procs2.write(st2, time.Now(), LiveSessionTimeout, "40 PAUSE\n") {
+		t.Fatal("grace write refused")
+	}
+	protocol.ApplyRecord(st2, protocol.Record{"v": {"Data:44"}}) // the session came up: data after the spawn
+	close(p2.Done)
+	reap(st2, procs2, p2)
+	if e := st2.Snap().Error; e != "" {
+		t.Errorf("a session that produced data must not report the write lost, got %q", e)
 	}
 }

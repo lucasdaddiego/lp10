@@ -20,8 +20,7 @@ const (
 	kRight
 	kUp
 	kDown
-	kTab
-	kShiftTab
+	kTab // tab and shift-tab alike: with two panes the toggle is its own inverse
 	kRune
 )
 
@@ -30,9 +29,9 @@ type keyEvent struct {
 	r    rune
 }
 
-// translate normalizes one key press: special keys dispatch on Key.Code (with
-// shift+tab arriving as KeyTab + ModShift under bubbletea v2), printable keys
-// carry their character in Key.Text.
+// translate normalizes one key press: special keys dispatch on Key.Code
+// (shift+tab arrives as KeyTab + ModShift under bubbletea v2 and folds into
+// kTab), printable keys carry their character in Key.Text.
 func translate(k tea.Key) keyEvent {
 	switch k.Code {
 	case tea.KeyEnter:
@@ -48,9 +47,6 @@ func translate(k tea.Key) keyEvent {
 	case tea.KeyDown:
 		return keyEvent{kind: kDown}
 	case tea.KeyTab:
-		if k.Mod&tea.ModShift != 0 {
-			return keyEvent{kind: kShiftTab}
-		}
 		return keyEvent{kind: kTab}
 	case tea.KeySpace:
 		return keyEvent{kind: kRune, r: ' '}
@@ -119,7 +115,7 @@ func (m *model) key(ev keyEvent) (quit bool) {
 	}
 
 	// tab toggles which pane has focus (no-op at mini size — no second pane).
-	if ev.kind == kTab || ev.kind == kShiftTab {
+	if ev.kind == kTab {
 		if !m.miniMode() {
 			m.pane = (m.pane + 1) % 2
 		}
@@ -221,6 +217,9 @@ func (m *model) key(ev keyEvent) (quit bool) {
 // LAN, so it runs on this explicit request and never on a timer (the worker
 // answers from its last verdict when one is recent).
 func (m *model) openDiag() {
+	if m.miniMode() {
+		return // no room to draw it (View drops it on the next paint) — and no vendor round trip for nothing
+	}
 	m.diag, m.ov = true, ovNone
 	m.st.RequestOTA()
 }
@@ -288,7 +287,7 @@ func (m *model) overlayKey(ev keyEvent) (quit bool) {
 			m.svcToggle(time.Now())
 		}
 	case ovLogs:
-		page := max(m.rows-8, 1)
+		page := m.logPage()
 		switch {
 		case ev.kind == kUp:
 			m.logScrollBy(+1, page)

@@ -12,8 +12,9 @@ import (
 
 // PingStat is one latency target's rolling readout in milliseconds: the average,
 // the jitter (mean absolute successive difference), and the peak over the window.
-// OK is false until a sample arrives. Peak covers only the window held while the
-// overlay was open.
+// OK is false until a sample arrives. Peak covers the ring's last samples,
+// which accumulate across overlay opens within one connection (StartConnection
+// clears the ring).
 type PingStat struct {
 	Avg, Jitter, Peak float64
 	OK                bool

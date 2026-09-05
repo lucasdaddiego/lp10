@@ -1,6 +1,6 @@
 // Package testutil provides shared helpers for the test suite: an env-isolation
-// fixture (mirroring conftest.isolated_state) and a builder for the fake ssh
-// transport binary. Imported only from _test.go files.
+// fixture and builders for the helper binaries (the fake ssh transport, the
+// lp10 command). Imported only from _test.go files.
 package testutil
 
 import (
@@ -15,7 +15,7 @@ import (
 var envVars = []string{
 	"LP10_HOST", "LP10_SSH", "LP10_ASKPASS", "LP10_FAKE_SCENARIO",
 	"LP10_FAKE_CMDLOG", "LP10_FAKE_DIR", "LP10_FAKE_HEAL_AFTER",
-	"LP10_STATE_DIR", "LP10_TUNNEL_ADDR", "LP10_ZC_ADDR", "LP10_OTA_URL",
+	"LP10_STATE_DIR", "LP10_TUNNEL_ADDR", "LP10_LSSDP_HOST", "LP10_ZC_ADDR", "LP10_OTA_URL",
 }
 
 // Isolate clears ambient LP10_* env and points state + config at temp dirs, so
@@ -32,8 +32,21 @@ func Isolate(t *testing.T) {
 var (
 	fakeOnce sync.Once
 	fakePath string
+	fakeDir  string
 	fakeErr  error
 )
+
+// Cleanup removes the helper binaries' temp dirs. Call it from the importing
+// package's TestMain after m.Run: the binaries are built once per test binary
+// into os.MkdirTemp dirs that nothing else removes, and every `go test ./...`
+// used to leave four more (~13 MB each) behind in $TMPDIR.
+func Cleanup() {
+	for _, d := range []string{fakeDir, mainDir} {
+		if d != "" {
+			os.RemoveAll(d)
+		}
+	}
+}
 
 // goBuildArgs returns the `go build` args for a helper binary, adding coverage
 // instrumentation when LP10_COVERDIR is set so the e2e subprocess execution of
@@ -59,6 +72,7 @@ func FakeSSH(t *testing.T) string {
 			fakeErr = &buildError{e, ""}
 			return
 		}
+		fakeDir = tmp
 		bin := filepath.Join(tmp, "fakessh")
 		out, e := exec.Command("go", goBuildArgs(bin,
 			"github.com/lucasdaddiego/lp10/cmd/fakessh")...).CombinedOutput()
@@ -77,6 +91,7 @@ func FakeSSH(t *testing.T) string {
 var (
 	mainOnce sync.Once
 	mainPath string
+	mainDir  string
 	mainErr  error
 )
 
@@ -90,6 +105,7 @@ func BuildMain(t *testing.T) string {
 			mainErr = &buildError{e, ""}
 			return
 		}
+		mainDir = tmp
 		bin := filepath.Join(tmp, "lp10")
 		out, e := exec.Command("go", goBuildArgs(bin,
 			"github.com/lucasdaddiego/lp10")...).CombinedOutput()

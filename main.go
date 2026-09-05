@@ -2,17 +2,19 @@
 // over SSH). Run `lp10` (no arguments) for the live TUI; there are no other
 // commands.
 //
-// Transport: ONE direct ssh connection to root@LP10 (password from the macOS
-// Keychain item service=lp10 account=root, delivered via SSH_ASKPASS self-exec).
+// Transport: ONE direct ssh connection to root@LP10 (password from the OS
+// secret store — the macOS Keychain item service=lp10 account=root, or
+// secret-tool on Linux — delivered via SSH_ASKPASS self-exec).
 // The remote shell loop streams state snapshots and evals nothing: its stdin
 // accepts whitelisted `<mid> <data>` lines only. When this process dies — however
 // it dies — ssh exits, the session closes, and the loop EOF-exits within ~1 s.
 // Host keys are deliberately not verified (LAN device, ramfs host keys).
 //
 // Config: ~/.config/lp10/config.toml (optional) — host, user, name, vol_step,
-// ping_host, discover. Unless discover=false or LP10_HOST is set, a startup mDNS
-// query finds the LP10 on the LAN (am=LP10) and uses its current address, with
-// host as the fallback. State: ~/.local/state/lp10/.
+// ping_host, discover, art, art_mode. Unless discover=false or LP10_HOST is
+// set, a startup mDNS query finds the LP10 on the LAN (am=LP10) — the device's
+// own LSSDP responder (UDP:1800) gets a window when mDNS is quiet — and uses
+// its current address, with host as the fallback. State: ~/.local/state/lp10/.
 // First-run: security add-generic-password -U -a root -s lp10 -w
 package main
 

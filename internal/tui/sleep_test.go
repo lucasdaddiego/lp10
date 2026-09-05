@@ -144,7 +144,8 @@ func TestSleepNeverResumes(t *testing.T) {
 // still playing: the timer pauses it rather than shrugging.
 func TestSleepFiresPauseWithoutTrackMetadata(t *testing.T) {
 	st := protocol.NewState()
-	st.ToggleOptimistic() // playing, no track
+	protocol.ApplyRecord(st, protocol.Record{"v": {"Data:44"}}) // the link is up
+	st.ToggleOptimistic()                                       // playing, no track
 	m, _, collect := modelWith(st)
 	m.sleepAt = time.Now().Add(-time.Second)
 	m.dispatch(logicMsg{})
@@ -334,5 +335,29 @@ func TestBedtimeCancelAndCycleOffRestoreNight(t *testing.T) {
 	m2.key(kr('S'))
 	if got := c2(); len(got) != 0 {
 		t.Errorf("baseline on: cancel sent %+v, want nothing", got)
+	}
+}
+
+// With the ssh link down at the deadline the timer stays armed: a PAUSE queued
+// into a dead link would expire unheard while the room plays on. It fires as
+// soon as the link is back.
+func TestSleepWaitsForTheLinkThenFires(t *testing.T) {
+	m, st, collect := makeModel(t)
+	st.Disconnect()
+	m.sleepAt = time.Now().Add(-time.Second)
+	m.dispatch(logicMsg{})
+	if got := collect(); len(got) != 0 {
+		t.Fatalf("fired into a dead link: sent %+v", got)
+	}
+	if m.sleepAt.IsZero() {
+		t.Fatal("the timer must stay armed while the link is down")
+	}
+	protocol.ApplyRecord(st, playingRecord()) // the link is back, still playing
+	m.dispatch(logicMsg{})
+	if got := collect(); len(got) != 1 || got[0].Data != "PAUSE" {
+		t.Fatalf("after reconnect sent %+v, want [40 PAUSE]", got)
+	}
+	if !m.sleepAt.IsZero() {
+		t.Error("the timer must disarm once it has fired")
 	}
 }

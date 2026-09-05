@@ -14,10 +14,9 @@ import (
 // the ph='__PING_HOST__' diagnostics ping target, and the __MIDS__ command-id
 // whitelist spliced at `case "$mid" in`. The contract doc lives here.
 //
-// See lp10lib/transport.remote_loop for the full rationale (timing-based EOF
-// detection, adaptive idle cadence, two-step burst drain). It descends from the
-// Python version's loop; the Go port additionally emits four one-shot prologue
-// records before the loop: an @@i static device/network block (the active
+// The loop does timing-based EOF detection, adaptive idle cadence and a
+// two-step burst drain (rationale inline in the source), and emits five
+// one-shot prologue records before the loop: an @@i static device/network block (the active
 // interface, its link details, the FriendlyName from reg 90, the data-partition
 // usage, and the resolver), an @@c capability block (which streaming services
 // are enabled — running daemons via pidof, env-gated features via getenv — for
@@ -87,8 +86,9 @@ var remoteLoopScript string
 // substituted first: sanitizeHost strips quotes and underscores, so a hostile
 // value can neither break out of the single-quoted ph assignment nor forge the
 // __MIDS__ token. The command-id whitelist is the fixed "40|64" (transport +
-// volume) — MIDs 90 (stats toggle) and 91 (night mode) have their own arms in the script outside
-// the whitelist, so the alternation never needs to vary. Each placeholder
+// volume) — MIDs 90 (stats toggle), 91 (night mode), 92 (service toggle) and
+// 93 (log tail) have their own arms in the script outside the whitelist, so
+// the alternation never needs to vary. Each placeholder
 // occurs once.
 func RemoteLoop(pingHost string) string {
 	s := strings.Replace(remoteLoopScript, "__PING_HOST__", sanitizeHost(pingHost), 1)

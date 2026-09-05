@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -72,17 +73,23 @@ func (m *model) viewContent() string {
 // step: the framed block is already exactly cols×rows, so Place was a no-op).
 func (m *model) frameLines(lines []string, W int) string {
 	ps := m.sty.pens()
-	// content width = the widest line, floored at W (at least one line — the
-	// header/masthead — is built to exactly W, so this is W in practice; the
-	// max() mirrors how lipgloss sizes the box if a line ever overflowed).
+	// Every line is padded to W. A line that measures wider (a renderer that
+	// mis-sized something) is clipped to W — lipgloss would grow the box to
+	// the widest line instead, which turned one over-wide row into every row,
+	// borders included, running past the terminal and wrapping the whole UI.
 	widths := make([]int, len(lines))
 	contentW := W
+	cloned := false
 	for i, ln := range lines {
 		if ln == "" {
 			continue // stack/frameBody pad with "" — skip the ANSI parse
 		}
-		widths[i] = visWidth(ln)
-		contentW = max(contentW, widths[i])
+		if widths[i] = visWidth(ln); widths[i] > W {
+			if !cloned {
+				lines, cloned = slices.Clone(lines), true // the caller's slice stays untouched
+			}
+			lines[i], widths[i] = clipStyled(ln, W), W
+		}
 	}
 	edge := strings.Repeat("━", contentW+4)
 	side := ps.border.render("┃")
@@ -226,8 +233,14 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 			mid = append(mid, "", src)
 		}
 		mid = append(mid, "", m.seekRow(s, midW), "", m.transportSegments(s, now, midW))
+		// A wide cover capped to its width can come out shorter than the
+		// metadata block (a 300×120 radio logo at 70×25 floors coverH at 6:
+		// 8 rows against 9 lines of mid), and frameBody would trim the
+		// transport row off the bottom. The block takes the taller of the two
+		// and the framed cover sits centred beside it instead.
+		blockH = max(blockH, len(mid))
 		mid = frameBody(mid, nil, blockH, true) // centre the cohesive block in the column
-		art := m.boxArt(m.artColumn(s, coverW, coverH), coverW)
+		art := centreRows(m.boxArt(m.artColumn(s, coverW, coverH), coverW), blockH)
 		block := joinCols(art, mid, m.volRail(s, blockH-1), midW)
 
 		// header pinned top, EQ + footer pinned bottom, the cover block centred between
@@ -245,6 +258,25 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		tail = append(tail, errLine)
 	}
 	return frameBody(content, tail, inner, false)
+}
+
+// centreRows pads a uniform-width column to h rows with blank rows of the
+// same width above and below (frameBody's "" padding would collapse the
+// column and shift everything to its right). Taller columns come back as is.
+func centreRows(col []string, h int) []string {
+	if len(col) >= h || len(col) == 0 {
+		return col
+	}
+	blank := spaces(visWidth(col[0]))
+	out := make([]string, 0, h)
+	for i := (h - len(col)) / 2; i > 0; i-- {
+		out = append(out, blank)
+	}
+	out = append(out, col...)
+	for len(out) < h {
+		out = append(out, blank)
+	}
+	return out
 }
 
 // joinCols composes the full layout's three player columns — the framed cover,

@@ -1,6 +1,7 @@
 // Coercion and sanitization at the parse boundary: everything the device sends
-// is whitelist-copied into known-typed fields, mirroring lp10lib's Python
-// sanitizer semantics (str()/int() coercion, isprintable stripping).
+// is whitelist-copied into known-typed fields with Python-style str()/int()
+// coercion and isprintable() stripping (the rules the device's JSON was
+// originally consumed with; each is spelled out where it is implemented).
 
 package protocol
 
@@ -21,8 +22,8 @@ import (
 // "CoverArtUrl", and spaced "Current Source" keys. Fields not represented here
 // are dropped at the parse boundary.
 //
-// Repeat/Shuffle/Seek/Skip/Next/Prev and PlayState are retained even though the
-// UI does not consume them yet: they document the supported wire contract and
+// PlaybackSource, Repeat/Shuffle/Seek/Skip/Next/Prev and PlayState are retained
+// even though the UI does not consume them yet: they document the supported wire contract and
 // keep the typed boundary ready for future controls.
 type Track struct {
 	TrackName      string `json:"TrackName,omitempty"`

@@ -250,7 +250,7 @@ func TestClipEastAsianWidth(t *testing.T) {
 	if Clip("abcdef", 4) != "abc"+GL["ell"] {
 		t.Errorf("Clip(abcdef,4) = %q", Clip("abcdef", 4))
 	}
-	if charW('漢') != 2 {
+	if DispW("漢") != 2 {
 		t.Error("CJK char should be width 2")
 	}
 	if got := Clip("漢字漢字", 4); got != "漢"+GL["ell"] {

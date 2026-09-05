@@ -1,6 +1,6 @@
 // Package fixtures embeds the captured/synthetic LUCI wire records so both the
 // fake ssh transport (cmd/fakessh) and the parsing tests share one source of
-// truth. Mirrors lp10/tests/fixtures/.
+// truth.
 package fixtures
 
 import (

@@ -109,12 +109,13 @@ func FindLP10(nameHint string, timeout time.Duration) (Device, bool) {
 		case p := <-packets:
 			if recs, ok := parsePacket(p); ok {
 				col.add(recs)
-				// Early exit only on a candidate the hint actually endorses: with
-				// several LP10s on the LAN the named one may answer later, and
-				// pickLP10's first-device fallback must not let a faster wrong
-				// device hijack the race. Unhinted, any complete LP10 wins.
+				// Early exit only on a candidate that carries the hint as its
+				// name: with several LP10s on the LAN the named one may answer
+				// later, and neither pickLP10's first-device fallback nor a
+				// partial match ("Living" for "Living Room") may let a faster
+				// wrong device hijack the race. Unhinted, any complete LP10 wins.
 				if d, ok := pickLP10(col.devices(), nameHint); ok && len(d.IP) > 0 &&
-					(nameHint == "" || hintMatches(d, nameHint)) {
+					(nameHint == "" || hintExact(d.Name, nameHint)) {
 					close(done)
 					return d, true // complete, endorsed candidate — stop early
 				}
@@ -214,20 +215,11 @@ func pickLP10(ds []Device, nameHint string) (Device, bool) {
 		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.MAC, b.MAC))
 	})
 	if nameHint != "" {
-		for _, d := range lp {
-			if hintMatches(d, nameHint) {
-				return d, true
-			}
+		if i := bestHinted(len(lp), func(i int) string { return lp[i].Name }, nameHint); i >= 0 {
+			return lp[i], true
 		}
 	}
 	return lp[0], true
-}
-
-// hintMatches reports whether d's advertised name appears in the user's name
-// hint (e.g. hint "LP10 · Living" matches a device named "Living"). An empty
-// device name never matches — strings.Contains(hint, "") is always true.
-func hintMatches(d Device, hint string) bool {
-	return d.Name != "" && strings.Contains(strings.ToLower(hint), strings.ToLower(d.Name))
 }
 
 // ---- record collection ------------------------------------------------------
@@ -388,6 +380,12 @@ func parseName(msg []byte, off int) (string, int, bool) {
 		default:
 			off++
 			if off+l > len(msg) {
+				return "", 0, false
+			}
+			// RFC 1035 caps a name at 255 bytes. Without the cap, pointers into
+			// overlapping label framings let one 2-byte record name expand to
+			// tens of KB, and a hostile reply cost hundreds of MB per window.
+			if sb.Len()+l+1 > 255 {
 				return "", 0, false
 			}
 			if sb.Len() > 0 {

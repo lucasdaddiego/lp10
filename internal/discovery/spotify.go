@@ -12,6 +12,7 @@ package discovery
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -28,7 +29,7 @@ const spotifyService = "_spotify-connect._tcp.local"
 type SpotifyEndpoint struct {
 	Name string // the instance label, e.g. "Living"
 	Host string // SRV target (.local host)
-	Port int    // SRV port (9096 on firmware 8530; 9095 before)
+	Port int    // SRV port: per engine (the new one answers on 9095, the legacy one on 9096)
 	IP   net.IP // the host's first IPv4 A record, when one arrived
 }
 
@@ -86,13 +87,20 @@ func spotifyEndpoints(recs []rr) []SpotifyEndpoint {
 }
 
 // matchSpotify finds the endpoint that is positively the device at host: by A
-// record when the caller resolved host to ip, else by SRV host name.
+// record when the caller resolved host to ip — the address is the stronger
+// identity, so it is tried across every endpoint before any name is, and a
+// spoofed advertiser borrowing the device's host name cannot outrank the real
+// one's address — else by SRV host name.
 func matchSpotify(eps []SpotifyEndpoint, host string, ip net.IP) (SpotifyEndpoint, bool) {
+	if len(ip) > 0 {
+		for _, e := range eps {
+			if e.IP.Equal(ip) {
+				return e, true
+			}
+		}
+	}
 	want := strings.ToLower(strings.TrimSuffix(host, "."))
 	for _, e := range eps {
-		if len(ip) > 0 && e.IP.Equal(ip) {
-			return e, true
-		}
 		if hostMatches(e.Host, want) {
 			return e, true
 		}
@@ -139,8 +147,8 @@ func placeable(e SpotifyEndpoint, host string, ip net.IP) bool {
 // (like FindLP10) and returns the endpoint belonging to host — matched by the
 // address host resolves to, or by name — waiting up to timeout for a match and
 // falling back to a sole advertiser. ip may be nil when the caller could not
-// resolve the host.
-func FindSpotifyZC(host string, ip net.IP, timeout time.Duration) (SpotifyEndpoint, bool) {
+// resolve the host. ctx (the runtime's) ends the window early on shutdown.
+func FindSpotifyZC(ctx context.Context, host string, ip net.IP, timeout time.Duration) (SpotifyEndpoint, bool) {
 	raddr, err := net.ResolveUDPAddr("udp4", mdnsAddr)
 	if err != nil {
 		return SpotifyEndpoint{}, false
@@ -184,6 +192,9 @@ func FindSpotifyZC(host string, ip net.IP, timeout time.Duration) (SpotifyEndpoi
 			}
 		case <-resend.C:
 			sendAll()
+		case <-ctx.Done():
+			close(done)
+			return SpotifyEndpoint{}, false
 		case <-overall.C:
 			close(done)
 			return pickSpotify(spotifyEndpoints(recs), host, ip)
@@ -200,7 +211,6 @@ type SpotifyZCInfo struct {
 	LibraryVersion string // the eSDK build, e.g. "3.203.239-g1d6bd565"
 	Version        string // the ZeroConf API version, e.g. "2.9.0"
 	RemoteName     string // the speaker's advertised name
-	DeviceType     string // "SPEAKER"
 }
 
 const (
@@ -237,7 +247,6 @@ func parseSpotifyZC(body []byte) (SpotifyZCInfo, bool) {
 		LibraryVersion: zcField(m["libraryVersion"]),
 		Version:        zcField(m["version"]),
 		RemoteName:     zcField(m["remoteName"]),
-		DeviceType:     zcField(m["deviceType"]),
 	}
 	if f, ok := m["status"].(float64); ok && f >= 0 && f < 1e6 {
 		info.Status = int(f)
@@ -248,11 +257,27 @@ func parseSpotifyZC(body []byte) (SpotifyZCInfo, bool) {
 	return info, true
 }
 
+// zcClient is the ZeroConf HTTP client: a LAN GET that ignores any HTTP_PROXY
+// in the environment (a corporate proxy would answer for the speaker with a
+// 502, and the row would read "no answer" while the engine is up) and follows
+// no redirect (the engine answers 200 or nothing; a spoofed advertiser must
+// not be able to send this process to GET an arbitrary URL).
+var zcClient = &http.Client{
+	Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
+
 // ProbeSpotifyZC GETs the endpoint's getInfo (addr is host:port) and parses the
-// answer. One request; false on any transport, status or shape failure.
-func ProbeSpotifyZC(addr string, timeout time.Duration) (SpotifyZCInfo, bool) {
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get("http://" + addr + "/zc?action=getInfo")
+// answer. One request, bounded by timeout and by ctx; false on any transport,
+// status or shape failure.
+func ProbeSpotifyZC(ctx context.Context, addr string, timeout time.Duration) (SpotifyZCInfo, bool) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/zc?action=getInfo", nil)
+	if err != nil {
+		return SpotifyZCInfo{}, false
+	}
+	resp, err := zcClient.Do(req)
 	if err != nil {
 		return SpotifyZCInfo{}, false
 	}

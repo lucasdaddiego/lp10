@@ -1,6 +1,7 @@
 // Package workers owns the background runtime: child processes, shutdown and
 // drain coordination, snapshot persistence, stream reconnects, command writes,
-// watchdogs, the EQ tunnel, and artwork loading.
+// watchdogs, the EQ tunnel, artwork loading, and the ssh-free probes (LSSDP,
+// Spotify ZeroConf, the on-demand OTA check).
 package workers
 
 import (
@@ -39,8 +40,7 @@ const (
 )
 
 // classify maps residual ssh stderr to a fatal/transient verdict. It is a var
-// so tests can shorten the fatal retry cadence (mirroring the Python suite's
-// fast_fatal monkeypatch of workers.classify_stderr).
+// so tests can shorten the fatal retry cadence.
 var classify = transport.ClassifyStderr
 
 // backoffResetAfter is how long a session must have been DELIVERING (measured
@@ -102,13 +102,9 @@ func streamWorker(st *protocol.State, cfg config.Config, snapshotPath string, pr
 	}
 }
 
-// streamOnce is one connection lifecycle, returning the next reconnect backoff.
-// stderr goes to a temp file, not a pipe, so ssh can never block on a full
-// stderr buffer; the residual is read post-mortem.
-func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration, control *runControl) time.Duration {
-	return streamOnceWithSnapshot(st, cfg, backoff, "", newProcessSlot(), control)
-}
-
+// streamOnceWithSnapshot is one connection lifecycle, returning the next
+// reconnect backoff. stderr goes to a temp file, not a pipe, so ssh can never
+// block on a full stderr buffer; the residual is read post-mortem.
 func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.Duration, snapshotPath string, procs *processSlot, control *runControl) time.Duration {
 	// failStart notes a spawn failure, releases whatever pipes exist so far,
 	// and holds the retry cadence — the shared tail of every pre-launch error.
@@ -234,8 +230,7 @@ func clip160(s string) string {
 }
 
 // applyRecordSafe applies one record, swallowing a panic as a noted error and
-// reporting false so the caller skips this record's bookkeeping (Python's
-// except ...: continue). hadData distinguishes a valid metadata-only/dataless
+// reporting false so the caller skips this record's bookkeeping. hadData distinguishes a valid metadata-only/dataless
 // frame from the player data that may clear a fatal error and reset backoff.
 func applyRecordSafe(st *protocol.State, rec protocol.Record) (hadData, ok bool) {
 	defer func() {
@@ -261,6 +256,14 @@ func reap(st *protocol.State, procs *processSlot, proc *process) {
 	}
 	if procs.clear(proc) {
 		st.Disconnect()
+	}
+	// A command written on the young-spawn grace alone went into a pipe, not
+	// to the device: if this session died before its first data record, ssh
+	// never connected and the command is gone — say so, as every other lost
+	// path does (the phone-reboot case: a clean EOF, a respawn stuck in TCP
+	// connect, a PAUSE that silently vanished).
+	if proc.graceWrite.Load() && !st.DataSince(proc.spawned) {
+		st.Note("command not delivered")
 	}
 	if proc.Stdout != nil {
 		proc.Stdout.Close()

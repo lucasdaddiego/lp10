@@ -45,9 +45,7 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 			st.SetLSSDP(nil)
 			return
 		}
-		st.SetLSSDP(&protocol.LSSDPInfo{
-			Name: info.Name, FW: info.FW, State: info.State, NetMode: info.NetMode,
-		})
+		st.SetLSSDP(&protocol.LSSDPInfo{FW: info.FW, State: info.State, NetMode: info.NetMode})
 	}
 	wait := lssdpFirstProbeLag
 	for !control.stop.IsSet() && ctx.Err() == nil {
