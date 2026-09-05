@@ -69,7 +69,7 @@ func tunnelAddr(cfg config.Config) string {
 // tunnel only disables the EQ panel; the ssh player stream is unaffected.
 func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand) {
 	backoff := InitialBackoff
-	var carry *EQCommand // a command whose write failed, retried on the next connection
+	var carry []EQCommand // commands whose write failed (and those queued behind it), retried on the next connection
 	for !control.stop.IsSet() && ctx.Err() == nil {
 		func() {
 			defer func() {
@@ -88,16 +88,23 @@ func tunnelWorker(ctx context.Context, control *runControl, st *protocol.State, 
 }
 
 // tunnelOnceContext is one connection lifecycle, returning the next reconnect
-// backoff and the command to carry into the next connection.
-func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration, carry *EQCommand) (time.Duration, *EQCommand) {
-	// A command carried from a dead connection ages like any queued one; while
+// backoff and the commands to carry into the next connection.
+func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.State, cfg config.Config, eqcmds <-chan EQCommand, backoff time.Duration, carry []EQCommand) (time.Duration, []EQCommand) {
+	// Commands carried from a dead connection age like any queued one; while
 	// the tunnel stays down, expired intent is dropped visibly here rather than
 	// applying minutes later on a reconnect.
-	if carry != nil {
-		if _, stale := eqCommandWire(*carry, time.Now()); stale {
-			st.Note("command not delivered")
-			carry = nil
+	if len(carry) > 0 {
+		now := time.Now()
+		fresh := carry[:0:0]
+		for _, c := range carry {
+			if _, stale := eqCommandWire(c, now); !stale {
+				fresh = append(fresh, c)
+			}
 		}
+		if len(fresh) < len(carry) {
+			st.Note("command not delivered")
+		}
+		carry = fresh
 	}
 	dialer := net.Dialer{
 		Timeout: tunnelDialTimeout,
@@ -116,7 +123,11 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		}
 		return waitBackoff(control, backoff), carry
 	}
-	st.SetEQConnected(true)
+	// Not "connected" yet: a dial that succeeds proves only that something
+	// accepted (a queue-backlogged tcptunnelling accept shows nothing for the
+	// whole ~25 s keepalive window while writes vanish). The first parsed
+	// frame — the seed replies land within milliseconds on a live link — is
+	// what marks the tunnel live (ApplyTunnel / SetEQPresets).
 
 	done := make(chan struct{})
 	go tunnelReader(st, conn, done)
@@ -162,11 +173,10 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		}
 	}
 
-	// A carried command gets first claim on the fresh connection, ahead of the
-	// queue it was consumed from.
-	if !dead && carry != nil {
-		cmd := *carry
-		carry, dead = tunnelSend(st, conn, cmd)
+	// Carried commands get first claim on the fresh connection, ahead of the
+	// queue they were consumed from.
+	if !dead && len(carry) > 0 {
+		carry, dead = sendBatch(st, conn, coalesceEQ(carry))
 	}
 
 	// Write loop: drain queued commands until the connection dies or we stop. One
@@ -180,7 +190,20 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 			dead = true
 		case <-ctx.Done():
 		case cmd := <-eqcmds: // never closed: Runtime.Close stops the worker via ctx/stop
-			carry, dead = tunnelSend(st, conn, cmd)
+			// Take everything already queued behind it and coalesce per
+			// control before writing: a held key queues ~30 sets a second,
+			// and the device only needs the last of each.
+			batch := []EQCommand{cmd}
+		gather:
+			for {
+				select {
+				case c := <-eqcmds:
+					batch = append(batch, c)
+				default:
+					break gather
+				}
+			}
+			carry, dead = sendBatch(st, conn, coalesceEQ(batch))
 		case <-poll.C:
 		}
 	}
@@ -191,6 +214,42 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		return backoff, carry
 	}
 	return waitBackoff(control, backoff), carry
+}
+
+// coalesceEQ keeps, of several sets queued for one control, only the last —
+// at the last one's position, so relative order across controls holds. A
+// held EQ key queues a set per key repeat; the device needs the final value,
+// and every intermediate write came back as a broadcast echo the panel then
+// had to hold off. Queries pass through untouched.
+func coalesceEQ(cmds []EQCommand) []EQCommand {
+	if len(cmds) < 2 {
+		return cmds
+	}
+	last := map[string]int{}
+	for i, c := range cmds {
+		if !c.Query {
+			last[c.Code] = i
+		}
+	}
+	out := cmds[:0:0]
+	for i, c := range cmds {
+		if c.Query || last[c.Code] == i {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sendBatch writes cmds in order. On a dead connection it hands back the
+// command that failed and everything queued behind it, for the next
+// connection.
+func sendBatch(st *protocol.State, conn net.Conn, cmds []EQCommand) (carry []EQCommand, dead bool) {
+	for i, c := range cmds {
+		if failed, d := tunnelSend(st, conn, c); d {
+			return append([]EQCommand{*failed}, cmds[i+1:]...), true
+		}
+	}
+	return nil, false
 }
 
 // tunnelSend validates, ages, and writes one EQ command. A write failure hands

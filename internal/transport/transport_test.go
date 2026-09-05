@@ -285,14 +285,14 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		`MemAvailable:) ma=$v; break;;`,
 		// position poll gated to every 3rd tick, with the read-flag that keeps the
 		// track-skip detector working across skip ticks
-		`pc49=$((pc49-1)); if [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then`,
+		`pc49=$((pc49-1));if [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then`,
 		`if [ $rd -eq 1 ]; then case "$pn" in`,
 		// latency ping poll gated to every 3rd tick (mirrors pc49) so an unreachable
 		// target can't stall every stats tick; skipped ticks emit "-" (no sample)
-		`pgc=$((pgc-1)); if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o;`,
+		`pgc=$((pgc-1));if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o;`,
 		// pg returns through the shared $o (no capturing subshell) so each ping
 		// target costs one fork, not two
-		`o=${o%%/*};; *) o=-;; esac; };`,
+		`o=${o%%/*};;*) o=-;;esac;};`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("remote loop missing structural invariant:\n  %s", want)
@@ -308,10 +308,9 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 // silently on the device (which CI can't reach). The sample matches the on-device
 // probe of the AR241CE: status has `avail` but no `xruns` line.
 func TestRemoteLoopAudioChainParses(t *testing.T) {
-	const snip = `as=-; ab=-; ar=-; af=-; ac=-; bs=-; for ad in /proc/asound/card*/pcm*p/sub*; do while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in state) as=$av;; avail) ab=$av;; esac; done 2>/dev/null < "$ad/status"; while read -r ak av ar2; do k=${ak%:}; [ "$av" = ":" ] && av=$ar2; case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac; done 2>/dev/null < "$ad/hw_params"; done`
-	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
-		t.Fatal("audio-chain gather snippet not found verbatim in the loop")
-	}
+	// The ALSA gather as the loop actually carries it: the defaults through the
+	// pcm glob's closing done.
+	snip := loopSlice(t, "as=-;", `< "$ad/hw_params";done`)
 	// realStatus/realHW mirror the probed AR241CE: aligned colons, avail/avail_max,
 	// no xruns line; hw_params carries buffer_size.
 	const realStatus = "state: RUNNING\nowner_pid   : 14748\ntrigger_time: 237278.20\ntstamp      : 0.0\ndelay       : 17216\navail       : 4834\navail_max   : 27490\n-----\nhw_ptr      : 2231488\nappl_ptr    : 2248704\n"
@@ -370,10 +369,8 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 // earlier stub echoed a bare value, which let a gv() that never matched anything
 // pass: on the device every env-gated service was reported "off" regardless.
 func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
-	const snip = `gv() { v=$(getenv "$2" 2>/dev/null); v=${v##*: }; case "$v" in 1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";; '') echo "$1=";; *) echo "$1=off";; esac; }; pz() { pl=" "; for pf in /proc/[0-9]*/comm; do read -r pzc 2>/dev/null < $pf && pl="$pl$pzc "; done; }; pr() { case "$pl" in *" $2 "*) echo "$1=on";; *) echo "$1=off";; esac; }; sy() { eng=; case "$pl" in *" spotifymusicpro "*) eng=spotifymusicpro;; *" newspotifyhifi "*) eng=newspotifyhifi;; esac; echo "spotify.eng=$eng"; sl=; case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac; [ "$eng" = "$sle" ] || { sle=$eng; sk=; [ -n "$sl" ] && sk=$(grep -aom1 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1); }; echo "spotify.sdk=${sk#esdk:}"; se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null); case "${se##*: }/${sr##*: }" in 0/1) sc=pro;; 1/0) sc=hifi;; 1/1) sc=both;; *) sc=none;; esac; echo "spotify.cfg=$sc"; }; lp() { xp=; for f in /proc/net/tcp /proc/net/tcp6; do while read -r sl2 la ra stt rest; do [ "$stt" = 0A ] && xp="$xp${la##*:} "; done 2>/dev/null < $f; done; for e in telnet:0017 adb:15B3 web:0050 control:07E2; do case "$xp" in *"${e#*:} "*) echo "${e%%:*}=on";; *) echo "${e%%:*}=off";; esac; done; }; ct() { pz; echo @@c; sy; pr airplay airplaydemo; pr dlna dmr; pr bt bluetoothd; pr cast cast_sample_app; pr tidal tidalConnect; gv tidal.env TidalEnabled; pr qobuz qobuzConnect; gv qobuz.env QobuzConnectEnabled; gv usb USBEnable; lp; E; }; ct;`
-	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
-		t.Fatal("capability-probe snippet not found verbatim in the loop")
-	}
+	// The @@c gather as the loop actually carries it: gv() through the ct call.
+	snip := loopSlice(t, "gv() {", "};ct;")
 	// The running-daemon check is now one pass over /proc/<pid>/comm rather than a
 	// pidof fork per service, so the scan is pointed at a fake /proc: two "running"
 	// daemons (the legacy Spotify engine and bluetoothd) and one unrelated process.
@@ -480,4 +477,21 @@ func TestClassifyStderr(t *testing.T) {
 	if ClassifyStderr("") != nil {
 		t.Error("empty stderr should classify as nil")
 	}
+}
+
+// loopSlice cuts the fragment of the generated loop that starts at from and
+// ends with to (inclusive), so a snippet test runs exactly what ships instead
+// of a copy that drifts with every byte-saving edit to the source.
+func loopSlice(t *testing.T, from, to string) string {
+	t.Helper()
+	loop := RemoteLoop("spotify.com")
+	i := strings.Index(loop, from)
+	if i < 0 {
+		t.Fatalf("loop fragment start %q not found", from)
+	}
+	j := strings.Index(loop[i:], to)
+	if j < 0 {
+		t.Fatalf("loop fragment end %q not found after %q", to, from)
+	}
+	return loop[i : i+j+len(to)]
 }

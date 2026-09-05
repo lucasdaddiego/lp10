@@ -149,90 +149,31 @@ func resolveUDP4(ctx context.Context, host, port string) (*net.UDPAddr, bool) {
 // platform, and ssh-ing into an amp with the LP10's password is the one thing
 // this must never do) whose DeviceName best matches nameHint, else the first
 // LP10. An exact hinted match returns early; otherwise the window runs out so
-// a slower named device isn't beaten by a faster wrong one.
-func FindLP10LSSDP(nameHint string, timeout time.Duration) (Device, bool) {
-	raddr, err := net.ResolveUDPAddr("udp4", lssdpMulticast)
-	if err != nil {
-		return Device{}, false
-	}
-	conns := openQuerySockets()
-	if len(conns) == 0 {
-		return Device{}, false
-	}
-	defer func() {
-		for _, c := range conns {
-			c.Close()
-		}
-	}()
-	for _, c := range conns {
-		_, _ = c.WriteToUDP([]byte(msearch), raddr)
-	}
-	packets := make(chan []byte, 64)
-	done := make(chan struct{})
-	spawnReadersFrom(conns, packets, done)
-
+// a slower named device isn't beaten by a faster wrong one. ctx ends the
+// window early.
+func FindLP10LSSDP(ctx context.Context, nameHint string, timeout time.Duration) (Device, bool) {
 	var found []LSSDPInfo
-	overall := time.NewTimer(timeout)
-	defer overall.Stop()
-	for {
-		select {
-		case p := <-packets:
-			info, ok := parseTagged(p)
-			if !ok {
-				continue
-			}
-			found = append(found, info)
-			if nameHint != "" && isLP10(info) && hintExact(info.Name, nameHint) {
-				close(done)
-				return lssdpDevice(info), true
-			}
-		case <-overall.C:
-			close(done)
-			return pickLSSDP(found, nameHint)
+	var early Device
+	out := query(ctx, lssdpMulticast, []byte(msearch), timeout, false, func(r reply) bool {
+		info, ok := parseLSSDP(r.data)
+		if !ok {
+			return false
 		}
+		info.IP = r.from
+		found = append(found, info)
+		if nameHint != "" && isLP10(info) && hintExact(info.Name, nameHint) {
+			early = lssdpDevice(info)
+			return true
+		}
+		return false
+	})
+	switch out {
+	case queryStopped:
+		return early, true
+	case queryTimedOut:
+		return pickLSSDP(found, nameHint)
 	}
-}
-
-// parseTagged splits a reader packet (sender IP prefixed by spawnReadersFrom)
-// into its LSSDPInfo.
-func parseTagged(p []byte) (LSSDPInfo, bool) {
-	if len(p) < 4 {
-		return LSSDPInfo{}, false
-	}
-	info, ok := parseLSSDP(p[4:])
-	if !ok {
-		return LSSDPInfo{}, false
-	}
-	info.IP = net.IPv4(p[0], p[1], p[2], p[3])
-	return info, true
-}
-
-// spawnReadersFrom is spawnReaders with the sender's IPv4 prefixed to each
-// packet (4 bytes), since an LSSDP reply carries no address of its own.
-func spawnReadersFrom(conns []*net.UDPConn, packets chan<- []byte, done <-chan struct{}) {
-	for _, c := range conns {
-		go func(c *net.UDPConn) {
-			buf := make([]byte, 2048)
-			for {
-				n, from, err := c.ReadFromUDP(buf)
-				if err != nil {
-					return
-				}
-				ip4 := from.IP.To4()
-				if ip4 == nil {
-					continue
-				}
-				p := make([]byte, 0, 4+n)
-				p = append(p, ip4...)
-				p = append(p, buf[:n]...)
-				select {
-				case packets <- p:
-				case <-done:
-					return
-				}
-			}
-		}(c)
-	}
+	return Device{}, false
 }
 
 // isLP10 reports whether a responder is the LP10 itself, by its declared model.

@@ -11,6 +11,7 @@ package discovery
 
 import (
 	"cmp"
+	"context"
 	"encoding/binary"
 	"net"
 	"slices"
@@ -50,109 +51,47 @@ func (d Device) Addr() string {
 }
 
 // FindLP10 sends mDNS queries and watches for replies up to timeout, returning
-// the LP10 whose friendly name matches nameHint (a substring match against, say,
-// the config "name"), or the sole/first LP10 otherwise. It returns early the
-// moment a fully-resolved candidate (with an IP) arrives that the hint endorses
-// — an unhinted search accepts any LP10, but a non-matching device never
-// short-circuits a hinted one, since the named device may simply be slower to
-// answer. So a present device is usually found in well under 100ms; absence —
-// or a hinted name that nothing on the LAN answers to — costs the full timeout,
-// after which the non-matching devices come back into play as the fallback.
+// the LP10 whose friendly name best matches nameHint (see hintScore), or the
+// sole/first LP10 otherwise. It returns early the moment a fully-resolved
+// candidate (with an IP) arrives that carries the hint as its name — an
+// unhinted search accepts any LP10, but a non-matching or partially matching
+// device never short-circuits a hinted one, since the named device may simply
+// be slower to answer. So a present device is usually found in well under
+// 100ms; absence — or a hinted name that nothing on the LAN answers to — costs
+// the full timeout, after which the non-matching devices come back into play
+// as the fallback. ctx ends the window early (a Ctrl-C during startup).
 //
-// The query is sent out EVERY up, multicast-capable interface — each from its own
-// IPv4 source address — not just the OS default route. That is what makes it work
-// on a multi-homed Mac: docked Ethernet, an active VPN (utun), or a Wi-Fi that was
-// just switched to and isn't the default route yet would all otherwise swallow a
-// single INADDR_ANY query out the wrong NIC, so a device living on another
-// interface was missed. Each socket is retransmitted within the window (mDNS is
-// lossy UDP); a present device's first unicast reply early-exits. The configured
-// host stays the fallback when nothing answers.
-func FindLP10(nameHint string, timeout time.Duration) (Device, bool) {
-	raddr, err := net.ResolveUDPAddr("udp4", mdnsAddr)
-	if err != nil {
-		return Device{}, false
-	}
-	conns := openQuerySockets()
-	if len(conns) == 0 {
-		return Device{}, false
-	}
-	defer func() {
-		for _, c := range conns {
-			c.Close()
-		}
-	}()
-
-	query := buildQuery(service, typePTR)
-	sendAll := func() {
-		for _, c := range conns {
-			_, _ = c.WriteToUDP(query, raddr)
-		}
-	}
-	sendAll()
-
-	// One reader goroutine per socket funnels raw packets to the collector, which
-	// only this goroutine touches (so no lock is needed).
-	packets := make(chan []byte, 64)
-	done := make(chan struct{})
-	spawnReaders(conns, packets, done)
-
+// The query goes out EVERY up, multicast-capable interface (openQuerySockets),
+// so a device living on a non-default NIC of a multi-homed Mac is not missed,
+// and is retransmitted within the window (mDNS is lossy UDP).
+func FindLP10(ctx context.Context, nameHint string, timeout time.Duration) (Device, bool) {
 	col := newCollector()
-	overall := time.NewTimer(timeout)
-	defer overall.Stop()
-	// Retransmit a couple of times within the window; a present device almost
-	// always answers the first query, so this only matters under packet loss.
-	resend := time.NewTicker(timeout/3 + time.Millisecond)
-	defer resend.Stop()
-
-	for {
-		select {
-		case p := <-packets:
-			if recs, ok := parsePacket(p); ok {
-				col.add(recs)
-				// Early exit only on a candidate that carries the hint as its
-				// name: with several LP10s on the LAN the named one may answer
-				// later, and neither pickLP10's first-device fallback nor a
-				// partial match ("Living" for "Living Room") may let a faster
-				// wrong device hijack the race. Unhinted, any complete LP10 wins.
-				if d, ok := pickLP10(col.devices(), nameHint); ok && len(d.IP) > 0 &&
-					(nameHint == "" || hintExact(d.Name, nameHint)) {
-					close(done)
-					return d, true // complete, endorsed candidate — stop early
-				}
-			}
-		case <-resend.C:
-			sendAll()
-		case <-overall.C:
-			close(done)
-			return pickLP10(col.devices(), nameHint) // timed out: accept a host-only match too
+	var early Device
+	out := query(ctx, mdnsAddr, buildQuery(service, typePTR), timeout, true, func(r reply) bool {
+		recs, ok := parsePacket(r.data)
+		if !ok {
+			return false
 		}
+		col.add(recs)
+		// Early exit only on a candidate that carries the hint as its name:
+		// with several LP10s on the LAN the named one may answer later, and
+		// neither pickLP10's first-device fallback nor a partial match
+		// ("Living" for "Living Room") may let a faster wrong device hijack
+		// the race. Unhinted, any complete LP10 wins.
+		if d, ok := pickLP10(col.devices(), nameHint); ok && len(d.IP) > 0 &&
+			(nameHint == "" || hintExact(d.Name, nameHint)) {
+			early = d
+			return true
+		}
+		return false
+	})
+	switch out {
+	case queryStopped:
+		return early, true
+	case queryTimedOut:
+		return pickLP10(col.devices(), nameHint) // timed out: accept a host-only match too
 	}
-}
-
-// spawnReaders starts one goroutine per socket, funneling each raw reply packet
-// into packets. Closing done unblocks a reader parked on the channel send when
-// the caller stops early; closing the sockets unblocks one parked in
-// ReadFromUDP — so no reader leaks either way.
-func spawnReaders(conns []*net.UDPConn, packets chan<- []byte, done <-chan struct{}) {
-	for _, c := range conns {
-		go func(c *net.UDPConn) {
-			buf := make([]byte, 9000)
-			for {
-				n, _, rerr := c.ReadFromUDP(buf)
-				if n > 0 {
-					p := append([]byte(nil), buf[:n]...)
-					select {
-					case packets <- p:
-					case <-done:
-						return
-					}
-				}
-				if rerr != nil {
-					return
-				}
-			}
-		}(c)
-	}
+	return Device{}, false
 }
 
 // openQuerySockets opens one UDP socket per up, non-loopback, multicast-capable
@@ -178,8 +117,12 @@ func openQuerySockets() []*net.UDPConn {
 				ip = v.IP
 			}
 			ip4 := ip.To4()
-			if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
-				continue // want a routable IPv4, not ::1/127/169.254
+			if ip4 == nil || ip4.IsLoopback() {
+				// IPv4 only, loopback out. Link-local (169.254) stays IN: mDNS is
+				// defined for it, and a direct-cabled LP10 with self-assigned
+				// addresses lives exactly there — it was never queried while any
+				// routable NIC existed.
+				continue
 			}
 			if c, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip4, Port: 0}); err == nil {
 				conns = append(conns, c)

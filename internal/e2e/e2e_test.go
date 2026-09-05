@@ -330,3 +330,23 @@ func TestAskpassIntegration(t *testing.T) {
 		t.Errorf("broken (no lookup tool on PATH): stderr=%q code=%d, want %q/1", errOut, code, transport.MarkerBroken)
 	}
 }
+
+// --version and --help are answers, not argv errors: exit 0, the build on
+// stdout, nothing on stderr.
+func TestVersionAndHelpFlagsExit0(t *testing.T) {
+	bin := testutil.BuildMain(t)
+	for _, flag := range []string{"--version", "--help"} {
+		cmd := exec.Command(bin, flag)
+		cmd.Env = append(os.Environ(), "LP10_ASKPASS=")
+		cmd.Env = append(cmd.Env, coverEnv()...)
+		var errb bytes.Buffer
+		cmd.Stderr = &errb
+		out, err := cmd.Output()
+		if err != nil || errb.Len() != 0 {
+			t.Fatalf("%s: err=%v stderr=%q", flag, err, errb.String())
+		}
+		if !strings.HasPrefix(string(out), "lp10") {
+			t.Errorf("%s: stdout = %q", flag, out)
+		}
+	}
+}

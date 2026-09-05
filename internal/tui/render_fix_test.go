@@ -100,3 +100,28 @@ func TestLatencyRowClipsLongTargetNames(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// At 9–13 rows the compact frame cannot hold everything: the EQ summary and
+// its divider, then the blank separators, yield before the player's own seek
+// and transport rows. With room for all of it, all of it shows.
+func TestCompactShortFrameKeepsTransportOverEQSummary(t *testing.T) {
+	for _, rows := range []int{9, 10, 11, 12, 13} {
+		m, _, _ := makeModel(t)
+		m.rows, m.cols = rows, 64
+		out := clean(m.viewContent())
+		if !strings.Contains(out, GL["rew"]) || !strings.Contains(out, GL["ff"]) {
+			t.Errorf("%d rows: transport row missing:\n%s", rows, out)
+		}
+		if strings.Contains(out, "equalizer") {
+			t.Errorf("%d rows: the EQ summary stayed while the player was trimmed:\n%s", rows, out)
+		}
+		if n := len(strings.Split(m.viewContent(), "\n")); n != rows {
+			t.Errorf("%d rows: rendered %d lines", rows, n)
+		}
+	}
+	m, _, _ := makeModel(t)
+	m.rows, m.cols = 20, 64
+	if out := clean(m.viewContent()); !strings.Contains(out, "equalizer") || !strings.Contains(out, GL["rew"]) {
+		t.Errorf("20 rows: both fit and both must show:\n%s", out)
+	}
+}

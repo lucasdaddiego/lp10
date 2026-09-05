@@ -37,10 +37,8 @@ func (e *shError) Error() string { return e.err.Error() + ": " + e.stderr }
 // would land the box in the state where NEITHER engine starts — exactly what the
 // AR241CE_8530 OTA did to this device. tg() must always write the pair.
 func TestRemoteLoopServiceToggleParses(t *testing.T) {
-	const snip = `sn() { setenv "$1" "$2" >/dev/null; }; tg() { vid=${1%% *}; vst=${1##* }; vk=; vs=; case "$vid" in spotify) killall -9 newspotifyhifi spotifymusicpro >/dev/null 2>&1; va=0; vb=0; case "$vst" in hifi) va=1; vs=S99newspotifyhifi;; pro) vb=1; vs=S99spotifymusicpro;; esac; sn SpotifyEnabled $va; sn SpotifyProEnabled $vb;; tidal) vk=TidalEnabled; vs=S99tidalConnect;; qobuz) vk=QobuzConnectEnabled; vs=S99qobuzConnect;; usb) vk=USBEnable;; airplay) vs=S99airplay_v2;; dlna) vs=S99dmr;; *) return;; esac; [ -n "$vk" ] && sn "$vk" "$vst"; if [ -n "$vs" ]; then vc=netready; case "$vst" in 0|off) vc=netdown;; esac; setsid /etc/init.d/$vs $vc </dev/null >/dev/null 2>&1 & fi; ct; cq=8; };`
-	if !strings.Contains(RemoteLoop("spotify.com"), snip) {
-		t.Fatal("service-toggle snippet not found verbatim in the loop")
-	}
+	// tg() as the loop actually carries it (sn() is its one helper).
+	snip := loopSlice(t, "sn() {", "cq=8;};")
 	dir := t.TempDir()
 	log := filepath.Join(dir, "acts")
 	// Stub every side effect to an append-only log, so the test sees the exact

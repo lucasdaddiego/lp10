@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -98,7 +100,9 @@ func Load() Config {
 		_, err := toml.DecodeFile(path, &data)
 		switch {
 		case err == nil:
-			applyTOML(&cfg, data)
+			if c := applyTOML(&cfg, data); len(c) > 0 {
+				cfg.Warn = "config.toml: " + strings.Join(c, "; ")
+			}
 		case errors.Is(err, fs.ErrNotExist):
 			// missing file is identical to no config — no warning
 		default:
@@ -118,48 +122,84 @@ func Load() Config {
 	return cfg
 }
 
+// configKeys are the recognised config.toml keys and the type each takes.
+var configKeys = map[string]string{
+	"host": "string", "user": "string", "name": "string", "ping_host": "string",
+	"discover": "bool", "art": "bool", "art_mode": "string", "vol_step": "number",
+}
+
 // applyTOML copies recognized keys with strict typing: string fields accept
 // only strings; vol_step accepts an integer or an integral float. Anything else
-// (including a bool, or a string for a numeric field) is silently ignored, to
-// avoid surprising coercions from typos.
-func applyTOML(cfg *Config, data map[string]any) {
-	if v, ok := data["host"].(string); ok {
-		cfg.Host = v
-	}
-	if v, ok := data["user"].(string); ok {
-		cfg.User = v
-	}
-	if v, ok := data["name"].(string); ok {
-		cfg.Name = v
-	}
-	if v, ok := data["ping_host"].(string); ok {
-		cfg.PingHost = v
-	}
-	if v, ok := data["discover"].(bool); ok {
-		cfg.Discover = v
-	}
-	if v, ok := data["art"].(bool); ok {
-		cfg.Art = v
-	}
-	if v, ok := data["art_mode"].(string); ok && artModes[v] {
-		cfg.ArtMode = v
-	}
-	switch v := data["vol_step"].(type) {
-	case int64:
-		n := int(v)
-		if int64(n) == v {
-			cfg.VolStep = n
+// (including a bool, or a string for a numeric field) is ignored, to avoid
+// surprising coercions from typos — and reported, along with unknown keys, so
+// a typo cannot silently keep the default (the returned complaints become the
+// startup warning).
+func applyTOML(cfg *Config, data map[string]any) (complaints []string) {
+	keys := slices.Sorted(maps.Keys(data))
+	for _, k := range keys {
+		v := data[k]
+		want, known := configKeys[k]
+		if !known {
+			complaints = append(complaints, fmt.Sprintf("unknown key %q", k))
+			continue
 		}
-	case float64:
-		// allow an integral float like 2.0, but reject values outside int range
-		// so the conversion can't overflow to a garbage/negative step
-		// (float64(MaxInt) rounds UP to 2^63 on 64-bit systems, so comparing
-		// against it inclusively still admitted exactly the first invalid value).
-		limit := float64(uint64(1) << (strconv.IntSize - 1))
-		if v == math.Trunc(v) && v >= -limit && v < limit {
-			cfg.VolStep = int(v)
+		ok := false
+		switch k {
+		case "host", "user", "name", "ping_host":
+			var sv string
+			if sv, ok = v.(string); ok {
+				switch k {
+				case "host":
+					cfg.Host = sv
+				case "user":
+					cfg.User = sv
+				case "name":
+					cfg.Name = sv
+				case "ping_host":
+					cfg.PingHost = sv
+				}
+			}
+		case "discover", "art":
+			var bv bool
+			if bv, ok = v.(bool); ok {
+				if k == "discover" {
+					cfg.Discover = bv
+				} else {
+					cfg.Art = bv
+				}
+			}
+		case "art_mode":
+			sv, isStr := v.(string)
+			if isStr && !artModes[sv] {
+				complaints = append(complaints, fmt.Sprintf("art_mode %q ignored (auto|kitty|halfblock|off)", sv))
+				continue
+			}
+			if ok = isStr; ok {
+				cfg.ArtMode = sv
+			}
+		case "vol_step":
+			switch n := v.(type) {
+			case int64:
+				if int64(int(n)) == n {
+					cfg.VolStep, ok = int(n), true
+				}
+			case float64:
+				// allow an integral float like 2.0, but reject values outside int
+				// range so the conversion can't overflow to a garbage/negative
+				// step (float64(MaxInt) rounds UP to 2^63 on 64-bit systems, so
+				// comparing against it inclusively still admitted exactly the
+				// first invalid value).
+				limit := float64(uint64(1) << (strconv.IntSize - 1))
+				if n == math.Trunc(n) && n >= -limit && n < limit {
+					cfg.VolStep, ok = int(n), true
+				}
+			}
+		}
+		if !ok {
+			complaints = append(complaints, fmt.Sprintf("%s ignored (want %s)", k, want))
 		}
 	}
+	return complaints
 }
 
 // StateDir is the persistent-state directory, or "" when it cannot be created —

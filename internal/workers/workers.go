@@ -39,6 +39,13 @@ const (
 	SnapshotPersistInterval = 30 * time.Second
 )
 
+// fatalEscalateAfter is the run of consecutive fatal verdicts after which the
+// retry cadence is stretched (×6, capped at a minute). The device's sshd
+// lockout after rapid reconnects presents as "Permission denied" exactly like
+// a wrong password, and every 10 s retry is one more failed auth feeding it —
+// while a genuinely wrong password never fixes itself in 10 s either.
+const fatalEscalateAfter = 3
+
 // classify maps residual ssh stderr to a fatal/transient verdict. It is a var
 // so tests can shorten the fatal retry cadence.
 var classify = transport.ClassifyStderr
@@ -209,8 +216,11 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	residual := string(rb)
 
 	if terr := classify(residual); terr != nil {
-		st.SetFatal(terr.Error())
-		control.stop.Wait(terr.Cadence)
+		wait := terr.Cadence
+		if st.SetFatal(terr.Error()) >= fatalEscalateAfter {
+			wait = min(wait*6, time.Minute)
+		}
+		control.stop.Wait(wait)
 		return backoff
 	}
 	if trimmed := strings.TrimSpace(residual); trimmed != "" {

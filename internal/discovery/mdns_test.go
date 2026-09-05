@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"strings"
 	"sync"
@@ -262,7 +263,7 @@ func TestFindLP10HintedWaitsForNamedDevice(t *testing.T) {
 	}
 
 	start := time.Now()
-	d, ok := FindLP10("CovTarget", 3*time.Second)
+	d, ok := FindLP10(context.Background(), "CovTarget", 3*time.Second)
 	elapsed := time.Since(start)
 
 	for _, lc := range listeners {

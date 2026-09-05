@@ -250,14 +250,43 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	// Compact: no art / vertical sliders — top-pinned metadata + seek + controls,
 	// with the one-line EQ summary and footer pinned to the bottom.
 	meta := m.metaLines(s, W)
-	content := append([]string{header, ""}, meta...)
-	content = append(content, "", m.seekRow(s, W), "", m.controlsRow(s, now, W, true))
-	tail := append([]string{m.dividerRow("equalizer", W)}, m.eqSummary(W)...)
-	tail = append(tail, m.footerRow(W))
+	seek, controls := m.seekRow(s, W), m.controlsRow(s, now, W, true)
+	eq := m.eqSummary(W)
+	tail := append(append([]string{m.dividerRow("equalizer", W)}, eq...), m.footerRow(W))
 	if errLine != "" {
 		tail = append(tail, errLine)
 	}
+	content := compactBody(header, meta, seek, controls, true)
+	// Too short for everything (rows 9–13): the EQ summary and its divider
+	// yield first, then the blank separators — frameBody trims the body from
+	// the bottom, which is the seek and transport rows, and a player without
+	// its transport is worse than one without a tone read-out or breathing
+	// room.
+	if len(content)+len(tail) > inner {
+		tail = tail[1+len(eq):]
+	}
+	if len(content)+len(tail) > inner {
+		content = compactBody(header, meta, seek, controls, false)
+	}
 	return frameBody(content, tail, inner, false)
+}
+
+// compactBody is the compact layout's top-pinned block — header, metadata,
+// seek row, transport row — with or without the blank lines between them.
+func compactBody(header string, meta []string, seek, controls string, gaps bool) []string {
+	out := []string{header}
+	if gaps {
+		out = append(out, "")
+	}
+	out = append(out, meta...)
+	if gaps {
+		out = append(out, "")
+	}
+	out = append(out, seek)
+	if gaps {
+		out = append(out, "")
+	}
+	return append(out, controls)
 }
 
 // centreRows pads a uniform-width column to h rows with blank rows of the
