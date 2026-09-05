@@ -149,57 +149,29 @@ func placeable(e SpotifyEndpoint, host string, ip net.IP) bool {
 // falling back to a sole advertiser. ip may be nil when the caller could not
 // resolve the host. ctx (the runtime's) ends the window early on shutdown.
 func FindSpotifyZC(ctx context.Context, host string, ip net.IP, timeout time.Duration) (SpotifyEndpoint, bool) {
-	raddr, err := net.ResolveUDPAddr("udp4", mdnsAddr)
-	if err != nil {
-		return SpotifyEndpoint{}, false
-	}
-	conns := openQuerySockets()
-	if len(conns) == 0 {
-		return SpotifyEndpoint{}, false
-	}
-	defer func() {
-		for _, c := range conns {
-			c.Close()
-		}
-	}()
-	query := buildQuery(spotifyService, typePTR)
-	sendAll := func() {
-		for _, c := range conns {
-			_, _ = c.WriteToUDP(query, raddr)
-		}
-	}
-	sendAll()
-	packets := make(chan []byte, 64)
-	done := make(chan struct{})
-	spawnReaders(conns, packets, done)
-
 	var recs []rr
-	overall := time.NewTimer(timeout)
-	defer overall.Stop()
-	resend := time.NewTicker(timeout/3 + time.Millisecond)
-	defer resend.Stop()
-	for {
-		select {
-		case p := <-packets:
-			if rs, ok := parsePacket(p); ok {
-				recs = append(recs, rs...)
-				// Early exit only on a positive match; a sole advertiser is
-				// accepted at the timeout, once nothing else has had its say.
-				if e, ok := matchSpotify(spotifyEndpoints(recs), host, ip); ok {
-					close(done)
-					return e, true
-				}
-			}
-		case <-resend.C:
-			sendAll()
-		case <-ctx.Done():
-			close(done)
-			return SpotifyEndpoint{}, false
-		case <-overall.C:
-			close(done)
-			return pickSpotify(spotifyEndpoints(recs), host, ip)
+	var early SpotifyEndpoint
+	out := query(ctx, mdnsAddr, buildQuery(spotifyService, typePTR), timeout, true, func(r reply) bool {
+		rs, ok := parsePacket(r.data)
+		if !ok {
+			return false
 		}
+		recs = append(recs, rs...)
+		// Early exit only on a positive match; a sole advertiser is accepted
+		// at the timeout, once nothing else has had its say.
+		if e, ok := matchSpotify(spotifyEndpoints(recs), host, ip); ok {
+			early = e
+			return true
+		}
+		return false
+	})
+	switch out {
+	case queryStopped:
+		return early, true
+	case queryTimedOut:
+		return pickSpotify(spotifyEndpoints(recs), host, ip)
 	}
+	return SpotifyEndpoint{}, false
 }
 
 // SpotifyZCInfo is the getInfo answer, trimmed to what lp10 shows. Every string

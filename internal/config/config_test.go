@@ -361,3 +361,33 @@ func TestStatePathsKeyOnConfiguredHost(t *testing.T) {
 		t.Errorf("Load: StateKey %q Host %q, want the LP10_HOST value for both", got.StateKey, got.Host)
 	}
 }
+
+// A typo in config.toml — an unknown key, a value of the wrong type, an
+// art_mode that is not one of the four — used to keep the default silently;
+// now it is the startup warning, while every valid key still applies.
+func TestConfigTyposSurfaceInTheWarning(t *testing.T) {
+	t.Setenv(HostEnv, "")
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	os.MkdirAll(filepath.Join(dir, "lp10"), 0o755)
+	os.WriteFile(filepath.Join(dir, "lp10", "config.toml"), []byte(`
+hots = "typo.local"
+name = "Living"
+vol_step = "2"
+art_mode = "kity"
+discover = "yes"
+`), 0o644)
+	cfg := Load()
+	if cfg.Name != "Living" || cfg.Host != defHost || cfg.VolStep != defVolStep || cfg.ArtMode != defArtMode || !cfg.Discover {
+		t.Errorf("valid keys must apply and typos keep defaults: %+v", cfg)
+	}
+	for _, want := range []string{`unknown key "hots"`, "vol_step ignored (want number)", `art_mode "kity" ignored`, "discover ignored (want bool)"} {
+		if !strings.Contains(cfg.Warn, want) {
+			t.Errorf("warning %q lacks %q", cfg.Warn, want)
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "lp10", "config.toml"), []byte("name = \"Den\"\nvol_step = 3.0\n"), 0o644)
+	if cfg := Load(); cfg.Warn != "" || cfg.Name != "Den" || cfg.VolStep != 3 {
+		t.Errorf("a clean file must not warn: %+v", cfg)
+	}
+}

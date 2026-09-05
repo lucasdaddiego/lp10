@@ -7,6 +7,7 @@ package discovery
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"sync"
 	"testing"
@@ -194,7 +195,7 @@ func TestCov_FindLP10TimesOut(t *testing.T) {
 	// With nothing answering, the send → retransmit → read-deadline → overall
 	// timeout loop runs to completion and the final pickLP10 finds nothing.
 	start := time.Now()
-	d, ok := FindLP10("definitely-not-present-aaa", 200*time.Millisecond)
+	d, ok := FindLP10(context.Background(), "definitely-not-present-aaa", 200*time.Millisecond)
 	if ok {
 		// Tolerate a real LP10 on the LAN, but it must look like a usable one.
 		if d.Model != modelLP10 || d.Addr() == "" {
@@ -214,7 +215,7 @@ func TestCov_FindLP10ShortTimeout(t *testing.T) {
 	// A sub-millisecond window makes the first read deadline land at/after the
 	// overall deadline, exercising the resend-scheduling arithmetic for tiny
 	// timeouts. It must return promptly without finding anything (no responder).
-	if d, ok := FindLP10("", time.Millisecond); ok && d.Model != modelLP10 {
+	if d, ok := FindLP10(context.Background(), "", time.Millisecond); ok && d.Model != modelLP10 {
 		t.Errorf("short-timeout probe returned a non-LP10: %+v", d)
 	}
 }
@@ -259,7 +260,7 @@ func TestCov_FindLP10EarlyReturnViaResponder(t *testing.T) {
 	if len(listeners) == 0 {
 		// No multicast path here; still drive the call so the test does work,
 		// but the early-return branch can't be exercised in this environment.
-		FindLP10("CovEarly", 300*time.Millisecond)
+		FindLP10(context.Background(), "CovEarly", 300*time.Millisecond)
 		t.Skip("no multicast-capable interface available; responder path skipped")
 	}
 	defer func() {
@@ -295,7 +296,7 @@ func TestCov_FindLP10EarlyReturnViaResponder(t *testing.T) {
 		})
 	}
 
-	d, ok := FindLP10("CovEarly", 3*time.Second)
+	d, ok := FindLP10(context.Background(), "CovEarly", 3*time.Second)
 
 	for _, lc := range listeners {
 		lc.Close()

@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -160,9 +161,9 @@ func TestTunnelCarryStaleDroppedWhileDown(t *testing.T) {
 	st := protocol.NewState()
 	control := newRunControl()
 	control.stop.Set() // waits return immediately
-	stale := &EQCommand{Code: "MXV", Val: 40, TS: time.Now().Add(-EQCommandDeadline - time.Second)}
-	_, carry := tunnelOnceContext(context.Background(), control, st, config.Config{Host: "unused"}, make(chan EQCommand), InitialBackoff, stale)
-	if carry != nil {
+	stale := EQCommand{Code: "MXV", Val: 40, TS: time.Now().Add(-EQCommandDeadline - time.Second)}
+	_, carry := tunnelOnceContext(context.Background(), control, st, config.Config{Host: "unused"}, make(chan EQCommand), InitialBackoff, []EQCommand{stale})
+	if len(carry) != 0 {
 		t.Errorf("carry = %+v, want dropped as stale", carry)
 	}
 	if e := st.Snap().Error; !strings.Contains(e, "command not delivered") {
@@ -182,10 +183,10 @@ func TestTunnelCarryDeliveredOnNextConnection(t *testing.T) {
 
 	st := protocol.NewState()
 	control := newRunControl()
-	done := make(chan *EQCommand, 1)
+	done := make(chan []EQCommand, 1)
 	go func() {
 		_, carry := tunnelOnceContext(context.Background(), control, st, config.Config{Host: "unused"},
-			make(chan EQCommand), InitialBackoff, &EQCommand{Code: "BAS", Val: 99, TS: time.Now()})
+			make(chan EQCommand), InitialBackoff, []EQCommand{{Code: "BAS", Val: 99, TS: time.Now()}})
 		done <- carry
 	}()
 
@@ -199,7 +200,7 @@ func TestTunnelCarryDeliveredOnNextConnection(t *testing.T) {
 	}
 
 	control.stop.Set()
-	if carry := <-done; carry != nil {
+	if carry := <-done; len(carry) != 0 {
 		t.Errorf("carry = %+v, want consumed after delivery", carry)
 	}
 }
@@ -216,5 +217,45 @@ func TestEQCommandWireQuery(t *testing.T) {
 		Code: "MXV", Query: true, TS: now.Add(-EQCommandDeadline - time.Second),
 	}, now); wire != "" || stale {
 		t.Errorf("expired query = (%q, %v), want silently dropped", wire, stale)
+	}
+}
+
+// Sets queued behind one another for the same control collapse to the last
+// (a held key queues one per key repeat); other controls and queries keep
+// their place. The worker takes the whole backlog in one drain, so the device
+// sees BAS:5 and TRE:3 — never BAS:1..4.
+func TestTunnelCoalescesQueuedSetsPerControl(t *testing.T) {
+	if got := coalesceEQ([]EQCommand{{Code: "BAS", Val: 1}, {Code: "TRE", Val: 3}, {Code: "BAS", Val: 2}, {Code: "MXV", Query: true}, {Code: "BAS", Val: 5}}); len(got) != 3 ||
+		got[0].Code != "TRE" || got[1].Code != "MXV" || !got[1].Query || got[2].Code != "BAS" || got[2].Val != 5 {
+		t.Fatalf("coalesceEQ = %+v", got)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv("LP10_TUNNEL_ADDR", ln.Addr().String())
+	st := protocol.NewState()
+	control := newRunControl()
+	eqcmds := make(chan EQCommand, 16)
+	for v := 1; v <= 5; v++ {
+		eqcmds <- EQCommand{Code: "BAS", Val: v, TS: time.Now()}
+	}
+	eqcmds <- EQCommand{Code: "TRE", Val: 3, TS: time.Now()}
+	go tunnelWorker(context.Background(), control, st, config.Config{Host: "unused"}, eqcmds)
+	defer control.stop.Set()
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	got := readUntilContains(t, conn, "TRE:3;")
+	for v := 1; v <= 4; v++ {
+		if strings.Contains(got, "BAS:"+strconv.Itoa(v)+";") {
+			t.Errorf("intermediate set BAS:%d reached the device: %q", v, got)
+		}
+	}
+	if !strings.Contains(got, "BAS:5;") {
+		t.Errorf("final set missing: %q", got)
 	}
 }

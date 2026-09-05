@@ -7,7 +7,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/lucasdaddiego/lp10)](https://goreportcard.com/report/github.com/lucasdaddiego/lp10)
 [![Go Reference](https://pkg.go.dev/badge/github.com/lucasdaddiego/lp10.svg)](https://pkg.go.dev/github.com/lucasdaddiego/lp10)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-![go](https://img.shields.io/badge/go-1.26%2B-00ADD8)
+![go](https://img.shields.io/badge/go-1.27%2B-00ADD8)
 ![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
 
 ```
@@ -183,7 +183,7 @@ app, no browser, no background daemon: run `lp10`, get one screen.
 
 ## Install
 
-Requires **macOS or Linux**, a recent **Go** toolchain (1.26+), and **OpenSSH**
+Requires **macOS or Linux**, a recent **Go** toolchain (1.27+), and **OpenSSH**
 (already on macOS; `openssh-client` on Linux). On Linux you also need
 `secret-tool` (`libsecret-tools`) plus a running keyring — see step 1. Nothing
 else at runtime.
@@ -202,7 +202,7 @@ secret-tool store --label=lp10 service lp10 account root
 # 2. Build a stripped release binary into ~/.bin (make sure it's on your PATH).
 make install
 
-# 3. Run — no arguments, just one screen.
+# 3. Run — no arguments, just one screen. (`lp10 --version` prints the build.)
 lp10
 ```
 

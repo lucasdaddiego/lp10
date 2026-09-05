@@ -197,6 +197,10 @@ func TestCov_TunnelRoundTripFloodReconnect(t *testing.T) {
 		t.Fatalf("reconnect accept: %v", err)
 	}
 	defer conn2.Close()
+	// Accepting alone is not "connected" — the first frame the device speaks is.
+	if _, err := conn2.Write([]byte("MXV:50;")); err != nil {
+		t.Fatal(err)
+	}
 	waitUntil(t, "reconnected", func() bool { c, _ := st.EQView(); return c })
 }
 

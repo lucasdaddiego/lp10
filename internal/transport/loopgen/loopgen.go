@@ -22,17 +22,24 @@ import "strings"
 //   - Break a command across lines only at a real, out-of-quote token-separating
 //     space. The single space the join restores then reproduces the original byte
 //     stream, so the minified output is byte-identical regardless of formatting.
+//   - A line that ends with ';' (or ';;') is joined with NO space: the shell reads
+//     `a;b` as two commands, and the loop rides an ssh command line at dropbear's
+//     length ceiling, where those join spaces were ~3% of the budget. So a line
+//     must not end with a ';' that sits inside quotes (the join would then land
+//     inside the string either way; keep such strings on one line).
 func Minify(src string) string {
 	var b strings.Builder
+	afterSep := false
 	for line := range strings.SplitSeq(src, "\n") {
 		t := strings.TrimSpace(line)
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
-		if b.Len() > 0 {
+		if b.Len() > 0 && !afterSep {
 			b.WriteByte(' ')
 		}
 		b.WriteString(t)
+		afterSep = strings.HasSuffix(t, ";")
 	}
 	return b.String()
 }

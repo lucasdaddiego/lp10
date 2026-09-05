@@ -529,3 +529,22 @@ func TestStreamBackoffResetNeedsSustainedSession(t *testing.T) {
 		t.Errorf("sustained session: backoff=%v want %v", next, 2*InitialBackoff)
 	}
 }
+
+// Three fatal verdicts in a row stretch the retry cadence sixfold: the sshd
+// lockout looks exactly like a rejected password, and hammering it every
+// cadence only keeps it locked. The harness cadence is 200 ms, so the fourth
+// attempt must wait ~1.2 s where the first three came ~200 ms apart.
+func TestFatalCadenceEscalatesAfterThreeHits(t *testing.T) {
+	h := newHarness(t)
+	st := h.start("authfail", startOpts{fastFatal: true})
+	if !waitFor(func() bool { return st.RawAttempts() >= 3 }, 6*time.Second) {
+		t.Fatal("never reached the third attempt")
+	}
+	t0 := time.Now()
+	if !waitFor(func() bool { return st.RawAttempts() >= 4 }, 10*time.Second) {
+		t.Fatal("never reached the fourth attempt")
+	}
+	if el := time.Since(t0); el < 900*time.Millisecond {
+		t.Errorf("fourth attempt came after %v, want the stretched cadence (~1.2 s)", el)
+	}
+}

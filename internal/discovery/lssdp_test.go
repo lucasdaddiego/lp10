@@ -133,18 +133,12 @@ func TestPickLSSDP(t *testing.T) {
 	if d, ok := pickLSSDP([]LSSDPInfo{room, b}, "LP10 · Living"); !ok || d.Name != "Living" {
 		t.Errorf("a label carrying the name picks that name: %+v", d)
 	}
-	if _, ok := parseTagged([]byte{1, 2}); ok {
-		t.Error("a short tagged packet is rejected")
-	}
-	if info, ok := parseTagged(append([]byte{10, 0, 0, 9}, []byte(liveReply)...)); !ok || !info.IP.Equal(net.IPv4(10, 0, 0, 9)) {
-		t.Errorf("tagged packet = %+v ok=%v", info, ok)
-	}
 }
 
 // FindLP10LSSDP on a LAN with nothing answering returns false within the window.
 func TestFindLP10LSSDPTimesOut(t *testing.T) {
 	start := time.Now()
-	if _, ok := FindLP10LSSDP("nothing-here-zz", 200*time.Millisecond); ok {
+	if _, ok := FindLP10LSSDP(context.Background(), "nothing-here-zz", 200*time.Millisecond); ok {
 		t.Skip("an LSSDP device answered on this LAN")
 	}
 	if time.Since(start) > 3*time.Second {

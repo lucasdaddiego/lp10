@@ -89,6 +89,7 @@ type State struct {
 	softvol      int
 	softvolOK    bool
 	levelBadRuns int
+	fatalStreak  int // consecutive fatal verdicts since the last data record
 
 	// LSSDP liveness: the device's UDP:1800 answer as last probed (nil when the
 	// last probe went unanswered), and when a probe last ran / last succeeded.
@@ -522,9 +523,11 @@ func (st *State) PreloadEQ(vals map[string]int) {
 }
 
 // SetEQPresets records the device's EQ preset names by index (its PEQ list).
+// A parsed frame, so it marks the tunnel live like ApplyTunnel.
 func (st *State) SetEQPresets(names []string) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	st.eqConnected = true
 	st.eqPresets = slices.Clone(names)
 }
 
@@ -570,18 +573,23 @@ func (st *State) Note(msg string) {
 func (st *State) ClearFatalOnData() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	st.fatalStreak = 0
 	if st.fatal {
 		st.fatal = false
 		st.errMsg = ""
 	}
 }
 
-// SetFatal latches a fatal error with its timestamp. Control-stripped like
-// Note: a fatal message can echo classified ssh stderr from an untrusted device.
-func (st *State) SetFatal(msg string) {
+// SetFatal latches a fatal error with its timestamp (control-stripped like
+// every device-facing string) and returns how many fatal verdicts in a row
+// this makes — reset by the next data record — so the caller can stretch its
+// retry cadence.
+func (st *State) SetFatal(msg string) int {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.errMsg, st.errAt, st.fatal = printable(msg), time.Now(), true
+	st.fatalStreak++
+	return st.fatalStreak
 }
 
 // ---- connection liveness (used by the workers and the TUI) ----
@@ -597,7 +605,8 @@ func (st *State) StartConnection() {
 	st.netPrevAt = time.Time{} // re-baseline throughput; latency rings start fresh
 	st.netRatesOK = false
 	st.pingRing = [3][]float64{}
-	st.errsOK = false // error counters re-baseline on the next sample
+	st.errsOK = false                                       // error counters re-baseline on the next sample
+	st.softvol, st.softvolOK, st.levelBadRuns = 0, false, 0 // a dead session's half-built desync streak is not this one's
 	st.deathCounted = false
 	st.attempts++
 }

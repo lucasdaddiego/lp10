@@ -19,8 +19,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"runtime/debug"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
@@ -37,10 +42,76 @@ import (
 // that reason; the configured host is the fallback.
 const discoverTimeout = 1 * time.Second
 
-const usage = "lp10: takes no arguments — run `lp10` for the live TUI"
+const usage = "lp10: takes no arguments — run `lp10` for the live TUI; `lp10 --version` prints the build"
+
+// versionString is what --version prints: the module version (a tag when
+// installed as a module, "(devel)" from a checkout), the commit and its time
+// from the VCS stamp, "(modified)" for a dirty tree, and the Go toolchain —
+// the build identity a firmware or OTA bug report needs.
+func versionString(bi *debug.BuildInfo) string {
+	if bi == nil {
+		return "lp10 (unknown build)"
+	}
+	v := bi.Main.Version
+	if v == "" {
+		v = "(devel)"
+	}
+	rev, at, dirty := "", "", false
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			at = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	out := "lp10 " + v
+	if rev != "" {
+		out += " " + rev[:min(12, len(rev))]
+	}
+	if at != "" {
+		out += " " + at
+	}
+	if dirty {
+		out += " (modified)"
+	}
+	if bi.GoVersion != "" {
+		out += " " + bi.GoVersion
+	}
+	return out
+}
 
 // finder is the injectable signature of discovery.FindLP10 / FindLP10LSSDP.
-type finder func(string, time.Duration) (discovery.Device, bool)
+type finder func(context.Context, string, time.Duration) (discovery.Device, bool)
+
+// signalContext is the discovery window's context: Ctrl-C or SIGTERM during
+// the startup search ends it at once — and the run, with the shell's code for
+// that signal — instead of after the window's timeout. finish stops listening
+// and reports that code (0 when nothing arrived).
+func signalContext() (ctx context.Context, finish func() int) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	var code atomic.Int32
+	go func() {
+		if s, ok := <-sigs; ok {
+			c := int32(130)
+			if s == syscall.SIGTERM {
+				c = 143
+			}
+			code.Store(c)
+			cancel()
+		}
+	}()
+	return ctx, func() int {
+		signal.Stop(sigs)
+		close(sigs)
+		cancel()
+		return int(code.Load())
+	}
+}
 
 // resolveDevice applies best-effort discovery to cfg, so a changed DHCP lease
 // never needs a config edit: find the LP10 on the LAN and use its current
@@ -50,7 +121,7 @@ type finder func(string, time.Duration) (discovery.Device, bool)
 // one more window. Pinning the host (LP10_HOST) or `discover = false` skips
 // both; the configured host is the fallback when nothing answers, so startup
 // never blocks on a missing device.
-func resolveDevice(cfg config.Config, find, fallback finder) config.Config {
+func resolveDevice(ctx context.Context, cfg config.Config, find, fallback finder) config.Config {
 	if !cfg.Discover || os.Getenv(config.HostEnv) != "" {
 		return cfg
 	}
@@ -62,9 +133,9 @@ func resolveDevice(cfg config.Config, find, fallback finder) config.Config {
 	if cfg.Name != config.DefaultName {
 		hint = cfg.Name
 	}
-	dev, ok := find(hint, discoverTimeout)
-	if !ok && fallback != nil {
-		dev, ok = fallback(hint, discoverTimeout)
+	dev, ok := find(ctx, hint, discoverTimeout)
+	if !ok && fallback != nil && ctx.Err() == nil {
+		dev, ok = fallback(ctx, hint, discoverTimeout)
 	}
 	if ok {
 		// Addr() can fall back to the raw SRV target when no A record arrived,
@@ -92,11 +163,24 @@ func main() {
 	}
 
 	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-version", "-V":
+			bi, _ := debug.ReadBuildInfo()
+			fmt.Println(versionString(bi))
+			return
+		case "--help", "-help", "-h":
+			fmt.Println(usage)
+			return
+		}
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 
-	cfg := resolveDevice(config.Load(), discovery.FindLP10, discovery.FindLP10LSSDP)
+	ctx, finish := signalContext()
+	cfg := resolveDevice(ctx, config.Load(), discovery.FindLP10, discovery.FindLP10LSSDP)
+	if code := finish(); code != 0 {
+		os.Exit(code) // interrupted during discovery: no TUI was ever up
+	}
 
 	// tui.Run handles SIGTERM/SIGHUP and Ctrl-C cooperatively and returns the
 	// exit code (0 clean, 130 interrupt, 143 signal) after running teardown and

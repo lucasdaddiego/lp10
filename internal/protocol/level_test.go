@@ -1,6 +1,9 @@
 package protocol
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // sysWith builds a minimal @@s line (the required prefix) with a softvol field.
 func sysRec(softvol string) Record {
@@ -50,5 +53,21 @@ func TestLevelDesyncTracker(t *testing.T) {
 	ApplyRecord(st2, sysRec("-5"))
 	if d := st2.DiagnosticView(st2.posAt); !d.SoftvolOK || d.Softvol != 0 {
 		t.Errorf("garbage samples must be ignored: %+v", d.Softvol)
+	}
+}
+
+// A reconnect starts the level check afresh: the dead session's half-built
+// desync streak (and its last sample) must not carry into the next one.
+func TestLevelCheckResetsOnReconnect(t *testing.T) {
+	st := NewState()
+	for range 2 {
+		ApplyRecord(st, sysRec("30")) // vol 75, softvol 30: two bad samples = desync
+	}
+	if d := st.DiagnosticView(time.Now()); !d.SoftvolOK || !d.LevelDesync {
+		t.Fatalf("setup: no softvol sample landed: %+v", d)
+	}
+	st.StartConnection()
+	if d := st.DiagnosticView(time.Now()); d.SoftvolOK || d.LevelDesync {
+		t.Errorf("after StartConnection: softvolOK=%v desync=%v, want both false", d.SoftvolOK, d.LevelDesync)
 	}
 }
