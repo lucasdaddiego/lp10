@@ -125,3 +125,32 @@ func TestCompactShortFrameKeepsTransportOverEQSummary(t *testing.T) {
 		t.Errorf("20 rows: both fit and both must show:\n%s", out)
 	}
 }
+
+// The source line sheds detail from the right before it ellipsises: the
+// minimum-size middle column keeps "● Spotify · audio/ogg" whole instead of
+// cutting the rate mid-figure, and a column too narrow for even the source
+// name is the one case still clipped.
+func TestFullSourceLineDropsDetailBeforeEllipsising(t *testing.T) {
+	m, st, _ := makeModel(t)
+	m.sty = newTheme()
+	s := st.Snap()
+	tr := *s.Track
+	tr.MIME, tr.SampleRate, tr.ChannelCount = "audio/ogg", 44100, 2
+	s.Track = &tr
+	full := clean(m.fullSourceLine(s, 80))
+	for _, want := range []string{"Spotify", "audio/ogg", "44.1 kHz", "2 ch"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("wide line %q lacks %q", full, want)
+		}
+	}
+	narrow := clean(m.fullSourceLine(s, 24))
+	if narrow != "● Spotify · audio/ogg" {
+		t.Errorf("24-col line = %q, want the codec kept whole and the rate dropped", narrow)
+	}
+	if got := clean(m.fullSourceLine(s, 10)); got != "● Spotify" {
+		t.Errorf("10-col line = %q, want the source alone", got)
+	}
+	if got := clean(m.fullSourceLine(s, 6)); !strings.HasSuffix(got, GL["ell"]) || DispW(got) > 6 {
+		t.Errorf("6-col line = %q, want a clip within the width", got)
+	}
+}

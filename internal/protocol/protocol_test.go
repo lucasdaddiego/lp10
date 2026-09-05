@@ -223,9 +223,6 @@ func TestPlayingCaptureIsATrack(t *testing.T) {
 	if tr.TotalTime != 211000 {
 		t.Errorf("TotalTime = %d", tr.TotalTime)
 	}
-	if !tr.Seek {
-		t.Error("Seek = false, want true")
-	}
 	if !strings.HasPrefix(tr.CoverArtURL, "https://") {
 		t.Errorf("CoverArtUrl = %q", tr.CoverArtURL)
 	}
@@ -648,9 +645,6 @@ func TestRealPlayingCaptureParses(t *testing.T) {
 	}
 	if tr.TotalTime != 341535 {
 		t.Errorf("TotalTime = %d", tr.TotalTime)
-	}
-	if !tr.Seek {
-		t.Error("Seek = false, want true")
 	}
 	if !strings.HasPrefix(tr.CoverArtURL, "https://i.scdn.co/") {
 		t.Errorf("CoverArtUrl = %q", tr.CoverArtURL)

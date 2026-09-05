@@ -90,9 +90,10 @@ var blockedNets = []*net.IPNet{
 	cidr("192.0.0.0/24"),  // IETF protocol assignments
 }
 
-// nat64Net is the NAT64/DNS64 well-known prefix; its last four bytes embed an
-// IPv4 address.
-var nat64Net = cidr("64:ff9b::/96")
+// nat64Nets are the NAT64/DNS64 prefixes whose last four bytes embed an IPv4
+// address: the well-known 64:ff9b::/96 and RFC 8215's local-use 64:ff9b:1::/48
+// (a site's own DNS64 synthesises under it for the same reason).
+var nat64Nets = []*net.IPNet{cidr("64:ff9b::/96"), cidr("64:ff9b:1::/48")}
 
 func cidr(s string) *net.IPNet {
 	_, n, err := net.ParseCIDR(s)
@@ -110,8 +111,11 @@ func cidr(s string) *net.IPNet {
 // would break art on a NAT64 network, while 64:ff9b::c0a8:101 must still count
 // as the 192.168.1.1 it reaches.
 func blockedIP(ip net.IP) bool {
-	if nat64Net.Contains(ip) {
-		ip = net.IP(ip.To16()[12:16])
+	for _, n := range nat64Nets {
+		if n.Contains(ip) {
+			ip = net.IP(ip.To16()[12:16])
+			break
+		}
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() || ip.IsUnspecified() {

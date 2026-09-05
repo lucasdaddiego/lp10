@@ -699,11 +699,20 @@ func (m *model) fullSourceLine(s protocol.Snapshot, w int) string {
 		return ""
 	}
 	ps := m.sty.pens()
+	segs := strings.Split(q, " · ")
 	if ch := t.ChannelCount; ch > 0 {
-		q += fmt.Sprintf(" · %d ch", ch)
+		segs = append(segs, fmt.Sprintf("%d ch", ch))
 	}
+	// Too narrow for the whole line: drop detail from the right — channels,
+	// then the rate, then the codec — before ellipsising, so the 24-column
+	// middle column at the minimum size reads "● Spotify · audio/ogg" rather
+	// than "● Spotify · audio/ogg · 44…".
+	for len(segs) > 1 && DispW("● "+strings.Join(segs, " · ")) > w {
+		segs = segs[:len(segs)-1]
+	}
+	q = strings.Join(segs, " · ")
 	plain := "● " + q
-	if DispW(plain) > w { // too narrow: a plain dim clip keeps the width contract
+	if DispW(plain) > w { // still too narrow: a plain dim clip keeps the width contract
 		return ps.dmr.render(Clip(plain, w))
 	}
 	bp := ps.brandPen(SourceName(t))

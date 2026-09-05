@@ -325,15 +325,16 @@ func TestCov_BlockedIP(t *testing.T) {
 		"198.19.7.7",  // benchmarking
 		"192.0.0.170", // IETF protocol assignments
 		"::1", "fe80::1", "fd00::1",
-		"64:ff9b::c0a8:101", // NAT64-mapped 192.168.1.1
-		"::ffff:10.0.0.5",   // IPv4-mapped private
+		"64:ff9b::c0a8:101",   // NAT64-mapped 192.168.1.1
+		"64:ff9b:1::c0a8:101", // the same under RFC 8215's local-use prefix
+		"::ffff:10.0.0.5",     // IPv4-mapped private
 	}
 	for _, h := range blocked {
 		if !blockedIP(net.ParseIP(h)) {
 			t.Errorf("blockedIP(%q) = false, want blocked", h)
 		}
 	}
-	public := []string{"8.8.8.8", "2606:4700::1111", "64:ff9b::808:808" /* NAT64-mapped 8.8.8.8 */}
+	public := []string{"8.8.8.8", "2606:4700::1111", "64:ff9b::808:808" /* NAT64-mapped 8.8.8.8 */, "64:ff9b:1::808:808"}
 	for _, h := range public {
 		if blockedIP(net.ParseIP(h)) {
 			t.Errorf("blockedIP(%q) = true, want public", h)

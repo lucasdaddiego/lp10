@@ -261,9 +261,9 @@ func TestLoadSnapshotPreservesLegacyJSONShape(t *testing.T) {
 		t.Fatal("legacy-shaped snapshot was rejected")
 	}
 	tr := got.Track
+	// the capability flags a legacy snapshot carries are no longer fields: ignored on decode
 	if tr.TrackName != "Legacy" || tr.PlayURL != "spotify:track:x" ||
-		tr.CurrentSource != 4 || tr.SampleRate != 44100 || tr.ChannelCount != 2 ||
-		!tr.Seek || !tr.Next || tr.Prev || !tr.Skip {
+		tr.CurrentSource != 4 || tr.SampleRate != 44100 || tr.ChannelCount != 2 {
 		t.Errorf("legacy track fields = %+v", tr)
 	}
 	if got.Pos != 1234 || got.Playing != 0 || got.Vol != 44 || got.EQ["BAS"] != 3 {

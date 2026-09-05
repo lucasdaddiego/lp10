@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -280,5 +281,40 @@ func TestStateOTARequest(t *testing.T) {
 	st.SetOTA(OTAInfo{At: time.Now(), Asked: "AR241CE_9243", Offered: "AR241CE_8530\x1b[31m", Err: "no\x07"})
 	if v := st.DiagnosticView(time.Now()).OTA; v == nil || v.Offered != "AR241CE_8530[31m" || v.Err != "no" {
 		t.Errorf("verdict not stored control-stripped: %+v", v)
+	}
+}
+
+// An @@c value outside the loop's vocabulary is dropped at the boundary (the
+// row reads unknown) instead of reaching the pane verbatim; the real words
+// still land.
+func TestConfInfoValuesAreVocabularyChecked(t *testing.T) {
+	st := NewState()
+	ApplyRecord(st, Record{"c": {
+		"tidal=off", "tidal.env=\x1b]0;pwned", "qobuz=maybe", "qobuz.env=on",
+		"spotify.eng=evil engine", "spotify.cfg=hifi", "spotify.sdk=3.203.239-g1d6bd565",
+		"usb=on", "telnet=1",
+	}})
+	cv := st.ConfView()
+	if cv == nil {
+		t.Fatal("no capability block")
+	}
+	if got := cv.Env("tidal"); got != "" {
+		t.Errorf("tidal.env = %q, want dropped", got)
+	}
+	if got := cv.Svc["qobuz"]; got != "" {
+		t.Errorf("qobuz = %q, want dropped", got)
+	}
+	if _, present := cv.Svc["spotify.eng"]; present {
+		t.Error("an engine value that is not a process name must be dropped")
+	}
+	if cv.Svc["spotify.cfg"] != "hifi" || cv.Svc["spotify.sdk"] != "3.203.239-g1d6bd565" || cv.Svc["usb"] != "on" || cv.Env("qobuz") != "on" {
+		t.Errorf("real values dropped: %+v", cv.Svc)
+	}
+	if _, present := cv.Svc["telnet"]; present {
+		t.Error("a listener state other than on/off must be dropped")
+	}
+	ApplyRecord(st, Record{"c": {"usb=on", "spotify.sdk=" + strings.Repeat("9", 41)}})
+	if cv := st.ConfView(); cv == nil || cv.Svc["spotify.sdk"] != "" {
+		t.Errorf("an over-long sdk string must be dropped: %+v", cv)
 	}
 }
