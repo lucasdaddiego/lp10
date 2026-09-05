@@ -1,6 +1,6 @@
 // Package e2e holds end-to-end tests that drive the built lp10 binary against
-// the fake transport. Port of the argv-contract and pty-smoke tests, plus
-// exit-code coverage for the signal/interrupt paths.
+// the fake transport: the argv contract, a pty smoke test, and exit-code
+// coverage for the signal/interrupt paths.
 package e2e
 
 import (

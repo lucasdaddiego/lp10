@@ -15,11 +15,11 @@ func TestAmbiguousGlyphsMeasureNarrowUnderCJK(t *testing.T) {
 	localeAmb = 2 // simulate a CJK locale
 	for _, r := range []rune{'●', '○', '·', '━', '─', '┃', '│', '█', '░', '▀', '…', '▁', '▇',
 		'╭', '╮', '╰', '╯', '┏', '┓', '┊'} { // cover-frame corners, idle-motif beam, mute column
-		if got := charW(r); got != 1 {
-			t.Errorf("charW(%q) = %d under amb=2, want 1 (must match lipgloss)", r, got)
+		if got := DispW(string(r)); got != 1 {
+			t.Errorf("DispW(%q) = %d under amb=2, want 1 (must match lipgloss)", r, got)
 		}
 	}
-	if charW('漢') != 2 {
+	if DispW("漢") != 2 {
 		t.Error("a genuinely wide glyph must still be width 2")
 	}
 	// the two width oracles must agree on a real UI line mixing these glyphs

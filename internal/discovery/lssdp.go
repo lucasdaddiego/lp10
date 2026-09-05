@@ -17,8 +17,8 @@ import (
 	"time"
 )
 
-// LSSDPPort is the device's LSSDP responder port (UDP).
-const LSSDPPort = 1800
+// lssdpPort is the device's LSSDP responder port (UDP).
+const lssdpPort = 1800
 
 const lssdpMulticast = "239.255.255.250:1800"
 
@@ -30,11 +30,10 @@ const msearch = "M-SEARCH * HTTP/1.1\r\nHOST:239.255.255.250:1800\r\nMAN:\"ssdp:
 // must control-strip (protocol.Printable) first.
 type LSSDPInfo struct {
 	Name    string // DeviceName
+	Model   string // CAST_MODEL, e.g. LP10 — the discovery fallback pins on it
 	FW      string // FWVERSION, e.g. AR241CE_8530.23.2
 	State   string // State, e.g. S
 	NetMode string // NETMODE, e.g. ETH0 / WLAN0
-	Sources string // SOURCE_LIST, e.g. LS8::01000030 (carries the platform)
-	USN     string // USN (the wlan MAC on this firmware)
 	IP      net.IP // where the reply came from
 }
 
@@ -65,16 +64,14 @@ func parseLSSDP(b []byte) (LSSDPInfo, bool) {
 		switch strings.ToUpper(strings.TrimSpace(k)) {
 		case "DEVICENAME":
 			info.Name = v
+		case "CAST_MODEL":
+			info.Model = v
 		case "FWVERSION":
 			info.FW = v
 		case "STATE":
 			info.State = v
 		case "NETMODE":
 			info.NetMode = v
-		case "SOURCE_LIST":
-			info.Sources = v
-		case "USN":
-			info.USN = v
 		default:
 			continue
 		}
@@ -94,7 +91,7 @@ func ProbeLSSDP(ctx context.Context, host string, timeout time.Duration) (LSSDPI
 	defer cancel()
 	h, port, err := net.SplitHostPort(host)
 	if err != nil {
-		h, port = host, strconv.Itoa(LSSDPPort)
+		h, port = host, strconv.Itoa(lssdpPort)
 	}
 	raddr, ok := resolveUDP4(ctx, h, port)
 	if !ok {
@@ -148,10 +145,11 @@ func resolveUDP4(ctx context.Context, host, port string) (*net.UDPAddr, bool) {
 
 // FindLP10LSSDP is the mDNS fallback: a multicast M-SEARCH out every
 // interface (like FindLP10), collecting responders until timeout, returning
-// the one whose DeviceName matches nameHint, else the first Arylic-looking
-// responder (an AR… firmware version or the LS8 platform in SOURCE_LIST). A
-// hinted match returns early; otherwise the window runs out so a slower
-// named device isn't beaten by a faster wrong one.
+// the LP10 (CAST_MODEL — other Arylic units share the firmware prefix and the
+// platform, and ssh-ing into an amp with the LP10's password is the one thing
+// this must never do) whose DeviceName best matches nameHint, else the first
+// LP10. An exact hinted match returns early; otherwise the window runs out so
+// a slower named device isn't beaten by a faster wrong one.
 func FindLP10LSSDP(nameHint string, timeout time.Duration) (Device, bool) {
 	raddr, err := net.ResolveUDPAddr("udp4", lssdpMulticast)
 	if err != nil {
@@ -184,7 +182,7 @@ func FindLP10LSSDP(nameHint string, timeout time.Duration) (Device, bool) {
 				continue
 			}
 			found = append(found, info)
-			if nameHint != "" && lssdpHintMatches(info, nameHint) {
+			if nameHint != "" && isLP10(info) && hintExact(info.Name, nameHint) {
 				close(done)
 				return lssdpDevice(info), true
 			}
@@ -237,29 +235,27 @@ func spawnReadersFrom(conns []*net.UDPConn, packets chan<- []byte, done <-chan s
 	}
 }
 
-func lssdpHintMatches(info LSSDPInfo, hint string) bool {
-	return strings.Contains(strings.ToLower(info.Name), strings.ToLower(hint))
-}
-
-// isArylic reports whether a responder looks like this device family.
-func isArylic(info LSSDPInfo) bool {
-	return strings.HasPrefix(info.FW, "AR") || strings.Contains(info.Sources, "LS8")
+// isLP10 reports whether a responder is the LP10 itself, by its declared model.
+func isLP10(info LSSDPInfo) bool {
+	return strings.EqualFold(strings.TrimSpace(info.Model), "LP10")
 }
 
 func pickLSSDP(found []LSSDPInfo, hint string) (Device, bool) {
-	if hint != "" {
-		for _, f := range found {
-			if lssdpHintMatches(f, hint) {
-				return lssdpDevice(f), true
-			}
-		}
-	}
+	var lp []LSSDPInfo
 	for _, f := range found {
-		if isArylic(f) {
-			return lssdpDevice(f), true
+		if isLP10(f) {
+			lp = append(lp, f)
 		}
 	}
-	return Device{}, false
+	if len(lp) == 0 {
+		return Device{}, false
+	}
+	if hint != "" {
+		if i := bestHinted(len(lp), func(i int) string { return lp[i].Name }, hint); i >= 0 {
+			return lssdpDevice(lp[i]), true
+		}
+	}
+	return lssdpDevice(lp[0]), true
 }
 
 func lssdpDevice(info LSSDPInfo) Device {

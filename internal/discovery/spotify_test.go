@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +91,7 @@ func TestParseSpotifyZC(t *testing.T) {
 	const live = `{"version":"2.9.0","libraryVersion":"3.203.239-g1d6bd565","deviceType":"SPEAKER","modelDisplayName":"LP10","brandDisplayName":"Arylic","productID":1,"status":101,"statusString":"OK","spotifyError":0,"activeUser":"","remoteName":"Living","deviceID":"5efc","groupStatus":"NONE"}`
 	info, ok := parseSpotifyZC([]byte(live))
 	if !ok || info.Status != 101 || info.StatusString != "OK" || info.LibraryVersion != "3.203.239-g1d6bd565" ||
-		info.Version != "2.9.0" || info.RemoteName != "Living" || info.DeviceType != "SPEAKER" || info.ActiveUser != "" {
+		info.Version != "2.9.0" || info.RemoteName != "Living" || info.ActiveUser != "" {
 		t.Errorf("live answer parsed as %+v ok=%v", info, ok)
 	}
 	// control characters are stripped and fields capped; an active user survives
@@ -125,29 +126,29 @@ func TestProbeSpotifyZC(t *testing.T) {
 	addr := strings.TrimPrefix(srv.URL, "http://")
 
 	body = `{"status":101,"statusString":"OK","libraryVersion":"3.203.239-g1d6bd565","activeUser":"someone"}`
-	info, ok := ProbeSpotifyZC(addr, 2*time.Second)
+	info, ok := ProbeSpotifyZC(context.Background(), addr, 2*time.Second)
 	if !ok || info.ActiveUser != "someone" || info.Status != 101 {
 		t.Fatalf("probe = %+v ok=%v", info, ok)
 	}
 	code = http.StatusServiceUnavailable
-	if _, ok := ProbeSpotifyZC(addr, 2*time.Second); ok {
+	if _, ok := ProbeSpotifyZC(context.Background(), addr, 2*time.Second); ok {
 		t.Error("a non-200 answer must not count")
 	}
 	code, body = http.StatusOK, "not json"
-	if _, ok := ProbeSpotifyZC(addr, 2*time.Second); ok {
+	if _, ok := ProbeSpotifyZC(context.Background(), addr, 2*time.Second); ok {
 		t.Error("a non-JSON answer must not count")
 	}
 	// an oversized body is cut at the cap and then fails to parse rather than
 	// being buffered whole
 	body = `{"status":101,"remoteName":"` + strings.Repeat("y", maxZCBody) + `"}`
-	if _, ok := ProbeSpotifyZC(addr, 2*time.Second); ok {
+	if _, ok := ProbeSpotifyZC(context.Background(), addr, 2*time.Second); ok {
 		t.Error("an oversized body must be refused")
 	}
 	srv.Close()
-	if _, ok := ProbeSpotifyZC(addr, 500*time.Millisecond); ok {
+	if _, ok := ProbeSpotifyZC(context.Background(), addr, 500*time.Millisecond); ok {
 		t.Error("a dead endpoint must not count")
 	}
-	if _, ok := ProbeSpotifyZC("bad host:port:x", 500*time.Millisecond); ok {
+	if _, ok := ProbeSpotifyZC(context.Background(), "bad host:port:x", 500*time.Millisecond); ok {
 		t.Error("an unparseable address must not count")
 	}
 }
@@ -158,7 +159,7 @@ func TestProbeSpotifyZC(t *testing.T) {
 func TestFindSpotifyZCViaResponder(t *testing.T) {
 	listeners := covResponders()
 	if len(listeners) == 0 {
-		if _, ok := FindSpotifyZC("nowhere.invalid", nil, 150*time.Millisecond); ok {
+		if _, ok := FindSpotifyZC(context.Background(), "nowhere.invalid", nil, 150*time.Millisecond); ok {
 			t.Error("found an endpoint with no advertiser")
 		}
 		t.Skip("no multicast-capable interface available; responder path skipped")
@@ -186,7 +187,7 @@ func TestFindSpotifyZCViaResponder(t *testing.T) {
 			}
 		}(lc)
 	}
-	e, ok := FindSpotifyZC("CovTarget.local", net.ParseIP("192.168.213.89").To4(), 3*time.Second)
+	e, ok := FindSpotifyZC(context.Background(), "CovTarget.local", net.ParseIP("192.168.213.89").To4(), 3*time.Second)
 	if !ok {
 		t.Skip("no reply made it back (degraded multicast); the path is not exercisable here")
 	}
@@ -194,7 +195,41 @@ func TestFindSpotifyZCViaResponder(t *testing.T) {
 		t.Errorf("found %+v, want CovTarget at 192.168.213.89:9096", e)
 	}
 	// Two strangers and a host nothing advertises: the window runs out empty.
-	if e, ok := FindSpotifyZC("nobody.local", net.ParseIP("192.168.213.90").To4(), 400*time.Millisecond); ok && e.Name == "CovWrong" {
+	if e, ok := FindSpotifyZC(context.Background(), "nobody.local", net.ParseIP("192.168.213.90").To4(), 400*time.Millisecond); ok && e.Name == "CovWrong" {
 		t.Errorf("guessed between strangers: %+v", e)
+	}
+}
+
+// The ZeroConf GET is a LAN request: an HTTP_PROXY in the environment must not
+// capture it, a redirect must not be followed, and the runtime's ctx must cut
+// it short.
+func TestProbeSpotifyZCIgnoresProxyRedirectsAndHonoursContext(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if r.URL.Path == "/elsewhere" {
+			_, _ = w.Write([]byte(`{"status":101,"statusString":"OK"}`))
+			return
+		}
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("http_proxy", "http://127.0.0.1:1")
+	if _, ok := ProbeSpotifyZC(context.Background(), addr, 2*time.Second); ok || hits != 1 {
+		t.Errorf("redirect followed or proxy honoured: ok=%v hits=%d", ok, hits)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, ok := ProbeSpotifyZC(ctx, addr, 2*time.Second); ok {
+		t.Error("a cancelled context must not produce an answer")
+	}
+	start := time.Now()
+	if _, ok := FindSpotifyZC(ctx, "nowhere.invalid", nil, 10*time.Second); ok {
+		t.Error("a cancelled window must not produce an endpoint")
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("cancel took %v to end the window", el)
 	}
 }

@@ -58,10 +58,6 @@ func otaURL() (string, bool) {
 // on a check that silently went nowhere.
 func otaCheck(ctx context.Context, url, build string) protocol.OTAInfo {
 	info := protocol.OTAInfo{At: time.Now(), Asked: build}
-	if build == "" {
-		info.Err = "firmware not read yet"
-		return info
-	}
 	if !reBuild.MatchString(build) {
 		info.Err = "unrecognised firmware string"
 		return info

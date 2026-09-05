@@ -58,7 +58,7 @@ func TestLSSDPWorkerRecordsAnswerAndSilence(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	d := st.DiagnosticView(time.Now())
-	if d.LSSDP == nil || d.LSSDP.Name != "Living[31m" || d.LSSDP.FW != "AR241CE_8530.23.2" || d.LSSDP.State != "S" || d.LSSDP.NetMode != "ETH0" {
+	if d.LSSDP == nil || d.LSSDP.FW != "AR241CE_8530.23.2" || d.LSSDP.State != "S" || d.LSSDP.NetMode != "ETH0" {
 		t.Fatalf("LSSDP info = %+v, want the canned (control-stripped) answer", d.LSSDP)
 	}
 	if d.LSSDPOKAt.IsZero() || d.LSSDPProbeAt.IsZero() {

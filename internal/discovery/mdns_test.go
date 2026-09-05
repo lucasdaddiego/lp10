@@ -297,3 +297,26 @@ func TestBuildQueryShape(t *testing.T) {
 		t.Errorf("qclass = %#x, want QU|IN", be16(q, len(q)-2))
 	}
 }
+
+// A name longer than RFC 1035's 255 bytes is rejected: overlapping label
+// framings reached through pointers used to expand one record name to tens
+// of KB, and a hostile reply cost hundreds of MB per discovery window.
+func TestParseNameCapsTotalLength(t *testing.T) {
+	label := func(n int) []byte { return append([]byte{byte(n)}, []byte(strings.Repeat("a", n))...) }
+	var long []byte
+	for range 5 {
+		long = append(long, label(63)...)
+	}
+	long = append(long, 0)
+	if _, _, ok := parseName(long, 0); ok {
+		t.Error("a 320-byte name was accepted")
+	}
+	var fits []byte
+	for range 3 {
+		fits = append(fits, label(63)...)
+	}
+	fits = append(append(fits, label(60)...), 0)
+	if name, _, ok := parseName(fits, 0); !ok || len(name) != 63*3+3+60 {
+		t.Errorf("a 252-byte name was rejected: ok=%v len=%d", ok, len(name))
+	}
+}

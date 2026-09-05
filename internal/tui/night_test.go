@@ -25,11 +25,14 @@ func TestNightKeyTogglesAndSends(t *testing.T) {
 	if got := collect(); len(got) != 1 || got[0].Mid != 91 || got[0].Data != "0" {
 		t.Errorf("sent = %+v, want [91 0]", got)
 	}
-	// device says on (e.g. set by another session): next press sends off
-	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=on"}})
-	m.pane = paneEQ // global key: works from the EQ pane too
-	m.key(kr('d'))
-	if got := collect(); len(got) != 1 || got[0].Data != "0" {
+	// device says on (e.g. set by another session, with no local set in
+	// flight — a read-back inside a local set's hold is held off): next
+	// press sends off
+	m2, st2, collect2 := makeModel(t)
+	protocol.ApplyRecord(st2, protocol.Record{"n": {"  : values=on"}})
+	m2.pane = paneEQ // global key: works from the EQ pane too
+	m2.key(kr('d'))
+	if got := collect2(); len(got) != 1 || got[0].Data != "0" {
 		t.Errorf("sent = %+v, want [91 0]", got)
 	}
 }

@@ -315,7 +315,7 @@ func TestCov_translateEveryType(t *testing.T) {
 		{tea.Key{Code: tea.KeyUp}, kUp},
 		{tea.Key{Code: tea.KeyDown}, kDown},
 		{tea.Key{Code: tea.KeyTab}, kTab},
-		{tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}, kShiftTab}, // v2: shift+tab is KeyTab + ModShift
+		{tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}, kTab}, // v2: shift+tab is KeyTab + ModShift; same toggle
 		{tea.Key{Code: tea.KeySpace, Text: " "}, kRune},
 		{tea.Key{Code: 'a', Mod: tea.ModCtrl}, kOther}, // modified rune: unmapped
 	}
@@ -460,9 +460,9 @@ func TestCov_KeyPanes(t *testing.T) {
 		t.Error("enter in EQ pane should toggle the focused band")
 	}
 
-	// shift+tab also switches panes
+	// shift+tab also switches panes (it folds into kTab at translate)
 	p := m.pane
-	m.key(ke(kShiftTab))
+	m.key(translate(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	if m.pane == p {
 		t.Error("shift+tab should switch panes")
 	}
@@ -1418,10 +1418,11 @@ func TestCov_diagCardsDeviceError(t *testing.T) {
 func TestCov_latencyRowWideFields(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	m.sty = newTheme()
-	// a long name and wide numeric fields make the inner pad/rpad no-ops (return s)
+	// wide numeric fields make the inner rpad a no-op (return s); a long name
+	// is clipped to its column so the figures stay aligned with the other rows
 	ps := protocol.PingStat{Avg: 12345, Jitter: 6789, Peak: 99999, OK: true}
 	row := stripANSI(m.latencyRow("verylongname", ps))
-	if !strings.Contains(row, "verylongname") || !strings.Contains(row, "12345") {
+	if !strings.Contains(row, Clip("verylongname", latNameW)) || strings.Contains(row, "verylongname") || !strings.Contains(row, "12345") {
 		t.Errorf("wide latency row = %q", row)
 	}
 }

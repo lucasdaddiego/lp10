@@ -254,14 +254,15 @@ func TestStateOTARequest(t *testing.T) {
 		t.Errorf("nothing requested yet: %q %v", b, pending)
 	}
 	st.RequestOTA()
-	if !st.OTAPending() || !st.DiagnosticView(time.Now()).OTAPending {
+	if !st.DiagnosticView(time.Now()).OTAPending {
 		t.Error("request not visible as pending")
 	}
-	if b, pending := st.TakeOTARequest(); !pending || b != "" {
-		t.Errorf("no firmware known: %q %v", b, pending)
+	// no firmware known yet: the request is held, not handed over as a failure
+	if b, pending := st.TakeOTARequest(); pending || b != "" {
+		t.Errorf("no firmware known: %q %v, want the request held", b, pending)
 	}
-	if st.OTAPending() {
-		t.Error("taking the request must clear it")
+	if !st.DiagnosticView(time.Now()).OTAPending {
+		t.Error("a held request must stay pending (the overlay keeps saying checking…)")
 	}
 	st.SetLSSDP(&LSSDPInfo{FW: "AR241CE_8530.23.2"})
 	st.RequestOTA()

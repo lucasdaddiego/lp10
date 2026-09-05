@@ -130,7 +130,7 @@ func (m *model) buildArt(img image.Image, w, h, imgID int, mode artRender) []str
 
 // noteMotif is the small beamed-pair glyph drawn in the idle cover slot — two
 // stems under a beam over two note heads, so an empty box reads as "music,
-// paused" rather than abandoned. Plain box/▪ glyphs (all width-1 to charW).
+// paused" rather than abandoned. Plain box/▪ glyphs (all width-1 to DispW).
 var noteMotif = []string{"┏━━━┓", "┃   ┃", "●   ●"}
 
 // refreshAmbient recomputes the per-album tint when the cover changes. It clears

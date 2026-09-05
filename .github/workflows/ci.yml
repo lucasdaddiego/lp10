@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     # lp10 ships for macOS and Linux. The OS password-store integration is the
@@ -20,6 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -38,11 +43,11 @@ jobs:
         # go fix -diff prints a patch and exits non-zero when the tree isn't at the
         # toolchain modernizer's fixpoint; run `go fix ./...` locally to clear it.
         run: go fix -diff ./...
+      # Both legs: the darwin-only cgo files (the media-key tap, the Keychain
+      # lookup) are only ever compiled — and so only ever analysed — on macOS.
       - name: staticcheck
-        if: matrix.os == 'ubuntu-latest'
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
       - name: vulnerability scan
-        if: matrix.os == 'ubuntu-latest'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
       - name: test
         run: go test -race ./...

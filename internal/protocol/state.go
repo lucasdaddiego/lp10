@@ -42,7 +42,7 @@ type State struct {
 	vol      int
 	volHold  time.Time
 	playHold time.Time
-	premute  int // 0 == none (Python None)
+	premute  int // 0 == none
 
 	errMsg string
 	errAt  time.Time
@@ -115,6 +115,7 @@ type State struct {
 	// distinguish "off" from "never reported".
 	night, nightKnown         bool
 	nightOrig, nightOrigKnown bool
+	nightHold                 time.Time // echo-suppression deadline after SetNightLocal
 
 	// album art: the decoded cover and the CoverArtUrl it was loaded for, set
 	// by the art worker. Snap exposes the image only while artURL still matches
@@ -125,8 +126,8 @@ type State struct {
 	artDomOK bool       // false for a greyscale cover (keep the theme default)
 }
 
-// NewState returns an initialized State, mirroring the Python constructor
-// defaults (playing starts at 2 = "not playing", posAt = now).
+// NewState returns an initialized State (playing starts at 2 = "not playing",
+// posAt = now).
 func NewState() *State {
 	return &State{
 		playing: 2,
@@ -139,16 +140,15 @@ func NewState() *State {
 // LSSDPInfo is the device's UDP:1800 self-description (see discovery.ProbeLSSDP);
 // the strings are control-stripped on the way in.
 type LSSDPInfo struct {
-	Name, FW, State, NetMode string
+	FW, State, NetMode string
 }
 
 // SpotifyZC is the Spotify engine's ZeroConf getInfo answer (see
-// discovery.ProbeSpotifyZC): whether it is up, its eSDK build, who is signed
-// in. Strings are control-stripped on the way in.
+// discovery.ProbeSpotifyZC): whether it is up and who is signed in. Strings
+// are control-stripped on the way in. (The answer also carries the eSDK build
+// and the advertised name; the @@s stream and LSSDP already show those.)
 type SpotifyZC struct {
-	Status                     int
-	StatusString, ActiveUser   string
-	LibraryVersion, RemoteName string
+	StatusString, ActiveUser string
 }
 
 // OTAInfo is the vendor manifest's verdict on the device's firmware, as last
@@ -285,8 +285,7 @@ func (st *State) SetLSSDP(info *LSSDPInfo) {
 		return
 	}
 	st.lssdp = &LSSDPInfo{
-		Name: printable(info.Name), FW: printable(info.FW),
-		State: printable(info.State), NetMode: printable(info.NetMode),
+		FW: printable(info.FW), State: printable(info.State), NetMode: printable(info.NetMode),
 	}
 	st.lssdpOKAt = now
 }
@@ -304,11 +303,7 @@ func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
 		st.zc = nil
 		return
 	}
-	st.zc = &SpotifyZC{
-		Status: info.Status, StatusString: printable(info.StatusString),
-		ActiveUser: printable(info.ActiveUser), LibraryVersion: printable(info.LibraryVersion),
-		RemoteName: printable(info.RemoteName),
-	}
+	st.zc = &SpotifyZC{StatusString: printable(info.StatusString), ActiveUser: printable(info.ActiveUser)}
 	st.zcOKAt = now
 }
 
@@ -323,28 +318,26 @@ func (st *State) RequestOTA() {
 
 // TakeOTARequest hands a pending request to the worker (clearing it), with the
 // firmware build to ask about: the reg-5 build from the ssh stream, else the
-// LSSDP answer's — "" when neither has arrived yet.
+// LSSDP answer's. Before either has arrived the request is NOT handed over —
+// the worker polls again, and the overlay keeps saying "checking…" until a
+// build lands (an overlay opened in the first seconds of a run used to get a
+// "check failed · firmware not read yet" verdict that nothing ever retried).
 func (st *State) TakeOTARequest() (build string, pending bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if !st.otaWant {
 		return "", false
 	}
+	switch {
+	case st.sysinfo != nil && st.sysinfo.FW != "":
+		build = firmwareBuild(st.sysinfo.FW)
+	case st.lssdp != nil && st.lssdp.FW != "":
+		build = firmwareBuild(st.lssdp.FW)
+	default:
+		return "", false
+	}
 	st.otaWant = false
-	if st.sysinfo != nil && st.sysinfo.FW != "" {
-		return firmwareBuild(st.sysinfo.FW), true
-	}
-	if st.lssdp != nil && st.lssdp.FW != "" {
-		return firmwareBuild(st.lssdp.FW), true
-	}
-	return "", true
-}
-
-// OTAPending reports a request the worker has not answered yet.
-func (st *State) OTAPending() bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.otaWant
+	return build, true
 }
 
 // SetOTA records the worker's verdict (strings control-stripped).
@@ -367,11 +360,13 @@ func firmwareBuild(fw string) string {
 // ---- night mode (multi-band DRC) ----
 
 // SetNightLocal records the state lp10 just asked for, so the header flips at
-// once; the device's @@n readback that follows the set confirms or corrects it.
+// once, and arms the echo hold; the device's @@n readback that follows the set
+// confirms or corrects it once the hold is over.
 func (st *State) SetNightLocal(on bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.night, st.nightKnown = on, true
+	st.nightHold = time.Now().Add(NightHoldDuration)
 }
 
 // NightRestore reports the value quit should put back — the first readback of
@@ -643,13 +638,24 @@ func (st *State) LivenessView() (lastRx, lastData time.Time, got bool) {
 // young-spawn grace is withheld while a dataless-death streak is running:
 // during an outage every respawn is young, and the grace would keep swallowing
 // commands into a doomed stdin pipe with no "command not delivered" note.
-func (st *State) WriterLive(now, spawned time.Time, liveTimeout time.Duration) bool {
+// grace reports that the verdict rests on that young-spawn grace alone (no
+// data yet): such a write rides a pipe into an ssh that may never connect, so
+// the caller remembers it and reports it lost if the session dies dataless.
+func (st *State) WriterLive(now, spawned time.Time, liveTimeout time.Duration) (live, grace bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if !st.lastData.IsZero() && now.Sub(st.lastData) <= liveTimeout {
-		return true
+		return true, false
 	}
-	return st.datalessDeaths == 0 && now.Sub(spawned) <= liveTimeout
+	live = st.datalessDeaths == 0 && now.Sub(spawned) <= liveTimeout
+	return live, live
+}
+
+// DataSince reports whether a data record has arrived after t.
+func (st *State) DataSince(t time.Time) bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return !st.lastData.IsZero() && st.lastData.After(t)
 }
 
 // ---- diagnostics views ----
@@ -698,13 +704,13 @@ const levelTolerance = 1
 // at vol−1 (floored at 0), so anything further off than levelTolerance is a
 // bad run, and two bad runs in a row (≈6 s at the sample cadence) flag the
 // desync — one sample alone could straddle a volume change.
-func (st *State) updateLevel(si *SysInfo) {
+func (st *State) updateLevel(si *SysInfo, vol int) {
 	v, err := strconv.Atoi(si.Softvol)
 	if err != nil || v < 0 {
 		return
 	}
 	st.softvol, st.softvolOK = v, true
-	want := max(st.vol-1, 0)
+	want := max(vol-1, 0)
 	if d := v - want; d > levelTolerance || d < -levelTolerance {
 		st.levelBadRuns++
 	} else {

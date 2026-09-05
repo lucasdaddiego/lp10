@@ -1,5 +1,5 @@
 // Command fakessh is the fake SSH transport for integration tests, substituted
-// for ssh via $LP10_SSH. Port of tests/fake_lp10.py.
+// for ssh via $LP10_SSH.
 //
 // It speaks the v2 wire grammar on stdout, swallows ssh-style argv, and selects
 // behavior from $LP10_FAKE_SCENARIO:

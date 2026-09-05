@@ -10,6 +10,8 @@ package tui
 import (
 	"strconv"
 	"time"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // sleepPresets are the minutes 's' cycles through, in order; one more press
@@ -69,8 +71,16 @@ func (m *model) bedtimeCycle(now time.Time) {
 // source playing without @@B still goes quiet. One-shot by construction. No
 // note is posted: the seek row's amber "Paused" and the countdown leaving the
 // header say it all, and State's note slot renders as the red error line.
-func (m *model) sleepFire(now time.Time) {
+//
+// With the ssh link down at the deadline the timer stays armed and fires on
+// reconnect: a PAUSE queued into a dead link expires unheard ("command not
+// delivered") while the room plays on all night, and a bedtime arming would
+// have put its night-mode restore through the same dead pipe.
+func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 	if m.sleepAt.IsZero() || now.Before(m.sleepAt) {
+		return
+	}
+	if !s.Connected {
 		return
 	}
 	if m.st.PauseOptimistic() {

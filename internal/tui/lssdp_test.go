@@ -20,7 +20,7 @@ func TestConnectingCopyExplainsViaLSSDP(t *testing.T) {
 	if out := join(); !strings.Contains(out, "not answering on the LAN") {
 		t.Errorf("after a silent probe: %q", out)
 	}
-	st.SetLSSDP(&protocol.LSSDPInfo{Name: "Living", State: "S", NetMode: "ETH0"})
+	st.SetLSSDP(&protocol.LSSDPInfo{State: "S", NetMode: "ETH0"})
 	if out := join(); !strings.Contains(out, "device is up on the LAN") {
 		t.Errorf("after an answer: %q", out)
 	}
@@ -40,7 +40,7 @@ func TestDiagLSSDPRow(t *testing.T) {
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "lssdp") {
 		t.Fatal("no lssdp row before a probe")
 	}
-	st.SetLSSDP(&protocol.LSSDPInfo{Name: "Living", FW: "AR241CE_8530.23.2", State: "S", NetMode: "ETH0"})
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2", State: "S", NetMode: "ETH0"})
 	out := stripANSI(m.viewContent())
 	if !strings.Contains(out, "lssdp") || !strings.Contains(out, "answered") || !strings.Contains(out, "eth0") {
 		t.Errorf("answered row missing:\n%s", out)
@@ -77,7 +77,7 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "spotify ") && strings.Contains(out, "probed") {
 		t.Fatal("no zeroconf row before a probe")
 	}
-	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 101, StatusString: "OK", LibraryVersion: "3.203.239-g1d6bd565", ActiveUser: "lucas"}, 9096)
+	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK", ActiveUser: "lucas"}, 9096)
 	out := stripANSI(m.viewContent())
 	for _, want := range []string{"answered", ":9096", "signed in as lucas"} {
 		if !strings.Contains(out, want) {
@@ -87,12 +87,12 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 	// An empty activeUser is not "nobody": the Pro engine leaves it empty while
 	// playing, so the row says nothing about users rather than asserting an
 	// absence — and never carries the eSDK build, which the services card has.
-	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 101, StatusString: "OK", LibraryVersion: "3.211.130-g110e3e03"}, 9096)
+	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK"}, 9096)
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "signed in") || strings.Contains(out, "3.211") ||
 		!strings.Contains(out, "answered") {
 		t.Errorf("no-user row wrong:\n%s", out)
 	}
-	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 102, StatusString: "ERROR-SPOTIFY"}, 9096)
+	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "ERROR-SPOTIFY"}, 9096)
 	if out := stripANSI(m.viewContent()); !strings.Contains(out, "error-spotify") {
 		t.Errorf("status row missing:\n%s", out)
 	}
@@ -113,7 +113,7 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 	m.diag = false
 	m.rows, m.cols = 44, 120
 	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=newspotifyhifi", "spotify.cfg=hifi"}})
-	st.SetSpotifyZC(&protocol.SpotifyZC{Status: 101, ActiveUser: "lucas"}, 9096)
+	st.SetSpotifyZC(&protocol.SpotifyZC{ActiveUser: "lucas"}, 9096)
 	pane := stripANSI(strings.Join(m.renderServices(time.Now(), 114), "\n"))
 	if !strings.Contains(pane, "zeroconf") || !strings.Contains(pane, "signed in as lucas") {
 		t.Errorf("services pane lacks the zeroconf line:\n%s", pane)
@@ -126,11 +126,11 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
 	m.rows, m.cols = 40, 160
-	if st.OTAPending() {
+	if st.DiagnosticView(time.Now()).OTAPending {
 		t.Fatal("pending before the overlay opened")
 	}
 	m.key(keyEvent{kind: kRune, r: '?'})
-	if !m.diag || !st.OTAPending() {
+	if !m.diag || !st.DiagnosticView(time.Now()).OTAPending {
 		t.Fatal("? did not open the overlay and request a check")
 	}
 	if out := stripANSI(m.viewContent()); !strings.Contains(out, "checking…") {
@@ -169,5 +169,16 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	// never asked: no row at all
 	if f := otaFact(protocol.DiagnosticSnapshot{}, now); f != "" {
 		t.Errorf("unasked fact = %q", f)
+	}
+}
+
+// At mini size the diagnostics overlay cannot be drawn, so ? must not pretend
+// to open it — and must not send the vendor a firmware query for nothing.
+func TestDiagAtMiniSizeIsInert(t *testing.T) {
+	m, st, _ := makeModel(t)
+	m.rows, m.cols = MiniRows-1, 40
+	m.key(keyEvent{kind: kRune, r: '?'})
+	if m.diag || st.DiagnosticView(time.Now()).OTAPending {
+		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.diag, st.DiagnosticView(time.Now()).OTAPending)
 	}
 }

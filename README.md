@@ -230,12 +230,14 @@ the arrow keys.
 | `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
 | `c` | services pane — what each streaming service is really doing, and switch it |
 | `l` | device log — the tail of the box's syslog, or (`s`) of the vendor app's own log |
+| `↑` / `↓` · `←` / `→` | log pane: scroll by line · by page |
 | `?` | diagnostics overlay (see below) — also asks the vendor whether the firmware is current |
-| `q` | quit |
+| `q` / `Q` | quit |
 
-Inside the services, log or diagnostics overlay, `esc` backs out and the other
-overlay letters switch straight across — toggling a service and then reading the
-log for what the device made of it is one movement, not two.
+Inside the services or log overlay, `esc` backs out and the other overlay
+letters switch straight across — toggling a service and then reading the log
+for what the device made of it is one movement, not two. The diagnostics
+overlay is a read-out: any key closes it.
 
 > On Spotify, `p` (previous) first restarts the current track — that's the
 > device's own MID-40 `PREV` behaviour, not lp10's; press it twice to actually
@@ -434,7 +436,7 @@ password auth.
 
 ```toml
 host      = "lp10.local"    # fallback IP / mDNS name when discovery is off or finds nothing
-user      = "root"
+user      = "root"          # the ssh login only: the stored password is always the account-root secret
 name      = "LP10"          # UI label; discovery refines it to "LP10 · <device name>" (also the disambiguation hint)
 vol_step  = 2               # volume change per keypress (1–100)
 ping_host = "spotify.com"   # diagnostics: the device's internet-latency target
@@ -481,12 +483,37 @@ startup never blocks on a missing device. Set `discover = false` to pin `host`
 
 `LP10_HOST` overrides `host` for a single run and skips discovery. Persistent state (the pre-mute
 level and the now-playing/EQ snapshot used for instant first paint) lives under
-`~/.local/state/lp10/`.
+`~/.local/state/lp10/`, in files keyed on the configured `host` (so a new DHCP
+lease found by discovery keeps them).
+
+### Environment overrides
+
+Beyond `LP10_HOST`, everything else is a test / development hook — set-but-empty
+disables the probe it names:
+
+| Variable | Effect |
+|----------|--------|
+| `LP10_STATE_DIR` | state directory instead of `~/.local/state/lp10/` |
+| `LP10_SSH` | the ssh binary to run (the suite points it at `cmd/fakessh`) |
+| `LP10_FAKE_SCENARIO` · `LP10_FAKE_CMDLOG` · `LP10_FAKE_DIR` · `LP10_FAKE_HEAL_AFTER` | `cmd/fakessh` behaviour |
+| `LP10_TUNNEL_ADDR` | the `:2018` tone/EQ tunnel's `host:port` |
+| `LP10_LSSDP_HOST` | the UDP:1800 liveness probe's target (`host` or `host:port`) |
+| `LP10_ZC_ADDR` | a fixed Spotify ZeroConf `host:port`, skipping mDNS |
+| `LP10_OTA_URL` | the vendor's firmware manifest URL — set it empty to switch the on-demand check off |
+| `LP10_ASKPASS` | internal: marks the `SSH_ASKPASS` self-exec |
+| `LP10_COVERDIR` · `LP10_DUMP_DIR` | `make cover` instrumentation · dump every layout the invariants test renders |
+
+The terminal is sniffed the usual way (`TERM`, `TERM_PROGRAM`, `TMUX`, the Kitty /
+Ghostty markers) for the album-art path, and `LC_ALL` / `LC_CTYPE` / `LANG` pick
+the ASCII glyph set under a CJK locale.
 
 ## Development
 
 ```sh
 make test     # go vet + the full suite, fully off-device
+make ci       # exactly what CI runs (gofmt, vet, go fix -diff, staticcheck, govulncheck, -race), under go.mod's toolchain
+make cover    # merged unit + integration coverage of the shipped packages -> coverage.out
+make build    # ./lp10
 make run      # launch the live TUI
 make generate # regenerate the embedded device loop after editing remote_loop.src.sh
 ```
@@ -509,7 +536,7 @@ internal/config/        config file, paths, typed premute/snapshot persistence
 internal/protocol/      LUCI framing, typed Track parsing, commands, domain State
 internal/transport/     secret-store/askpass auth, ssh argv, the on-device loop
 internal/transport/loopgen/  minifies remote_loop.src.sh into the embedded remote_loop.sh
-internal/discovery/     one-shot mDNS query to find the LP10 on the LAN
+internal/discovery/     mDNS discovery, the LSSDP (UDP:1800) probe and fallback, Spotify ZeroConf
 internal/workers/       owned processes, persistence, stream / command / watchdog / EQ / art runtime
 internal/tunnel/        the :2018 plain-text EQ/control protocol
 internal/artwork/       album-cover fetch/cache + half-block & Kitty rasterizers
@@ -526,7 +553,7 @@ internal/e2e/           end-to-end tests (argv contract, pty smoke)
 
 - [`bubbletea/v2`](https://github.com/charmbracelet/bubbletea) / [`lipgloss/v2`](https://github.com/charmbracelet/lipgloss) / [`x/ansi`](https://github.com/charmbracelet/x) / [`colorprofile`](https://github.com/charmbracelet/colorprofile) — terminal UI (x/ansi: style-preserving clipping; colorprofile: truecolor detection for the album-art gate)
 - [`BurntSushi/toml`](https://github.com/BurntSushi/toml) — config
-- [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — East-Asian display width
+- [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — NFC normalisation of device strings (display width is `x/ansi`)
 - [`creack/pty`](https://github.com/creack/pty) — pty smoke test only
 
 ## License

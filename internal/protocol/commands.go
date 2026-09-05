@@ -25,10 +25,9 @@ var volRe = regexp.MustCompile(`^\d{1,3}$`)
 // that a setenv cannot reach, so a toggle here would silently do nothing.
 //
 // Spotify is the odd one out: it takes an engine name rather than a boolean,
-// because its two engines are not interchangeable. "hifi" (newspotifyhifi) is
-// the safe one; "pro" (spotifymusicpro) reaches lossless but does not drive this
-// box's ALSA softvol, so the volume — app, phone and remote alike — stops
-// attenuating. See the services pane, which labels that cost.
+// because its two engines are not interchangeable: "hifi" (newspotifyhifi) is
+// the legacy engine, "pro" (spotifymusicpro) the new one that reaches lossless.
+// See the services pane, which labels the pair.
 var svcStates = map[string]map[string]bool{
 	"spotify": {"off": true, "hifi": true, "pro": true},
 	"airplay": {"0": true, "1": true},

@@ -77,15 +77,20 @@ func (s *runSignal) Wait(d time.Duration) bool {
 	}
 }
 
-// StartRuntime starts the stream, command, watchdog, tunnel, and artwork
-// workers as one owned unit.
+// StartRuntime starts the stream, command, watchdog, tunnel, artwork, LSSDP,
+// Spotify ZeroConf, and OTA workers as one owned unit.
 func StartRuntime(st *protocol.State, cfg config.Config) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
 	snapshot := config.SnapshotPath(cfg)
 	PreloadSnapshot(st, config.LoadSnapshot(snapshot))
 	r := &Runtime{
-		Commands:   make(chan *protocol.Command, 1024),
-		EQCommands: make(chan EQCommand, 64),
+		Commands: make(chan *protocol.Command, 1024),
+		// Sized like Commands: the tunnel drains only while connected, and a
+		// held EQ key during a reconnect (~30 presses/s) filled 64 slots in two
+		// seconds — the drop-oldest queue then evicted an unrelated earlier
+		// control's set (an EQE on) with no note. Expired intent is still
+		// dropped downstream (EQCommandDeadline), so depth costs nothing.
+		EQCommands: make(chan EQCommand, 1024),
 		st:         st,
 		snapshot:   snapshot,
 		procs:      newProcessSlot(),

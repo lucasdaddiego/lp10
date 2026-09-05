@@ -12,7 +12,7 @@ const liveReply = "HTTP/1.1 200 OK\r\nUSN:d8f710710ad6\r\nHOST:239.255.255.250:1
 func TestParseLSSDP(t *testing.T) {
 	info, ok := parseLSSDP([]byte(liveReply))
 	if !ok || info.Name != "Living" || info.FW != "AR241CE_8530.23.2" || info.State != "S" ||
-		info.NetMode != "ETH0" || info.Sources != "LS8::01000030" || info.USN != "d8f710710ad6" {
+		info.NetMode != "ETH0" || info.Model != "LP10" {
 		t.Errorf("parsed %+v ok=%v", info, ok)
 	}
 	if _, ok := parseLSSDP([]byte("NOTIFY * HTTP/1.1\r\nNT:upnp:rootdevice\r\n")); ok {
@@ -28,7 +28,7 @@ func TestParseLSSDP(t *testing.T) {
 	if len(long.Name) > maxLSSDPField {
 		t.Errorf("field not bounded: %d", len(long.Name))
 	}
-	if !isArylic(info) || isArylic(LSSDPInfo{FW: "XY1", Sources: "other"}) {
+	if !isLP10(info) || isLP10(LSSDPInfo{FW: "AR241CE_8530.23.2", Model: "A50"}) {
 		t.Error("isArylic should key off the AR firmware prefix / LS8 platform")
 	}
 }
@@ -109,20 +109,29 @@ func TestProbeLSSDPHonoursContextAndBudget(t *testing.T) {
 }
 
 func TestPickLSSDP(t *testing.T) {
-	a := LSSDPInfo{Name: "Den", FW: "AR241CE_1", IP: net.IPv4(10, 0, 0, 1)}
-	b := LSSDPInfo{Name: "Living", FW: "AR241CE_2", IP: net.IPv4(10, 0, 0, 2)}
-	other := LSSDPInfo{Name: "TV", FW: "1.0", Sources: "x"}
-	if d, ok := pickLSSDP([]LSSDPInfo{other, a, b}, "liv"); !ok || d.Name != "Living" || d.Model != "LP10" {
+	a := LSSDPInfo{Name: "Den", Model: "LP10", FW: "AR241CE_1", IP: net.IPv4(10, 0, 0, 1)}
+	b := LSSDPInfo{Name: "Living", Model: "LP10", FW: "AR241CE_2", IP: net.IPv4(10, 0, 0, 2)}
+	room := LSSDPInfo{Name: "Living Room", Model: "LP10", FW: "AR241CE_2", IP: net.IPv4(10, 0, 0, 3)}
+	amp := LSSDPInfo{Name: "Amp", Model: "A50", FW: "AR241CE_3", IP: net.IPv4(10, 0, 0, 4)} // same family, not the box
+	other := LSSDPInfo{Name: "TV", FW: "1.0"}
+	if d, ok := pickLSSDP([]LSSDPInfo{other, amp, a, b}, "liv"); !ok || d.Name != "Living" || d.Model != "LP10" {
 		t.Errorf("hinted pick = %+v ok=%v", d, ok)
 	}
-	if d, ok := pickLSSDP([]LSSDPInfo{other, a, b}, ""); !ok || d.Name != "Den" {
+	if d, ok := pickLSSDP([]LSSDPInfo{other, amp, a, b}, ""); !ok || d.Name != "Den" {
 		t.Errorf("unhinted pick = %+v ok=%v", d, ok)
 	}
 	if d, ok := pickLSSDP([]LSSDPInfo{other, a}, "kitchen"); !ok || d.Name != "Den" {
-		t.Errorf("unmatched hint falls back to the first Arylic: %+v ok=%v", d, ok)
+		t.Errorf("unmatched hint falls back to the first LP10: %+v ok=%v", d, ok)
 	}
-	if _, ok := pickLSSDP([]LSSDPInfo{other}, ""); ok {
-		t.Error("a non-Arylic responder is never picked")
+	if _, ok := pickLSSDP([]LSSDPInfo{other, amp}, ""); ok {
+		t.Error("a responder that is not an LP10 — another Arylic unit included — is never picked")
+	}
+	// the hint names the longer of two related names: exact beats contained
+	if d, ok := pickLSSDP([]LSSDPInfo{b, room}, "Living Room"); !ok || d.Name != "Living Room" {
+		t.Errorf("exact name must win over a contained one: %+v", d)
+	}
+	if d, ok := pickLSSDP([]LSSDPInfo{room, b}, "LP10 · Living"); !ok || d.Name != "Living" {
+		t.Errorf("a label carrying the name picks that name: %+v", d)
 	}
 	if _, ok := parseTagged([]byte{1, 2}); ok {
 		t.Error("a short tagged packet is rejected")

@@ -36,7 +36,7 @@ func realRunSecurity() secOutcome {
 	if err != nil {
 		// Only a timeout if the deadline actually interrupted the process: a
 		// success landing right at the deadline (err == nil) must return the
-		// password, matching Python's TimeoutExpired-only semantics.
+		// password.
 		if ctx.Err() == context.DeadlineExceeded {
 			o.timeout = true
 			return o

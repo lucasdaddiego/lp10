@@ -29,8 +29,9 @@ const retryInterval = 3 * time.Second
 
 // nxKeyDown is the data1 key-state nibble for a press (0x0B is a release). It
 // lives here rather than in mediakey.go because goMediaKey is its only user and
-// that function is darwin-only — declared in the portable file it reads as dead
-// code on every other GOOS, which staticcheck flags as U1000.
+// that function is darwin-only — declared in the portable file it would read
+// as dead code on every other GOOS (staticcheck U1000); classify/decide stay
+// portable because the cross-platform tests exercise them.
 const nxKeyDown = 0x0A
 
 // goMediaKey is called from the C tap callback (mediakey_darwin.m) for each
