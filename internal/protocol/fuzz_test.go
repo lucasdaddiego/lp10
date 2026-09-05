@@ -89,8 +89,7 @@ func checkPrintableTrack(t *testing.T, tr *Track) {
 	t.Helper()
 	for name, s := range map[string]string{
 		"TrackName": tr.TrackName, "Artist": tr.Artist, "Album": tr.Album,
-		"PlaybackSource": tr.PlaybackSource, "PlayURL": tr.PlayURL,
-		"MIME": tr.MIME, "CoverArtURL": tr.CoverArtURL,
+		"PlayURL": tr.PlayURL, "MIME": tr.MIME, "CoverArtURL": tr.CoverArtURL,
 	} {
 		if printable(s) != s {
 			t.Fatalf("%s not printable-clean: %q", name, s)
@@ -125,9 +124,9 @@ func FuzzParseMB42(f *testing.F) {
 func FuzzSanitizeCached(f *testing.F) {
 	f.Add("Name", "Artist", "Album", "src", "http://u", "audio/ogg", "http://c")
 	f.Add("\x00\x1b[31m", "a\u202eb", "\u202e\u2028", "\tx", " ", "\xff\xfe", "ok")
-	f.Fuzz(func(t *testing.T, name, artist, album, src, purl, mime, cover string) {
+	f.Fuzz(func(t *testing.T, name, artist, album, _, purl, mime, cover string) {
 		in := &Track{TrackName: name, Artist: artist, Album: album,
-			PlaybackSource: src, PlayURL: purl, MIME: mime, CoverArtURL: cover}
+			PlayURL: purl, MIME: mime, CoverArtURL: cover}
 		orig := *in
 		out := SanitizeCached(in)
 		if *in != orig {

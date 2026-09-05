@@ -225,13 +225,7 @@ func (st *State) snapLocked(now time.Time) Snapshot {
 	pos := st.posMs
 	t := st.track
 	if st.playing == 0 && t != nil && st.connected {
-		if elapsed := now.Sub(st.posAt).Milliseconds(); elapsed > 0 {
-			if elapsed > int64(math.MaxInt-pos) {
-				pos = math.MaxInt
-			} else {
-				pos += int(elapsed)
-			}
-		}
+		pos = st.elapsedLocked(pos, now)
 	}
 	if t != nil && t.TotalTime > 0 && pos > t.TotalTime {
 		pos = t.TotalTime
@@ -809,6 +803,21 @@ func (st *State) PauseOptimistic() bool {
 	return true
 }
 
+// elapsedLocked is pos advanced by the clock since posAt, saturating at MaxInt
+// (a hostile MaxInt position plus any elapsed must not wrap). The one rule
+// behind the snapshot's extrapolation and the pause's fold, so the two cannot
+// drift. The caller holds st.mu.
+func (st *State) elapsedLocked(pos int, now time.Time) int {
+	elapsed := now.Sub(st.posAt).Milliseconds()
+	if elapsed <= 0 {
+		return pos
+	}
+	if elapsed > int64(math.MaxInt-pos) {
+		return math.MaxInt
+	}
+	return pos + int(elapsed)
+}
+
 // pauseLocked flips to paused at now and arms the echo hold. The extrapolated
 // elapsed is folded into posMs before the clock stops — under the same
 // conditions snapLocked extrapolates — so pausing doesn't step the display
@@ -816,13 +825,7 @@ func (st *State) PauseOptimistic() bool {
 // device authoritative. The caller holds st.mu.
 func (st *State) pauseLocked(now time.Time) {
 	if st.track != nil && st.connected {
-		if elapsed := now.Sub(st.posAt).Milliseconds(); elapsed > 0 {
-			if elapsed > int64(math.MaxInt-st.posMs) {
-				st.posMs = math.MaxInt
-			} else {
-				st.posMs += int(elapsed)
-			}
-		}
+		st.posMs = st.elapsedLocked(st.posMs, now)
 	}
 	st.playing = 2
 	st.playHold = now.Add(PlayHoldDuration)

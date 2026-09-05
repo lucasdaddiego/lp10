@@ -17,35 +17,25 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// Track is the typed, sanitized now-playing schema. JSON tags deliberately
-// retain the device/cache wire names, including the legacy "PlayUrl",
-// "CoverArtUrl", and spaced "Current Source" keys. Fields not represented here
-// are dropped at the parse boundary.
-//
-// PlaybackSource, Repeat/Shuffle/Seek/Skip/Next/Prev and PlayState are retained
-// even though the UI does not consume them yet: they document the supported wire contract and
-// keep the typed boundary ready for future controls.
+// Track is the typed, sanitized now-playing schema: exactly the fields some
+// view reads. JSON tags deliberately retain the device/cache wire names,
+// including the legacy "PlayUrl", "CoverArtUrl", and spaced "Current Source"
+// keys. Everything else the device sends (PlaybackSource, Repeat, Shuffle,
+// PlayState, the Seek/Next/Prev/Skip capability flags — the fixtures document
+// the full wire shape) is dropped at the parse boundary; a control that needs
+// one adds it back here.
 type Track struct {
-	TrackName      string `json:"TrackName,omitempty"`
-	Artist         string `json:"Artist,omitempty"`
-	Album          string `json:"Album,omitempty"`
-	PlaybackSource string `json:"PlaybackSource,omitempty"`
-	PlayURL        string `json:"PlayUrl,omitempty"`
-	MIME           string `json:"Mime,omitempty"`
-	CoverArtURL    string `json:"CoverArtUrl,omitempty"`
+	TrackName   string `json:"TrackName,omitempty"`
+	Artist      string `json:"Artist,omitempty"`
+	Album       string `json:"Album,omitempty"`
+	PlayURL     string `json:"PlayUrl,omitempty"`
+	MIME        string `json:"Mime,omitempty"`
+	CoverArtURL string `json:"CoverArtUrl,omitempty"`
 
 	TotalTime     int `json:"TotalTime,omitempty"`
 	CurrentSource int `json:"Current Source,omitempty"`
 	SampleRate    int `json:"SampleRate,omitempty"`
-	Repeat        int `json:"Repeat,omitempty"`
-	Shuffle       int `json:"Shuffle,omitempty"`
-	PlayState     int `json:"PlayState,omitempty"`
 	ChannelCount  int `json:"ChannelCount,omitempty"`
-
-	Seek bool `json:"Seek,omitempty"`
-	Next bool `json:"Next,omitempty"`
-	Prev bool `json:"Prev,omitempty"`
-	Skip bool `json:"Skip,omitempty"`
 }
 
 // Empty reports whether t contains no sanitized track data.
@@ -197,30 +187,18 @@ func SanitizeTrack(obj any) *Track {
 		n, _ := Int(m[key])
 		return n
 	}
-	boolean := func(key string) bool {
-		b, _ := m[key].(bool)
-		return b
-	}
 
 	return &Track{
-		TrackName:      str("TrackName"),
-		Artist:         str("Artist"),
-		Album:          str("Album"),
-		PlaybackSource: str("PlaybackSource"),
-		PlayURL:        str("PlayUrl"),
-		MIME:           str("Mime"),
-		CoverArtURL:    str("CoverArtUrl"),
-		TotalTime:      integer("TotalTime"),
-		CurrentSource:  integer("Current Source"),
-		SampleRate:     integer("SampleRate"),
-		Repeat:         integer("Repeat"),
-		Shuffle:        integer("Shuffle"),
-		PlayState:      integer("PlayState"),
-		ChannelCount:   integer("ChannelCount"),
-		Seek:           boolean("Seek"),
-		Next:           boolean("Next"),
-		Prev:           boolean("Prev"),
-		Skip:           boolean("Skip"),
+		TrackName:     str("TrackName"),
+		Artist:        str("Artist"),
+		Album:         str("Album"),
+		PlayURL:       str("PlayUrl"),
+		MIME:          str("Mime"),
+		CoverArtURL:   str("CoverArtUrl"),
+		TotalTime:     integer("TotalTime"),
+		CurrentSource: integer("Current Source"),
+		SampleRate:    integer("SampleRate"),
+		ChannelCount:  integer("ChannelCount"),
 	}
 }
 
@@ -238,7 +216,6 @@ func SanitizeCached(t *Track) *Track {
 	c.TrackName = printable(c.TrackName)
 	c.Artist = printable(c.Artist)
 	c.Album = printable(c.Album)
-	c.PlaybackSource = printable(c.PlaybackSource)
 	c.PlayURL = printable(c.PlayURL)
 	c.MIME = printable(c.MIME)
 	c.CoverArtURL = printable(c.CoverArtURL)

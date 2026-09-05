@@ -518,13 +518,36 @@ func parseDevInfo(lines []string) *DevInfo {
 
 // parseConfInfo parses the @@c capability key=value block, keeping only the
 // confKeys allowlist (nil if absent).
+// confValueOK is the per-key vocabulary of an @@c line: what the loop's pr()
+// / gv() / sy() / lp() can emit. The TUI switches on these exact strings, so
+// anything else — a spoofed stream, a future firmware's new word — is not a
+// state to display and is dropped here (the row reads unknown), rather than
+// reaching, say, the "flag says …" warning verbatim.
+func confValueOK(k, v string) bool {
+	switch k {
+	case "spotify.eng": // a process name from the device's own comm list: a
+		// future firmware's engine must still show, so any comm-shaped token
+		// passes — junk with spaces or controls does not
+		return len(v) <= 32 && strings.IndexFunc(v, func(r rune) bool {
+			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '_')
+		}) < 0
+	case "spotify.cfg":
+		return v == "" || v == "none" || v == "hifi" || v == "pro" || v == "both"
+	case "spotify.sdk": // an eSDK build like 3.203.239-g1d6bd565, or nothing
+		return len(v) <= 40 && strings.IndexFunc(v, func(r rune) bool {
+			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '_')
+		}) < 0
+	}
+	return v == "" || v == "on" || v == "off"
+}
+
 func parseConfInfo(lines []string) *ConfInfo {
 	if len(lines) == 0 {
 		return nil
 	}
 	ci := &ConfInfo{Svc: make(map[string]string, len(confKeys))}
 	for _, ln := range lines {
-		if k, v, ok := strings.Cut(printable(ln), "="); ok && confKeys[k] {
+		if k, v, ok := strings.Cut(printable(ln), "="); ok && confKeys[k] && confValueOK(k, v) {
 			ci.Svc[k] = v
 		}
 	}
