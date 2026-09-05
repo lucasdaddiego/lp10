@@ -93,26 +93,46 @@ func matchSpotify(eps []SpotifyEndpoint, host string, ip net.IP) (SpotifyEndpoin
 		if len(ip) > 0 && e.IP.Equal(ip) {
 			return e, true
 		}
-		h := strings.ToLower(strings.TrimSuffix(e.Host, "."))
-		if want != "" && (h == want || h == want+".local" || strings.TrimSuffix(h, ".local") == want) {
+		if hostMatches(e.Host, want) {
 			return e, true
 		}
 	}
 	return SpotifyEndpoint{}, false
 }
 
-// pickSpotify is matchSpotify with one fallback: exactly one advertiser and no
-// match takes that one — a single Spotify speaker on the LAN is the box.
-// Several advertisers with no match is a genuine ambiguity and yields nothing
-// rather than a guess at someone else's speaker.
+// hostMatches reports whether an SRV host names want (lower-cased, no trailing
+// dot) in any of its spellings: bare, .local, or either side qualified.
+func hostMatches(srvHost, want string) bool {
+	h := strings.ToLower(strings.TrimSuffix(srvHost, "."))
+	return want != "" && (h == want || h == want+".local" || strings.TrimSuffix(h, ".local") == want)
+}
+
+// pickSpotify is matchSpotify with one fallback: exactly one advertiser, no
+// match, and nothing to place it by takes that one — a single Spotify speaker
+// on the LAN that neither address nor name could be compared against is the
+// box. An advertiser that could be compared and wasn't a match is someone
+// else's speaker: with the LP10's own engine down (as the 8530 OTA left it),
+// the neighbour's status must not stand in for it. Several advertisers with
+// no match is a genuine ambiguity and yields nothing rather than a guess.
 func pickSpotify(eps []SpotifyEndpoint, host string, ip net.IP) (SpotifyEndpoint, bool) {
 	if e, ok := matchSpotify(eps, host, ip); ok {
 		return e, true
 	}
-	if len(eps) == 1 {
+	if len(eps) == 1 && !placeable(eps[0], host, ip) {
 		return eps[0], true
 	}
 	return SpotifyEndpoint{}, false
+}
+
+// placeable reports whether matchSpotify had a way to place e: an A record
+// against a resolved device address, or an SRV host against a configured
+// hostname (an IP-literal host says nothing about names).
+func placeable(e SpotifyEndpoint, host string, ip net.IP) bool {
+	if len(ip) > 0 && len(e.IP) > 0 {
+		return true
+	}
+	want := strings.TrimSuffix(host, ".")
+	return want != "" && net.ParseIP(want) == nil && e.Host != ""
 }
 
 // FindSpotifyZC queries mDNS for the Spotify Connect service on every interface

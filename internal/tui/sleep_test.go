@@ -140,6 +140,22 @@ func TestSleepNeverResumes(t *testing.T) {
 	}
 }
 
+// Playing with no track metadata (a source without @@B, a garbage read) is
+// still playing: the timer pauses it rather than shrugging.
+func TestSleepFiresPauseWithoutTrackMetadata(t *testing.T) {
+	st := protocol.NewState()
+	st.ToggleOptimistic() // playing, no track
+	m, _, collect := modelWith(st)
+	m.sleepAt = time.Now().Add(-time.Second)
+	m.dispatch(logicMsg{})
+	if got := collect(); len(got) != 1 || got[0].Mid != 40 || got[0].Data != "PAUSE" {
+		t.Fatalf("sent = %+v, want [40 PAUSE]", got)
+	}
+	if st.Snap().Playing == 0 || !m.sleepAt.IsZero() {
+		t.Error("must flip to paused and disarm")
+	}
+}
+
 // ---- sleep timer: label + rendering ------------------------------------------
 
 func TestSleepLabelRoundsUpAndFlagsFinalMinute(t *testing.T) {

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -50,19 +51,60 @@ func TestProbeLSSDPAgainstLoopback(t *testing.T) {
 			}
 		}
 	}()
-	info, ok := ProbeLSSDP(c.LocalAddr().String(), 2*time.Second)
+	ctx := context.Background()
+	info, ok := ProbeLSSDP(ctx, c.LocalAddr().String(), 2*time.Second)
 	if !ok || info.Name != "Living" || !info.IP.Equal(net.IPv4(127, 0, 0, 1)) {
 		t.Errorf("probe = %+v ok=%v", info, ok)
+	}
+	// a hostname goes through the resolver (localhost: hosts file, no network)
+	_, port, _ := net.SplitHostPort(c.LocalAddr().String())
+	if info, ok := ProbeLSSDP(ctx, "localhost:"+port, 2*time.Second); !ok || info.Name != "Living" {
+		t.Errorf("probe by name = %+v ok=%v", info, ok)
 	}
 	// an unanswered probe times out false (a port nothing listens on)
 	dead, _ := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	addr := dead.LocalAddr().String()
 	dead.Close()
-	if _, ok := ProbeLSSDP(addr, 300*time.Millisecond); ok {
+	if _, ok := ProbeLSSDP(ctx, addr, 300*time.Millisecond); ok {
 		t.Error("a dead port must not answer")
 	}
-	if _, ok := ProbeLSSDP("not a host", 100*time.Millisecond); ok {
+	if _, ok := ProbeLSSDP(ctx, "not a host", 100*time.Millisecond); ok {
 		t.Error("an unresolvable host must not answer")
+	}
+	for _, bad := range []string{"127.0.0.1:x", "127.0.0.1:0", "[::1]:1800"} {
+		if _, ok := ProbeLSSDP(ctx, bad, 100*time.Millisecond); ok {
+			t.Errorf("%q must not probe", bad)
+		}
+	}
+}
+
+// The probe's wait is bounded by its own budget and by the caller's context:
+// a runtime shutdown mid-probe must not sit out the read (nor, for a name, the
+// resolver). A silent listener keeps the socket open so the read really blocks.
+func TestProbeLSSDPHonoursContextAndBudget(t *testing.T) {
+	silent, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Skip("no loopback UDP:", err)
+	}
+	defer silent.Close()
+	addr := silent.LocalAddr().String()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	start := time.Now()
+	if _, ok := ProbeLSSDP(ctx, addr, 10*time.Second); ok {
+		t.Error("a cancelled probe must not report the box alive")
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("cancel took %v to unblock the probe", el)
+	}
+
+	start = time.Now()
+	if _, ok := ProbeLSSDP(context.Background(), addr, 200*time.Millisecond); ok {
+		t.Error("a silent box must not report alive")
+	}
+	if el := time.Since(start); el > 2*time.Second {
+		t.Errorf("budget took %v to unblock the probe", el)
 	}
 }
 

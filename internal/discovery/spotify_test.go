@@ -52,6 +52,24 @@ func TestSpotifyEndpointsAndPick(t *testing.T) {
 	if _, ok := pickSpotify(nil, "x", nil); ok {
 		t.Error("nothing advertised")
 	}
+	// a sole advertiser that could be placed and wasn't is a stranger, not the
+	// box: the LP10's engine being down must not read as the neighbour's status
+	kitchen := eps[:1]
+	if e, ok := pickSpotify(kitchen, "192.168.0.13", net.ParseIP("192.168.0.13").To4()); ok {
+		t.Errorf("sole advertiser with another A record taken: %+v", e)
+	}
+	if e, ok := pickSpotify(kitchen, "Living.local", nil); ok {
+		t.Errorf("sole advertiser with another SRV host taken: %+v", e)
+	}
+	// ...but with no A record against an IP-configured device there is
+	// nothing to compare, and the fallback stands
+	solo := newPkt(2)
+	solo.addPTR(spotifyService, "Solo."+spotifyService)
+	solo.addSRV("Solo."+spotifyService, 9096, "Solo.local")
+	srecs, _ := parsePacket(solo.buf)
+	if e, ok := pickSpotify(spotifyEndpoints(srecs), "192.168.0.13", net.ParseIP("192.168.0.13").To4()); !ok || e.Name != "Solo" {
+		t.Errorf("unplaceable sole advertiser = %+v %v", e, ok)
+	}
 	// an SRV without its PTR, or a PTR without its SRV, is not an endpoint
 	orphan := newPkt(1)
 	orphan.addSRV("Ghost."+spotifyService, 9096, "Ghost.local")

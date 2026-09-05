@@ -766,29 +766,52 @@ func (st *State) Preload(track *Track, pos, vol int) {
 func (st *State) ToggleOptimistic() bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	playing := st.playing == 0
 	now := time.Now()
+	playing := st.playing == 0
 	if playing {
-		// Fold the extrapolated elapsed into posMs before stopping the clock —
-		// under the same conditions snapLocked extrapolates — so pausing doesn't
-		// step the display back to the last device tick. The next @@p replaces
-		// posMs, keeping the device authoritative.
-		if st.track != nil && st.connected {
-			if elapsed := now.Sub(st.posAt).Milliseconds(); elapsed > 0 {
-				if elapsed > int64(math.MaxInt-st.posMs) {
-					st.posMs = math.MaxInt
-				} else {
-					st.posMs += int(elapsed)
-				}
-			}
-		}
-		st.playing = 2
+		st.pauseLocked(now)
 	} else {
 		st.playing = 0
+		st.playHold = now.Add(PlayHoldDuration)
+		st.posAt = now
 	}
+	return playing
+}
+
+// PauseOptimistic is the toggle's one-way form, for the sleep timer: it
+// pauses only if the player is playing at the moment of the check — decided
+// under the lock, so a device-side pause landing between a snapshot and the
+// flip can never turn the timer into a RESUME — and reports whether a PAUSE
+// must be sent. It needs no track metadata: a playing state with no @@B (a
+// metadata-less source, a garbage read) still pauses.
+func (st *State) PauseOptimistic() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.playing != 0 {
+		return false
+	}
+	st.pauseLocked(time.Now())
+	return true
+}
+
+// pauseLocked flips to paused at now and arms the echo hold. The extrapolated
+// elapsed is folded into posMs before the clock stops — under the same
+// conditions snapLocked extrapolates — so pausing doesn't step the display
+// back to the last device tick; the next @@p replaces posMs, keeping the
+// device authoritative. The caller holds st.mu.
+func (st *State) pauseLocked(now time.Time) {
+	if st.track != nil && st.connected {
+		if elapsed := now.Sub(st.posAt).Milliseconds(); elapsed > 0 {
+			if elapsed > int64(math.MaxInt-st.posMs) {
+				st.posMs = math.MaxInt
+			} else {
+				st.posMs += int(elapsed)
+			}
+		}
+	}
+	st.playing = 2
 	st.playHold = now.Add(PlayHoldDuration)
 	st.posAt = now
-	return playing
 }
 
 // RawPos returns the un-extrapolated position (the last position the device

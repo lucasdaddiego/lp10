@@ -40,7 +40,7 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 		return
 	}
 	probe := func() {
-		info, ok := discovery.ProbeLSSDP(host, lssdpTimeout)
+		info, ok := discovery.ProbeLSSDP(ctx, host, lssdpTimeout)
 		if !ok {
 			st.SetLSSDP(nil)
 			return
