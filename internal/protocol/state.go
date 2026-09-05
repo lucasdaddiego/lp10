@@ -358,8 +358,8 @@ func (st *State) SetOTA(info OTAInfo) {
 // firmwareBuild is the manifest's fwVersion: the build before the first dot
 // ("AR241CE_8530.23.2" → "AR241CE_8530").
 func firmwareBuild(fw string) string {
-	if i := strings.IndexByte(fw, '.'); i >= 0 {
-		return fw[:i]
+	if before, _, ok := strings.Cut(fw, "."); ok {
+		return before
 	}
 	return fw
 }
