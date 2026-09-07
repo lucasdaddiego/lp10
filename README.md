@@ -342,7 +342,7 @@ tunnel, the target host — readable even while the device is down, which is exa
 when you need them), **device** identity (model, firmware, build and the vendor app's own version — plus the name,
 serial, Bluetooth MAC, and MCU version read from the device's own registers), a
 **hardware** reference (SoC, the DAC situation, the line-out / optical outputs — encoded
-from a full teardown of the unit, corrected by live probes: the DAC is the front-panel
+from a full teardown of the unit (`docs/TEARDOWN.md`), corrected by live probes: the DAC is the front-panel
 MCU itself, an MVSilicon BP10xx fed over I2S, which also runs every tone / preset /
 balance stage; the WM8904 the firmware declares isn't on the bus), **latency**, the **network** the box itself is on
 (address, DNS, link, MAC, interface **error/drop counters** shown as session deltas —
@@ -547,6 +547,7 @@ internal/fixtures/      embedded wire-record fixtures (shared by tests + fake)
 cmd/fakessh/            fake ssh transport for tests (substituted via LP10_SSH)
 internal/testutil/      test helpers (env isolation, fake/binary builders)
 internal/e2e/           end-to-end tests (argv contract, pty smoke)
+docs/TEARDOWN.md        device teardown & technical reference (hardware, audio path, LUCI/MsgBox, protocols, OTA)
 ```
 
 ## Dependencies

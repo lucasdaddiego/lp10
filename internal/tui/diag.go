@@ -1207,7 +1207,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 // streaming-capability matrix is read live from the device (the one-shot @@c block
 // — running daemons via pidof, env-gated features via getenv — exposed by
 // ConfView); the hardware list encodes the model's verified, invariant facts (see
-// arylic-lp10-teardown.md). @@c rides the connect unconditionally, so the matrix is
+// docs/TEARDOWN.md). @@c rides the connect unconditionally, so the matrix is
 // already in hand whenever the overlay opens.
 
 // confServices is the capability matrix for the diagnostics strip. svcRows (the
