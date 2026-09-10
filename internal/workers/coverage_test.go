@@ -165,10 +165,13 @@ func TestCov_TunnelRoundTripFloodReconnect(t *testing.T) {
 	if _, err := conn.Write([]byte("MXV:50;BAS:3;")); err != nil {
 		t.Fatal(err)
 	}
-	waitUntil(t, "MXV applied", func() bool { v, ok := st.EQValue("MXV"); return ok && v == 50 })
-	if v, ok := st.EQValue("BAS"); !ok || v != 3 {
-		t.Errorf("BAS=%d,%v want 3", v, ok)
-	}
+	// The reader applies each frame under its own lock, so a poll for MXV alone
+	// can land before BAS: wait for both.
+	waitUntil(t, "MXV and BAS applied", func() bool {
+		mxv, okM := st.EQValue("MXV")
+		bas, okB := st.EQValue("BAS")
+		return okM && mxv == 50 && okB && bas == 3
+	})
 	if c, _ := st.EQView(); !c {
 		t.Error("tunnel should be marked connected")
 	}
