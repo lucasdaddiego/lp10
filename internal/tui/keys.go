@@ -248,14 +248,11 @@ func (m *model) toggleOverlay(which int) {
 	m.openOverlay(which)
 }
 
-// overlayKey drives the interactive panes. Esc backs out, q still quits the app
-// from anywhere (matching the dashboard), and each pane's own letter closes it
-// so the key that opened it also dismisses it.
+// overlayKey drives the interactive panes. Esc and q both back out to the
+// dashboard (q quits only from there), and each pane's own letter closes it so
+// the key that opened it also dismisses it.
 func (m *model) overlayKey(ev keyEvent) (quit bool) {
-	if ev.kind == kRune && (ev.r == 'q' || ev.r == 'Q') {
-		return true
-	}
-	if ev.kind == kEsc {
+	if ev.kind == kEsc || (ev.kind == kRune && (ev.r == 'q' || ev.r == 'Q')) {
 		m.ov = ovNone
 		return false
 	}

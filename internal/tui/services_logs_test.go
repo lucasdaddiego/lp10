@@ -279,7 +279,7 @@ func TestLogSeverity(t *testing.T) {
 }
 
 // The three overlays are mutually exclusive, each pane's own letter closes it,
-// esc backs out, and q still quits from anywhere.
+// esc and q back out, and q quits only from the dashboard.
 func TestOverlayKeyRouting(t *testing.T) {
 	m, _, _ := paneModel(t, ovServices)
 
@@ -316,8 +316,22 @@ func TestOverlayKeyRouting(t *testing.T) {
 	if m.diag || m.ov != ovLogs {
 		t.Errorf("opening a pane left the diag overlay up: diag=%v ov=%d", m.diag, m.ov)
 	}
+	for _, r := range []rune{'q', 'Q'} {
+		m.openOverlay(ovServices)
+		if quit := m.key(keyEvent{kind: kRune, r: r}); quit {
+			t.Errorf("%c quit the app from inside a pane", r)
+		}
+		if m.ov != ovNone {
+			t.Errorf("%c did not back out of the pane", r)
+		}
+	}
+	// Back on the dashboard, q quits; a pasted "qq" inside a pane only closes it.
+	m.openOverlay(ovLogs)
+	if m.dispatchKeys(runeEvents("qq")) || m.ov != ovNone {
+		t.Errorf("pasted qq inside a pane: want closed, not quit (ov=%d)", m.ov)
+	}
 	if quit := m.key(keyEvent{kind: kRune, r: 'q'}); !quit {
-		t.Error("q did not quit from inside a pane")
+		t.Error("q did not quit from the dashboard")
 	}
 }
 

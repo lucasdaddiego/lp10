@@ -230,10 +230,10 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // dispatchKeys runs a batch of key events in order, reporting whether any asked
-// to quit. An event that closes the diag overlay consumes the REST of its batch:
-// a paste landing while the overlay is open should only dismiss it, not keep
+// to quit. An event that closes an overlay consumes the REST of its batch: a
+// paste landing while an overlay is open should only dismiss it, not keep
 // driving the dashboard underneath (a stray 'n' later in the same paste would
-// skip the track; a 'q' would quit the app).
+// skip the track; a second 'q' would quit the app).
 func (m *model) dispatchKeys(evs []keyEvent) (quit bool) {
 	for _, ev := range evs {
 		wasOpen := m.diag || m.ov != ovNone

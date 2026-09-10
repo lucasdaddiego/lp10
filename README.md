@@ -232,9 +232,9 @@ the arrow keys.
 | `l` | device log — the tail of the box's syslog, or (`s`) of the vendor app's own log |
 | `↑` / `↓` · `←` / `→` | log pane: scroll by line · by page |
 | `?` | diagnostics overlay (see below) — also asks the vendor whether the firmware is current |
-| `q` / `Q` | quit |
+| `q` / `Q` | quit (inside an overlay: back to the dashboard) |
 
-Inside the services or log overlay, `esc` backs out and the other overlay
+Inside the services or log overlay, `esc` or `q` backs out and the other overlay
 letters switch straight across — toggling a service and then reading the log
 for what the device made of it is one movement, not two. The diagnostics
 overlay is a read-out: any key closes it.
