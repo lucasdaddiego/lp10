@@ -556,9 +556,10 @@ func (m *model) reconnectReadout(ops *protocol.DevOps, now time.Time) string {
 }
 
 // reconnectWarnPerHour is where the reconnect rate turns the readout (and the
-// diagnostics verdict) amber: a healthy Connect session re-logs in on network
-// events, not on the hour.
-const reconnectWarnPerHour = 1.0
+// diagnostics verdict) amber. This box's Pro engine re-logs in about twice an
+// hour all day with nothing audible, so that steady state stays informational;
+// more than once a quarter of an hour is a storm worth a warn.
+const reconnectWarnPerHour = 4.0
 
 func plural(n int) string {
 	if n == 1 {

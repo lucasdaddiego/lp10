@@ -1065,8 +1065,8 @@ func TestCov_renderDiagStackedShortPane(t *testing.T) {
 	m.rows, m.cols = 18, 99 // too short: the read-out must be trimmed with a hint
 	m.view = viewDiag
 	out := clean(m.viewContent())
-	if !strings.Contains(out, "resize for more") {
-		t.Errorf("a short diag pane should trim with a 'resize for more' hint:\n%s", out)
+	if !strings.Contains(out, "↑↓ scroll") {
+		t.Errorf("a short diag pane should scroll and say how much is off-screen:\n%s", out)
 	}
 }
 

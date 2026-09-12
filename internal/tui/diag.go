@@ -641,7 +641,7 @@ func identityFacts(d protocol.DiagnosticSnapshot, base *sweep.Report, now time.T
 		{"name", id.name},
 		{"os", id.os},
 		{"serial", id.serial},
-		{"since sweep", sweepDeltaFact(id, d.DevInfo, base)},
+		{"sweep", sweepDeltaFact(id, d.DevInfo, base)},
 		{"update", boxUpdateFact(d, now)},
 		{"vendor", otaFact(d, now)},
 	})
@@ -680,9 +680,9 @@ func sweepDeltaFact(id diagIdentity, dev *protocol.DevInfo, base *sweep.Report) 
 	}
 	when := base.At.Format("Jan 2 15:04")
 	if len(changes) == 0 {
-		return "nothing changed since the sweep of " + when
+		return "unchanged since " + when
 	}
-	return strings.Join(changes, " · ") + " · sweep of " + when
+	return strings.Join(changes, " · ") + " · since " + when
 }
 
 // firmwareBuildOf cuts a full firmware string ("AR241CE_8530.23.2", or the
@@ -973,37 +973,58 @@ func (f diagCardFmt) section(sec diagSection, w int) []string {
 	return out
 }
 
-func diagWorst(v diagVitals, lastRx, now time.Time) int {
-	worst := 0
-	bump := func(sv int) { worst = max(worst, sv) }
+// diagVerdict is the health rollup with its reasons: the worst severity across
+// the live signals, and — so the masthead can say WHY it is amber or red rather
+// than leave the reader hunting through the sections — the signals that put it
+// there, worst first, each named the way its own row names it.
+func diagVerdict(v diagVitals, lastRx, now time.Time) (worst int, why []string) {
+	type cause struct {
+		sev  int
+		text string
+	}
+	var causes []cause
+	add := func(sv int, text string) {
+		if sv > 0 {
+			causes = append(causes, cause{sv, text})
+		}
+		worst = max(worst, sv)
+	}
 	if v.haveCPU {
-		bump(sev(v.cpuFrac*100, thrCPU))
+		add(sev(v.cpuFrac*100, thrCPU), fmt.Sprintf("cpu %d%%", int(v.cpuFrac*100+0.5)))
 	}
 	if v.haveMem {
-		bump(sev(v.memUf*100, thrMem))
+		add(sev(v.memUf*100, thrMem), fmt.Sprintf("memory %d%%", int(v.memUf*100+0.5)))
 	}
 	if v.haveTemp {
-		bump(sev(float64(v.tempC), thrTemp))
+		add(sev(float64(v.tempC), thrTemp), fmt.Sprintf("temp %d °C", v.tempC))
 	}
 	if v.haveData {
-		bump(sev(v.dataUf*100, thrData))
+		add(sev(v.dataUf*100, thrData), fmt.Sprintf("storage %d%%", int(v.dataUf*100+0.5)))
 	}
 	if v.haveBuf && v.playing {
-		bump(v.bufSev)
+		add(v.bufSev, fmt.Sprintf("buffer %d%%", int(v.bufFill*100+0.5)))
 	}
 	if !lastRx.IsZero() {
-		bump(sev(now.Sub(lastRx).Seconds(), thrRx))
+		add(sev(now.Sub(lastRx).Seconds(), thrRx), "ssh stream quiet")
 	}
 	if v.levelDesync {
-		bump(1) // the room isn't at the volume every display claims
+		add(1, "output level off the reported volume") // the room isn't at the volume every display claims
 	}
 	if v.onWifi {
-		bump(1) // the radio is where the known firmware wedge lives
+		add(1, "on wi-fi") // the radio is where the known firmware wedge lives
 	}
 	if v.haveReconnect && v.reconnectRate >= reconnectWarnPerHour {
-		bump(1) // the engine keeps losing and re-making its Spotify session
+		add(1, fmt.Sprintf("engine reconnects %.1f/h", v.reconnectRate)) // the engine keeps losing and re-making its Spotify session
 	}
-	return worst
+	// worst first, then in signal order; at most two are named
+	for sv := 2; sv >= 1 && len(why) < 2; sv-- {
+		for _, c := range causes {
+			if c.sev == sv && len(why) < 2 {
+				why = append(why, c.text)
+			}
+		}
+	}
+	return worst, why
 }
 
 // withOpsVitals folds the health inputs collectVitals cannot see — they come
@@ -1035,7 +1056,8 @@ func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, no
 	left, leftW := t.sAcc.Bold(true).Render("diagnostics"), DispW("diagnostics")
 	if d.Snapshot.Connected && !silent {
 		word, pen := "healthy", t.sAcc
-		switch diagWorst(v, d.LastRx, now) {
+		worst, why := diagVerdict(v, d.LastRx, now)
+		switch worst {
 		case 1:
 			word, pen = "warn", stWarn
 		case 2:
@@ -1044,8 +1066,49 @@ func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, no
 		verdict := "● " + word
 		left += "   " + pen.Render(verdict)
 		leftW += 3 + DispW(verdict)
+		if len(why) > 0 {
+			// the reason, so the verdict explains itself: "● warn · engine reconnects 2.2/h"
+			reason := " · " + strings.Join(why, " · ")
+			if room := w - leftW - hrW - 2; DispW(reason) > room {
+				reason = Clip(reason, max(room, 0))
+			}
+			left += t.pens().dim.render(reason)
+			leftW += DispW(reason)
+		}
 	}
 	return between(left, leftW, hr, hrW, w)
+}
+
+// diagScrollBy moves the diagnostics read-out by n rows (negative = up); the
+// render clamps it to what is actually off-screen, so over-scrolling is inert.
+func (m *model) diagScrollBy(n int) {
+	m.diagScroll = max(m.diagScroll+n, 0)
+}
+
+// diagWindow cuts the scrollable rows to the room, honouring and clamping the
+// scroll offset, and returns the rows plus a hint for the footer when there is
+// more above or below ("" when everything fits).
+func (m *model) diagWindow(rows []string, room int) ([]string, string) {
+	if room <= 0 {
+		return nil, ""
+	}
+	over := len(rows) - room
+	if over <= 0 {
+		m.diagScroll = 0
+		return rows, ""
+	}
+	if m.diagScroll > over {
+		m.diagScroll = over
+	}
+	below := over - m.diagScroll
+	hint := fmt.Sprintf("↑↓ scroll · %d more row%s below", below, plural(below))
+	switch {
+	case below == 0:
+		hint = fmt.Sprintf("↑↓ scroll · %d row%s above", m.diagScroll, plural(m.diagScroll))
+	case m.diagScroll > 0:
+		hint = fmt.Sprintf("↑↓ scroll · %d above · %d below", m.diagScroll, below)
+	}
+	return rows[m.diagScroll : m.diagScroll+room], hint
 }
 
 func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
@@ -1290,10 +1353,10 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 	}
 	tail = append(tail, t.pens().dmr.render(diagFooter))
 
-	// on a too-short pane, trim the read-out from the bottom and flag it
-	if room := m.bodyRows() - len(tail); room > 2 && len(L) > room {
-		L = L[:room]
-		L[room-1] = t.pens().dmr.render("… resize for more")
+	// on a too-short pane the read-out scrolls; the footer says how much is off-screen
+	L, hint := m.diagWindow(L, m.bodyRows()-len(tail))
+	if hint != "" {
+		tail[len(tail)-1] = between(t.pens().dmr.render(diagFooter), DispW(diagFooter), t.pens().dim.render(hint), DispW(hint), W)
 	}
 	return frameBody(L, tail, m.bodyRows(), false) // top-aligned: read-out hugs the top, footer stays pinned below
 }
@@ -1320,9 +1383,10 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 	masthead := m.diagCardMasthead(d, vit, now, W)
 
 	// ---- compose: the status line, a heavy rule, then the zipped columns ----
-	content := []string{masthead, t.pens().dmr.render(strings.Repeat("━", W))}
+	head := []string{masthead, t.pens().dmr.render(strings.Repeat("━", W))}
 	gut := strings.Repeat(" ", diagCardsGutter)
 	blankR := strings.Repeat(" ", rightW)
+	var body []string
 	for i := 0; i < max(len(left2), len(right2)); i++ {
 		l := strings.Repeat(" ", colW)
 		if i < len(left2) {
@@ -1332,18 +1396,28 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 		if i < len(right2) {
 			r = padVis(right2[i], rightW)
 		}
-		content = append(content, l+gut+r)
+		body = append(body, l+gut+r)
 	}
 
-	// footer + a small colour legend so the verdict hues decode at a glance.
-	legend := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") + t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
+	// footer + a small colour legend so the verdict hues decode at a glance;
+	// when the columns are taller than the frame they scroll (↑↓ / ←→) and the
+	// legend gives way to how much is off-screen.
 	var tail []string
 	if line, ok := diagErrLine(s, now, W); ok {
 		tail = append(tail, line, "")
 	}
-	tail = append(tail, between(t.pens().dmr.render(diagFooter), DispW(diagFooter), legend, DispW("● good   ● warn   ● fault"), W))
-	return frameBody(content, tail, m.bodyRows(), false)
+	body, hint := m.diagWindow(body, m.bodyRows()-len(head)-len(tail)-1)
+	right := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") + t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
+	rightW2 := DispW("● good   ● warn   ● fault")
+	if hint != "" {
+		right, rightW2 = t.pens().dim.render(hint), DispW(hint)
+	}
+	tail = append(tail, between(t.pens().dmr.render(diagFooter), DispW(diagFooter), right, rightW2, W))
+	return frameBody(append(head, body...), tail, m.bodyRows(), false)
 }
+
+// diagPage is one page of the diagnostics read-out for ←→.
+func (m *model) diagPage() int { return max(m.bodyRows()-4, 1) }
 
 // ---- device capabilities + hardware (shown in the diagnostics overlay) -------
 //

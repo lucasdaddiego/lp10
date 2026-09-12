@@ -228,15 +228,15 @@ func TestDiagBootReconnectsAndRadio(t *testing.T) {
 	// the same box on its radio, with a reconnect storm: both are warns
 	protocol.ApplyRecord(st, protocol.Record{
 		"i": {"net=wifi", "ip=192.0.2.13", "ssid=home", "freq=5180", "rboot=normal"},
-		"o": {"n=40", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
+		"o": {"n=100", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
 		"v": {"MID-Read:64 Data:40 Length:2"},
 	})
 	out = stripANSI(m.viewContent())
 	for _, want := range []string{
 		"boot      software reboot (normal)",
-		"40 reconnects · 2.0/h",
+		"100 reconnects · 5.0/h",
 		"radio     ⚠ on wi-fi · the radio firmware can wedge — wire it",
-		"● warn",
+		"● warn · on wi-fi · engine reconnects 5.0/h", // the verdict names its reasons
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("overlay missing %q:\n%s", want, out)
@@ -245,7 +245,7 @@ func TestDiagBootReconnectsAndRadio(t *testing.T) {
 	// the stacked layout carries the same rows
 	m.cols = 70
 	out = stripANSI(m.viewContent())
-	for _, want := range []string{"power-on", "software reboot", "40 reconnects", "on wi-fi"} {
+	for _, want := range []string{"power-on", "software reboot", "100 reconnects", "on wi-fi"} {
 		if want == "power-on" {
 			continue // the second record replaced the reason
 		}

@@ -128,7 +128,20 @@ func (m *model) key(ev keyEvent) (quit bool) {
 			return false
 		}
 	case viewDiag:
-		if ev.kind == kRune && (ev.r == 'u' || ev.r == 'U') {
+		switch {
+		case ev.kind == kUp:
+			m.diagScrollBy(-1)
+			return false
+		case ev.kind == kDown:
+			m.diagScrollBy(+1)
+			return false
+		case ev.kind == kLeft:
+			m.diagScrollBy(-m.diagPage())
+			return false
+		case ev.kind == kRight:
+			m.diagScrollBy(+m.diagPage())
+			return false
+		case ev.kind == kRune && (ev.r == 'u' || ev.r == 'U'):
 			// u asks the vendor's manifest directly — the one request that
 			// leaves the LAN, so it is a deliberate keystroke, never a side
 			// effect of opening the view (which shows the box's own 4-hourly
