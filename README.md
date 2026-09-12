@@ -262,8 +262,10 @@ everything below.
 a switch or steps the preset. **Services** — `↑` / `↓` select, `enter` switches
 (Spotify cycles off → HiFi → Pro). **Logs** — `↑` / `↓` scroll, `←` / `→` page,
 `s` source (device syslog / vendor app), `f` filter, `r` refresh, `F` follow.
-**Diagnostics** — `u` asks the vendor's manifest whether the firmware is
-current (the box asks by itself every four hours; the update line shows that).
+**Diagnostics** — `↑` / `↓` scroll and `←` / `→` page when the read-out is
+taller than the terminal (the footer says how much is off-screen); `u` asks
+the vendor's manifest whether the firmware is current (the box asks by itself
+every four hours; the update line shows that).
 When a `lp10 sweep` baseline exists, the device card also says what moved since
 it — firmware, MCU or vendor app — or that nothing did.
 
@@ -362,8 +364,10 @@ stacked column when narrow):
 
 A single **status line** carries a one-glance **health verdict** (`healthy` / `warn` /
 `fault`) — the worst of the live signals (cpu · memory · temp · `/lsync` · buffer · link
-freshness), color-coded and word-paired so it still reads on a no-color terminal —
-with the connection light + clock on the right. Nothing else rides up top: every
+freshness · output level · the radio · the engine's reconnect rate), color-coded and
+word-paired so it still reads on a no-color terminal, and **naming its reasons** (`● warn ·
+engine reconnects 5.0/h`) so an amber verdict never has to be hunted down — with the
+connection light + clock on the right. Nothing else rides up top: every
 live number lives in its section below. (The audio buffer reads `idle` when
 nothing's playing, and volume/EQ don't appear in the overlay at all — they're
 settings, not diagnostics, and live on the player and in the equalizer view.)

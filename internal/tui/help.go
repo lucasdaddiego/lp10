@@ -40,6 +40,7 @@ var helpGroups = []struct {
 		{"F", "follow: refetch every 10 s while the view is open"},
 	}},
 	{"diagnostics", [][2]string{
+		{"↑↓ · ←→", "scroll · page, when the read-out is taller than the terminal"},
 		{"u", "ask the vendor's manifest about updates (the box asks by itself every 4 h)"},
 	}},
 	{"everywhere", [][2]string{

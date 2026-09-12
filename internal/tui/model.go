@@ -109,6 +109,9 @@ type model struct {
 
 	// logFollow refetches the open log every few seconds (the F key)
 	logFollow bool
+	// diagScroll is the diagnostics read-out's scroll offset (rows) when it is
+	// taller than the frame; the render clamps it
+	diagScroll int
 
 	// playerShown mirrors what the loop was last told with MID 94 (the player
 	// view on screen or not), and hiddenTicks re-asserts "hidden" so a

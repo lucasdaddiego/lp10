@@ -135,12 +135,12 @@ func TestIdleScreen(t *testing.T) {
 func TestSinceSweepFact(t *testing.T) {
 	base := &sweep.Report{At: time.Date(2026, 9, 12, 16, 0, 0, 0, time.Local), Build: "AR241CE_8530", MCU: "23", VendorApp: "32"}
 	same := diagIdentity{fw: "AR241CE_8530.23.2", mcu: "v23"}
-	if got := sweepDeltaFact(same, &protocol.DevInfo{VendorApp: "32"}, base); got != "nothing changed since the sweep of Sep 12 16:00" {
+	if got := sweepDeltaFact(same, &protocol.DevInfo{VendorApp: "32"}, base); got != "unchanged since Sep 12 16:00" {
 		t.Errorf("unchanged = %q", got)
 	}
 	moved := diagIdentity{fw: "AR241CE_9000.24.1", mcu: "v24"}
 	got := sweepDeltaFact(moved, &protocol.DevInfo{VendorApp: "33"}, base)
-	for _, want := range []string{"firmware AR241CE_8530 → AR241CE_9000", "mcu 23 → 24", "vendor app 32 → 33", "sweep of Sep 12 16:00"} {
+	for _, want := range []string{"firmware AR241CE_8530 → AR241CE_9000", "mcu 23 → 24", "vendor app 32 → 33", "since Sep 12 16:00"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("delta %q missing %q", got, want)
 		}
@@ -158,7 +158,7 @@ func TestSinceSweepFact(t *testing.T) {
 	m.baseline = base
 	applyFixtureRecords(st, "device_record.txt")
 	m.setView(viewDiag)
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "since sweep") || !strings.Contains(out, "sweep of Sep 12") {
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "sweep     unchanged since Sep 12") {
 		t.Errorf("device card lacks the since-sweep row:\n%s", out)
 	}
 }
@@ -260,5 +260,67 @@ func TestThemeSelection(t *testing.T) {
 	// the two palettes differ where it matters
 	if newThemeFor(true).sTxt.GetForeground() == newThemeFor(false).sTxt.GetForeground() {
 		t.Error("light and dark text colours should differ")
+	}
+}
+
+// When the diagnostics are taller than the frame they scroll: ↑↓ by a row,
+// ←→ by a page, clamped at both ends, with the footer saying how much is
+// off-screen instead of the colour legend.
+func TestDiagScrollsWhenTallerThanTheFrame(t *testing.T) {
+	m, st, _ := makeModel(t)
+	m.sty = newTheme()
+	applyFixtureRecords(st, "device_record.txt")
+	applyFixtureRecords(st, "config_record.txt")
+	m.rows, m.cols = 24, 160 // cards layout, but only ~20 body rows for ~45 rows of read-out
+	m.setView(viewDiag)
+	first := stripANSI(m.viewContent())
+	if !strings.Contains(first, "↑↓ scroll") || !strings.Contains(first, "more rows below") {
+		t.Fatalf("a too-short frame should offer to scroll:\n%s", first)
+	}
+	if !strings.Contains(first, "─ audio") {
+		t.Error("the top of the read-out should show first")
+	}
+	m.key(ke(kDown))
+	m.key(ke(kDown))
+	scrolled := stripANSI(m.viewContent())
+	if scrolled == first || !strings.Contains(scrolled, "2 above") {
+		t.Errorf("↓↓ should scroll two rows and say so:\n%s", scrolled)
+	}
+	m.key(ke(kRight)) // a page
+	if m.diagScroll <= 2 {
+		t.Error("→ should page down")
+	}
+	for range 40 {
+		m.key(ke(kRight))
+	}
+	bottom := stripANSI(m.viewContent())
+	if !strings.Contains(bottom, "rows above") || strings.Contains(bottom, "below") {
+		t.Errorf("over-scrolling should clamp at the bottom:\n%s", bottom)
+	}
+	for range 40 {
+		m.key(ke(kLeft))
+	}
+	if m.diagScroll != 0 || stripANSI(m.viewContent()) != first {
+		t.Error("← past the top should clamp at the first row")
+	}
+	// tall enough: nothing to scroll, the legend is back
+	m.rows = 60
+	tall := stripANSI(m.viewContent())
+	if strings.Contains(tall, "↑↓ scroll") || !strings.Contains(tall, "● good") {
+		t.Errorf("a tall frame should show the legend, not a scroll hint:\n%s", tall)
+	}
+}
+
+// The verdict names what made it amber or red, worst first, at most two.
+func TestDiagVerdictNamesItsReasons(t *testing.T) {
+	now := time.Now()
+	v := diagVitals{haveTemp: true, tempC: 90, onWifi: true, haveReconnect: true, reconnectRate: 6}
+	worst, why := diagVerdict(v, now, now)
+	if worst != 2 || len(why) != 2 || why[0] != "temp 90 °C" || why[1] != "on wi-fi" {
+		t.Errorf("verdict = %d %q", worst, why)
+	}
+	worst, why = diagVerdict(diagVitals{haveCPU: true, cpuFrac: 0.1}, now, now)
+	if worst != 0 || len(why) != 0 {
+		t.Errorf("healthy verdict = %d %q", worst, why)
 	}
 }
