@@ -17,6 +17,14 @@ var reNum = regexp.MustCompile(`Data:(-?\d+)`)
 // first, then at most fifteen more version characters.
 var reVendorApp = regexp.MustCompile(`^[0-9][0-9A-Za-z.\-]{0,15}$`)
 
+// reReboot is the shape of the kernel cmdline's reboot_mode value ("cold_boot",
+// "normal", …): a bare lower-case word.
+var reReboot = regexp.MustCompile(`^[a-z_]{1,16}$`)
+
+// reEngineProc is the loop's spotify.proc value: the live engine's age in
+// seconds, then how many SSH_CLIENT lines its environment carries (0/1).
+var reEngineProc = regexp.MustCompile(`^[0-9]{1,9}( [0-9]{1,4})?$`)
+
 // joinLines is strings.Join with the single-line case — which is what a per-tick
 // register read (@@p / @@t / @@v) always is — returning the line as-is instead of
 // allocating a copy of it.
@@ -114,6 +122,10 @@ type DevInfo struct {
 	DataUsed, DataTotal  string // /lsync (data partition), KB
 	DNS                  string // configured resolver (first nameserver); "" when absent
 	VendorApp            string // the vendor app loader's manifest version (/lsync/app-0.json); "" when unread
+	// Reboot is the kernel cmdline's reboot_mode — "cold_boot" for a power-on
+	// (the bootloader saw no reboot reason), another word for a software
+	// reboot / OTA; "" when the loop didn't ship it.
+	Reboot string
 }
 
 // confKeys is the allowlist of capability ids the one-shot @@c block may carry;
@@ -139,6 +151,10 @@ var confKeys = map[string]bool{
 	"spotify.eng": true, "spotify.sdk": true, "spotify.cfg": true,
 	// unauthenticated listeners the LAN can reach (the loop's lp())
 	"telnet": true, "adb": true, "web": true, "control": true,
+	// the live engine's process facts (age, launched-from-ssh) and the list of
+	// env keys a runtime setenv has written — see EngineUptime / EngineBySSH /
+	// Dirty. Both are new in the 2026-09 loop; older loops leave them absent.
+	"spotify.proc": true, "dirty": true,
 }
 
 // ConfInfo holds the device's streaming-capability state from the one-shot @@c
@@ -188,6 +204,76 @@ func (c *ConfInfo) Cfg() string {
 	return c.Svc["spotify.cfg"]
 }
 
+// EngineUptime reports how long the live Spotify engine has been running (the
+// loop's spotify.proc: seconds since the process started). ok is false when no
+// engine runs or the loop did not report it.
+func (c *ConfInfo) EngineUptime() (age time.Duration, ok bool) {
+	if c == nil {
+		return 0, false
+	}
+	f := strings.Fields(c.Svc["spotify.proc"])
+	if len(f) == 0 {
+		return 0, false
+	}
+	s, err := strconv.Atoi(f[0])
+	if err != nil {
+		return 0, false
+	}
+	return time.Duration(s) * time.Second, true
+}
+
+// EngineBySSH reports whether the live engine was launched from an ssh session
+// — a services-pane toggle, or a shell — rather than by the device's init at
+// boot / netready: an init-started daemon carries no SSH_CLIENT in its
+// environment. known is false when there is no engine or no report.
+func (c *ConfInfo) EngineBySSH() (bySSH, known bool) {
+	if c == nil {
+		return false, false
+	}
+	f := strings.Fields(c.Svc["spotify.proc"])
+	if len(f) < 2 {
+		return false, false
+	}
+	return f[1] != "0", true
+}
+
+// Dirty reports whether the env key was written at runtime — a dirty row in
+// the device's sqlite settings store, i.e. set by the user, the app or lp10 and
+// kept by the boot-time factory merge — as opposed to still following the
+// factory default. known is false when the loop had no list to give (no sqlite3
+// on the box, or an older loop).
+func (c *ConfInfo) Dirty(key string) (dirty, known bool) {
+	if c == nil {
+		return false, false
+	}
+	list, ok := c.Svc["dirty"]
+	if !ok || list == "" {
+		return false, false
+	}
+	for k := range strings.FieldsSeq(list) {
+		if k == key {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// DevOps is the @@o syslog digest: what the box's own logs say about the
+// Spotify engine's link and about the firmware check the box performs itself
+// (every 4 h, on its own timer — so lp10 never has to leave the LAN to ask).
+// The syslog lives on tmpfs and holds roughly the last day, which is the window
+// Reconnects counts over.
+type DevOps struct {
+	Reconnects   int       // eSDK "connection to Spotify has been lost" lines in the syslog
+	ReconnectsOK bool      // a count was read
+	LogSince     time.Time // the syslog's first timestamp (the window Reconnects covers)
+	LogSinceOK   bool
+	OTAAt        time.Time // when the box last heard from the vendor manifest
+	OTAUpToDate  bool      // the answer was "No update available"
+	OTAText      string    // the answer as logged when it is NOT that ("" otherwise)
+	OTAOK        bool      // an OTA answer was present in the syslog
+}
+
 // Divergent reports a service whose configured flag and running state disagree
 // — configured on but not running, or running while configured off. Services
 // with no .env reading (unknown) never diverge, so an unreadable flag stays
@@ -224,6 +310,8 @@ type parsedRecord struct {
 	hasLog  bool
 	vlogs   []string // @@L: the vendor app's log tail, answering a MID-93 "2"
 	hasVlog bool
+
+	ops *DevOps // @@o: the syslog digest (at connect and on overlay open)
 }
 
 // regInt extracts the integer register value from a section's joined lines
@@ -265,7 +353,86 @@ func parseRecord(rec Record) parsedRecord {
 	p.night, p.nightOK = parseNight(rec["n"])
 	p.logs, p.hasLog = parseLogs(rec, "l")
 	p.vlogs, p.hasVlog = parseLogs(rec, "L")
+	p.ops = parseOps(rec["o"], time.Now())
 	return p
+}
+
+// parseOps decodes the @@o digest: three tagged lines — n= the reconnect count,
+// t= the syslog's first timestamp, u= the ota daemon's last answer line. Each is
+// optional (a missing syslog leaves all three empty); absent section -> nil.
+func parseOps(lines []string, now time.Time) *DevOps {
+	if len(lines) == 0 {
+		return nil
+	}
+	o := &DevOps{}
+	for _, ln := range lines {
+		k, v, ok := strings.Cut(printable(ln), "=")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		switch k {
+		case "n":
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 && n < 10_000_000 {
+				o.Reconnects, o.ReconnectsOK = n, true
+			}
+		case "t":
+			o.LogSince, o.LogSinceOK = parseSyslogTime(v, now)
+		case "u":
+			if v == "" {
+				continue
+			}
+			// "Sep 12 14:56:15:624239 E/ota[923]: ota: OTA:error string =  No update available"
+			if len(v) >= 15 {
+				o.OTAAt, _ = parseSyslogTime(v[:15], now)
+			}
+			o.OTAOK = true
+			if _, ans, found := strings.Cut(v, "error string ="); found {
+				ans = strings.TrimSpace(ans)
+				if strings.EqualFold(ans, "No update available") {
+					o.OTAUpToDate = true
+				} else {
+					o.OTAText = clip(ans, 120)
+				}
+			} else {
+				// the manifest's SUCCESS reply carries the offered package
+				o.OTAText = "update offered"
+			}
+		}
+	}
+	if !o.ReconnectsOK && !o.LogSinceOK && !o.OTAOK {
+		return nil // all junk: keep the previous digest
+	}
+	return o
+}
+
+// parseSyslogTime reads a BusyBox/rsyslog timestamp with no year ("Sep 11
+// 01:47:58", the first 15 bytes of a line) in the local zone — the box keeps
+// the same TimeZone env as the room it sits in. The year is now's, rolled back
+// one when that would put the stamp in the future (a log that began in
+// December, read in January).
+func parseSyslogTime(s string, now time.Time) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) > 15 {
+		s = s[:15]
+	}
+	t, err := time.ParseInLocation("Jan _2 15:04:05", s, now.Location())
+	if err != nil {
+		return time.Time{}, false
+	}
+	t = t.AddDate(now.Year(), 0, 0)
+	if t.After(now.Add(24 * time.Hour)) {
+		t = t.AddDate(-1, 0, 0)
+	}
+	return t, true
+}
+
+// clip bounds a device string for display.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // parseLogs decodes a log-tail section — "l" (the device syslog) or "L" (the
@@ -348,6 +515,9 @@ func ApplyRecord(st *State, rec Record) bool {
 	}
 	if p.mroom != nil {
 		st.mroom = p.mroom
+	}
+	if p.ops != nil {
+		st.ops, st.opsAt = p.ops, now
 	}
 	if p.nightOK {
 		if !st.nightOrigKnown {
@@ -506,6 +676,12 @@ func parseDevInfo(lines []string) *DevInfo {
 			if reVendorApp.MatchString(v) {
 				di.VendorApp = v
 			}
+		case "rboot":
+			// cut out of /proc/cmdline the same way: a cmdline without
+			// reboot_mode= hands over its first token, which this rejects.
+			if reReboot.MatchString(v) {
+				di.Reboot = v
+			}
 		}
 	}
 	// An all-junk block (lines present, nothing recognisable) must not wipe a
@@ -536,6 +712,12 @@ func confValueOK(k, v string) bool {
 	case "spotify.sdk": // an eSDK build like 3.203.239-g1d6bd565, or nothing
 		return len(v) <= 40 && strings.IndexFunc(v, func(r rune) bool {
 			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '_')
+		}) < 0
+	case "spotify.proc": // "<age s> <ssh 0/1>", or nothing when no engine runs
+		return v == "" || reEngineProc.MatchString(v)
+	case "dirty": // space-separated env key names (sqlite3's rows), or nothing
+		return len(v) <= 4096 && strings.IndexFunc(v, func(r rune) bool {
+			return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '_' || r == ' ' || r == '.' || r == '-')
 		}) < 0
 	}
 	return v == "" || v == "on" || v == "off"

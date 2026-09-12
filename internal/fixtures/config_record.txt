@@ -2,6 +2,8 @@
 spotify.eng=newspotifyhifi
 spotify.sdk=3.203.239-g1d6bd565
 spotify.cfg=hifi
+spotify.proc=638794 1
+dirty=FriendlyName SpotifyEnabled SpotifyProEnabled TidalEnabled
 airplay=on
 airplay.env=on
 dlna=on

@@ -20,16 +20,14 @@
 
 # ── ping target + firmware/name (LUCI regs 5/6/90) + cpu/kernel facts ──
 ph='__PING_HOST__';
-fw=$(LUCI_local -r 5 2>/dev/null); fw=${fw#*Data:}; fw=${fw%% *};
-fv=$(LUCI_local -r 6 2>/dev/null); fv=${fv#*Data:}; fv=${fv%% *};
+# rr() reads one LUCI register's first Data: word into $r (shared; bytes).
+rr() { r=$(LUCI_local -r $1 2>/dev/null); r=${r#*Data:}; r=${r%% *}; };
+rr 5; fw=$r; rr 6; fv=$r;
 # FriendlyName may contain spaces, so strip the trailing " Length:N" instead of
 # taking the first word; a failed read (no Data:) yields an empty name.
 fn=$(LUCI_local -r 90 2>/dev/null);
 case "$fn" in *Data:*) fn=${fn#*Data:}; fn=${fn% Length:*};; *) fn=;; esac;
-nc=0;
-while read -r l; do
-  case "$l" in processor*) nc=$((nc+1));; esac;
-done < /proc/cpuinfo;
+nc=$(grep -c ^processor /proc/cpuinfo);
 read -r kt < /proc/sys/kernel/ostype;
 read -r kr < /proc/sys/kernel/osrelease;
 nl=$(printf '\nx'); nl=${nl%x};
@@ -39,6 +37,9 @@ nl=$(printf '\nx'); nl=${nl%x};
 E() { echo @@E; };
 tl() { tail -160 | sed 's/^/ /'; };
 cip=${SSH_CLIENT%% *};
+# ml: the box's live syslog. NOT /var/log/messages — that file is touched at boot and
+# stays 0 bytes; rsyslog writes here. Shared by lg() and ot() (bytes).
+ml=/var/log/syslog/messages.log;
 
 # ── pg(): one ICMP ping — the avg RTT (ms) via shared $o ("-" on failure), plus the
 # target's resolved IPv4 via shared $oip ("" when unparsed), taken from BusyBox
@@ -101,6 +102,11 @@ done 2>/dev/null < /etc/fwVersion.conf;
 # accepts a version-shaped value — validating there is free, here it costs bytes.
 va=$(cat /lsync/app-0.json 2>/dev/null); va=${va#*\"version\"}; va=${va#*\"}; va=${va%%\"*};
 
+# ── reboot reason: the bootloader stamps reboot_mode= into the kernel cmdline —
+# cold_boot is a power-on (the 2026-09-04 outage), anything else a software
+# reboot/OTA. The laptop turns it plus uptime into "power was lost at …". ──
+read -r cl 2>/dev/null < /proc/cmdline; cl=${cl#*reboot_mode=}; cl=${cl%% *};
+
 # ── resolver + /lsync usage, then emit the @@i key=value block ──
 dns=;
 while read -r dk dvv drest; do
@@ -111,9 +117,9 @@ done 2>/dev/null < /etc/resolv.conf;
 # used/total columns by field count so a long mount source can't silently swap
 # the data= reading into avail/used.
 set -- $(df -k /lsync 2>/dev/null | tail -1);
-if [ $# -ge 6 ]; then duk=$3; dtk=$2; elif [ $# -eq 5 ]; then duk=$2; dtk=$1; else duk=; dtk=; fi;
+duk=; dtk=; [ $# -ge 6 ] && { duk=$3; dtk=$2; }; [ $# -eq 5 ] && { duk=$2; dtk=$1; };
 echo @@i;
-printf 'net=%s\niface=%s\nip=%s\nmac=%s\ngw=%s\nspeed=%s\nduplex=%s\nssid=%s\nfreq=%s\nrate=%s\nbuild=%s\napp=%s\nplatform=%s\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\n' "$net" "$dv" "$ip" "$mac" "$gw" "$sp" "$dx" "$ss" "$fq" "$rt" "$bd" "$ap" "$pf" "$fn" "$duk" "$dtk" "$dns" "$va";
+printf 'net=%s\nip=%s\nmac=%s\ngw=%s\nspeed=%s\nduplex=%s\nssid=%s\nfreq=%s\nrate=%s\nbuild=%s\napp=%s\nplatform=%s\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\nrboot=%s\n' "$net" "$ip" "$mac" "$gw" "$sp" "$dx" "$ss" "$fq" "$rt" "$bd" "$ap" "$pf" "$fn" "$duk" "$dtk" "$dns" "$va" "$cl";
 E;
 
 # ── @@c capability block ──
@@ -130,7 +136,7 @@ E;
 gv() {
   v=$(getenv "$2" 2>/dev/null); v=${v##*: };
   case "$v" in
-    1|true|TRUE|True|on|ON|yes|YES) echo "$1=on";;
+    1|true|TRUE|on|ON) echo "$1=on";;
     '') echo "$1=";;
     *) echo "$1=off";;
   esac;
@@ -141,10 +147,12 @@ gv() {
 # executable name, so the match stays exact rather than a substring guess over a
 # command line. Refreshed at the top of every ct(), since a service toggle is
 # precisely when the process list changes.
+# The same pass remembers the live Spotify engine's /proc directory ($ep) for
+# sy() — no pidof fork, and the same exact-comm match.
 pz() {
-  pl=" ";
+  pl=" "; ep=;
   for pf in /proc/[0-9]*/comm; do
-    read -r pzc 2>/dev/null < $pf && pl="$pl$pzc ";
+    read -r pzc 2>/dev/null < $pf && { pl="$pl$pzc "; case $pzc in spotifymusicpro|newspotifyhifi) ep=${pf%/comm};; esac; };
   done;
 };
 # pr() reports a running daemon by looking it up in that one scan.
@@ -164,7 +172,7 @@ sy() {
   echo "spotify.eng=$eng";
   sl=;
   case "$eng" in spotifymusicpro) sl=pro;; newspotifyhifi) sl=hifi;; esac;
-  [ "$eng" = "$sle" ] || { sle=$eng; sk=; [ -n "$sl" ] && sk=$(grep -aom1 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null | head -1); };
+  [ "$eng" = "$sle" ] || { sle=$eng; sk=; [ -n "$sl" ] && sk=$(grep -aom1 'esdk:[0-9.]*-g[0-9a-f]*' /usr/lib/libspotify$sl.so 2>/dev/null); };
   echo "spotify.sdk=${sk#esdk:}";
   se=$(getenv SpotifyEnabled 2>/dev/null); sr=$(getenv SpotifyProEnabled 2>/dev/null);
   case "${se##*: }/${sr##*: }" in
@@ -174,6 +182,20 @@ sy() {
     *) sc=none;;
   esac;
   echo "spotify.cfg=$sc";
+  # spotify.proc = "<age s> <ssh>": how long the live engine has been up (stat
+  # field 22 is its start in clock ticks since boot; USER_HZ is 100) and whether
+  # an ssh session launched it — an init-started daemon carries no SSH_* in its
+  # environment, one kicked from this pane (or a shell) does. Empty when no
+  # engine runs. That is how the 2026-09-04 engine switch was traced.
+  ea=; eb=;
+  [ -n "$ep" ] && { set -- $(cat $ep/stat); read -r u9 x9 < /proc/uptime; ea=$((${u9%.*}-${22}/100)); eb=$(grep -c SSH_CLIENT $ep/environ); };
+  echo "spotify.proc=$ea${eb:+ $eb}";
+  # dirty = the env keys a runtime setenv has touched. The settings store is
+  # sqlite (/data/libre/env/env.db) and dbit=1 marks a user-written row — the
+  # rows the boot-time factory merge keeps — so this is the honest split between
+  # "you set this" and "the factory default". Key names only; the same table
+  # holds the Spotify blob and the Wi-Fi PSK. Empty when sqlite3 is absent.
+  echo "dirty=$(sqlite3 /data/libre/env/env.db 'select key from ENV_systemENV where dbit=1' 2>/dev/null | tr '\n' ' ')";
 };
 # lp() scans /proc/net/tcp{,6} for LISTEN (state 0A) sockets on the ports the box
 # exposes without auth — telnet :23 (0017), adb :5555 (15B3), the web config :80
@@ -284,14 +306,24 @@ tg() {
 # guard, no severity grep (the laptop filters on its "[LEVEL]" field). Inlined in
 # the dispatcher rather than a second function: the loop rides one ssh exec
 # request and sits a few hundred bytes under dropbear's 9000-byte ceiling.
-lg() { grep " [EWIDNF]/" /var/log/syslog/messages.log 2>/dev/null | grep -v luci_serv | tl; };
+lg() { grep " [EWIDNF]/" $ml 2>/dev/null | grep -v luci_serv | tl; };
+
+# ── ot(): the @@o syslog digest — three tagged lines the laptop turns into the
+# Spotify engine's reconnect rate and the box's OWN firmware-check verdict:
+#   n= how often the eSDK logged "The connection to Spotify has been lost"
+#   t= the syslog's first timestamp (the window those reconnects fall in;
+#      /tmp/syslog is tmpfs, so it holds roughly the last day)
+#   u= the ota daemon's last manifest answer ("error string = No update
+#      available", or the offered package) — it asks the vendor every 4 h on
+#      its own, so lp10 never has to. Sent at connect and whenever the
+#      diagnostics overlay opens. ──
+ot() { echo @@o; { echo "n=$(grep -c 'has been lost' $ml)"; echo "t=$(head -c 15 $ml)"; echo "u=$(grep -h 'error string\|otapackage' $ml | tail -1)"; } 2>/dev/null; E; };
 
 
 # ── @@d device details (reg 92 JSON: serial / MACs / MCU + full fw version) and
 # @@g multiroom group (reg 39 JSON: linked devices) — both once per connection,
 # shipped raw and parsed laptop-side ──
-echo @@d; LUCI_local -r 92 2>/dev/null; E;
-echo @@g; LUCI_local -r 39 2>/dev/null; E;
+for q in d:92 g:39; do echo @@${q%:*}; LUCI_local -r ${q#*:} 2>/dev/null; E; done;
 
 # ── @@n night mode: the SoC's multi-band DRC enable (ALSA boolean on the AED
 # block — the one host-writable audio effect on this box; the EQ/DRC coefficient
@@ -301,6 +333,7 @@ echo @@g; LUCI_local -r 39 2>/dev/null; E;
 an='AED Multi-band DRC enable';
 nm() { echo @@n; amixer -c0 cget name="$an" 2>/dev/null; E; };
 nm;
+ot;
 
 # ── main streaming loop ── (state: i=metadata countdown, idl=idle ticks, bw=burst
 # window, dg=diag overlay flag, pc49=position-poll gate, pgc=ping gate, ef=EOF streak)
@@ -351,15 +384,11 @@ while :; do
     # ALSA chain: walk each playback sub for state/avail (status) + rate/fmt/ch/buf
     # (hw_params); colon may be attached (rate:) or detached (rate :) — handle both.
     as=-; ab=-; ar=-; af=-; ac=-; bs=-;
-    for ad in /proc/asound/card*/pcm*p/sub*; do
+    for ad in /proc/asound/card*/pcm*p/sub*/status /proc/asound/card*/pcm*p/sub*/hw_params; do
       while read -r ak av ar2; do
         k=${ak%:}; [ "$av" = ":" ] && av=$ar2;
-        case "$k" in state) as=$av;; avail) ab=$av;; esac;
-      done 2>/dev/null < "$ad/status";
-      while read -r ak av ar2; do
-        k=${ak%:}; [ "$av" = ":" ] && av=$ar2;
-        case "$k" in rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac;
-      done 2>/dev/null < "$ad/hw_params";
+        case "$k" in state) as=$av;; avail) ab=$av;; rate) ar=$av;; format) af=$av;; channels) ac=$av;; buffer_size) bs=$av;; esac;
+      done 2>/dev/null < "$ad";
     done;
     cf=-; read -r cf 2>/dev/null < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq;
     # three ping RTTs (laptop / gateway / internet) gated to every 3rd @@s (pgc) so a
@@ -409,7 +438,7 @@ while :; do
     while :; do
       case "$mid" in
         __MIDS__) LUCI_local "$mid" "$data" >/dev/null 2>&1; pc=1;;
-        90) case "$data" in 1) dg=1;; *) dg=0;; esac;;
+        90) case "$data" in 1) dg=1; ot;; *) dg=0;; esac;;
         91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name="$an" $nv >/dev/null 2>&1; nm;;
         92) tg "$data";;
         93) case "$data" in 2) echo @@L; tl 2>/dev/null < /lsync/app.log;; *) echo @@l; lg;; esac; E;;

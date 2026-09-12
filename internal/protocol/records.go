@@ -13,7 +13,7 @@ import (
 // readback: once at connect and again after every MID-91 set. 'l' is the device
 // syslog tail and 'L' the vendor app's own log (/lsync/app.log), each sent only
 // in answer to a MID-93 request (data 1 / 2).
-var tags = map[byte]bool{'B': true, 'p': true, 't': true, 'v': true, 's': true, 'i': true, 'c': true, 'd': true, 'g': true, 'n': true, 'l': true, 'L': true}
+var tags = map[byte]bool{'B': true, 'p': true, 't': true, 'v': true, 's': true, 'i': true, 'c': true, 'd': true, 'g': true, 'n': true, 'l': true, 'L': true, 'o': true}
 
 const maxRecLines = 200 // a player record is ~30 lines; a log tail (@@l/@@L) up to 160
 
