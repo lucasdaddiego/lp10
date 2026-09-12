@@ -57,9 +57,21 @@ get one screen.
   plasma motif for radio / idle / lesser terminals. The title and artist are
   clickable (OSC 8) and link to Spotify.
 - **Five views, one screen** — `1` player · `2` equalizer · `3` services ·
-  `4` logs · `5` diagnostics, named in the header strip; `tab` cycles them,
-  `esc` returns to the player, `?` is a help page with every key. Playback
-  keys work from every view, so a track can be paused from the diagnostics.
+  `4` logs · `5` diagnostics, named in the header strip (short names, then bare
+  numerals, as the width shrinks); `tab` cycles them, `esc` returns to the
+  player, `?` is a help page with every key. Playback keys work from every
+  view, so a track can be paused from the diagnostics. The player's footer
+  rotates a second page of the rarer keys every few seconds.
+- **A notice line** under the header, in every view — a volume step names the
+  level, mute says so, the sleep timer, bedtime and night mode report their
+  state, a service switch says what was asked, and a lost connection warns.
+  On connect it greets with a summary: firmware, the Spotify engine, the
+  engine's reconnect count, and whether the last boot was a power-on. Each
+  notice fades after a couple of seconds; the row is always there, so nothing
+  shifts.
+- **An idle clock** — connected with nothing playing, the player shows the
+  time in large block digits and names the streaming sources that are switched
+  on, so the terminal reads from across the room and says how to wake the box.
 - **Equalizer** (`2` or `e`) — the EQ switch and its preset, treble / mid / bass
   tone, the deep-bass switch and level, balance, and the output cap (Max
   volume) as wide slider rows, each with a note on what it does on this box.
@@ -166,6 +178,7 @@ get one screen.
   lp10 command that asks the vendor on its own — by design, since that is the
   question it answers.
 - **Device log** (`4` or `l`) — the tail of one of the box's own logs, fetched on demand
+  (`F` follows it, refetching every ten seconds while the view is open)
   over the same ssh stream (zero cost while the pane is closed). The **device
   log** (`/var/log/syslog/messages.log`) is the only place the box records a
   service *refusing* to start — an init script's "not enabled" line lands there
@@ -249,9 +262,11 @@ everything below.
 **Equalizer** — `↑` / `↓` select a control, `←` / `→` adjust it, `enter` flips
 a switch or steps the preset. **Services** — `↑` / `↓` select, `enter` switches
 (Spotify cycles off → HiFi → Pro). **Logs** — `↑` / `↓` scroll, `←` / `→` page,
-`s` source (device syslog / vendor app), `f` filter, `r` refresh.
+`s` source (device syslog / vendor app), `f` filter, `r` refresh, `F` follow.
 **Diagnostics** — `u` asks the vendor's manifest whether the firmware is
 current (the box asks by itself every four hours; the update line shows that).
+When a `lp10 sweep` baseline exists, the device card also says what moved since
+it — firmware, MCU or vendor app — or that nothing did.
 
 The playback keys (`space`, `n`, `p`, `m`, volume, the timers) work from every
 view that does not use the letter itself — in the logs, `s` is the source.
@@ -466,6 +481,7 @@ ping_host = "spotify.com"   # diagnostics: the device's internet-latency target
 discover  = true            # find the LP10 on the LAN via mDNS at startup
 art       = true            # show the real album cover (off => the plasma motif)
 art_mode  = "auto"          # auto | kitty | halfblock | off  (see below)
+theme     = "auto"          # auto | light | dark  (auto follows the terminal's background)
 ```
 
 ### Album art
@@ -487,6 +503,11 @@ cover paints instantly on the next launch). `art_mode` picks the renderer:
 > The Kitty path uses Unicode-placeholder graphics so it composes with the
 > diff renderer. If your terminal claims Kitty support but the cover renders
 > wrong, set `art_mode = "halfblock"`.
+
+`theme` picks the palette: `auto` (the default) asks the terminal for its
+background colour once at startup and uses the light palette on a light
+terminal, `light` and `dark` decide outright. `NO_COLOR` in the environment
+turns every style off, as it does for any Charm program.
 
 ### Discovery
 

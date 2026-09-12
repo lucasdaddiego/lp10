@@ -12,6 +12,7 @@ import (
 
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/sweep"
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
@@ -93,8 +94,30 @@ type model struct {
 	// Persistence belongs to the controller/runtime, not protocol.State.
 	premutePath string
 
-	focus         int  // transport-button focus (index into actions)
-	view          view // the screen on show (viewPlayer … viewHelp)
+	focus int  // transport-button focus (index into actions)
+	view  view // the screen on show (viewPlayer … viewHelp)
+
+	// the notice line (notice.go): what it says, until when, and in which pen
+	notice      string
+	noticeUntil time.Time
+	noticeWarn  bool
+	// connection tracking for the notices: the last seen state, whether a
+	// connection ever came up this run, and when the connect summary is due
+	wasConnected  bool
+	connectedOnce bool
+	summaryDue    time.Time
+
+	// logFollow refetches the open log every few seconds (the F key)
+	logFollow bool
+
+	// baseline is the last `lp10 sweep` (nil: none saved); the diagnostics
+	// name what has moved since it
+	baseline *sweep.Report
+
+	// theme selection: the terminal's background as reported (nil until it
+	// answers), and whether the palette was built for a dark background
+	bgDark        *bool
+	themeDark     bool
 	eqFocus       int  // EQ-strip display position (index into eqOrder)
 	frame         int  // animation frame for the art motif (advances while playing)
 	motifLive     bool // the plasma motif was actually drawn last render (gates the fast frame tick)

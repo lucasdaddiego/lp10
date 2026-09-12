@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/sweep"
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
@@ -628,7 +629,7 @@ func fmtAgeShort(d time.Duration) string {
 
 // identityFacts is the present-only identity list both diag layouts render, so
 // the stacked and cards views can't drift apart.
-func identityFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
+func identityFacts(d protocol.DiagnosticSnapshot, base *sweep.Report, now time.Time) []kv {
 	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
 	return presentKVs([]kv{
 		{"boot", bootFact(d, now)},
@@ -640,9 +641,58 @@ func identityFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
 		{"name", id.name},
 		{"os", id.os},
 		{"serial", id.serial},
+		{"since sweep", sweepDeltaFact(id, d.DevInfo, base)},
 		{"update", boxUpdateFact(d, now)},
 		{"vendor", otaFact(d, now)},
 	})
+}
+
+// sweepDeltaFact compares the live identity with the last `lp10 sweep`'s
+// baseline: the firmware build, the MCU and the vendor app — the three things
+// an update moves. "" without a baseline or before the identity has arrived;
+// otherwise what changed, or that nothing did, dated to the sweep.
+func sweepDeltaFact(id diagIdentity, dev *protocol.DevInfo, base *sweep.Report) string {
+	if base == nil {
+		return ""
+	}
+	var changes []string
+	known := false
+	if fw := firmwareBuildOf(id.fw); fw != "" && base.Build != "" {
+		known = true
+		if fw != base.Build {
+			changes = append(changes, "firmware "+base.Build+" → "+fw)
+		}
+	}
+	if mcu := strings.TrimPrefix(id.mcu, "v"); mcu != "" && mcu != "—" && base.MCU != "" {
+		known = true
+		if mcu != base.MCU {
+			changes = append(changes, "mcu "+base.MCU+" → "+mcu)
+		}
+	}
+	if dev != nil && dev.VendorApp != "" && base.VendorApp != "" {
+		known = true
+		if dev.VendorApp != base.VendorApp {
+			changes = append(changes, "vendor app "+base.VendorApp+" → "+dev.VendorApp)
+		}
+	}
+	if !known {
+		return ""
+	}
+	when := base.At.Format("Jan 2 15:04")
+	if len(changes) == 0 {
+		return "nothing changed since the sweep of " + when
+	}
+	return strings.Join(changes, " · ") + " · sweep of " + when
+}
+
+// firmwareBuildOf cuts a full firmware string ("AR241CE_8530.23.2", or the
+// card's "—") down to the build the sweep records ("AR241CE_8530").
+func firmwareBuildOf(fw string) string {
+	if fw == "" || fw == "—" {
+		return ""
+	}
+	before, _, _ := strings.Cut(fw, ".")
+	return before
 }
 
 // bootFact turns the kernel's reboot reason and the uptime into the sentence
@@ -709,7 +759,7 @@ func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 }
 
 func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, w int) []string {
-	facts := identityFacts(d, now)
+	facts := identityFacts(d, m.baseline, now)
 	rows := make([]string, 0, (len(facts)+1)/2)
 	for i := 0; i < len(facts); i += 2 {
 		k2, v2 := "", ""
@@ -999,7 +1049,7 @@ func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, no
 }
 
 func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
-	facts := identityFacts(d, now)
+	facts := identityFacts(d, m.baseline, now)
 	rows := make([]string, 0, len(facts))
 	for _, fact := range facts {
 		rows = append(rows, f.plain(fact.k, fact.v, m.sty.sTxt))

@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -59,7 +60,14 @@ func frameTick(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return frameMsg{} })
 }
 
-func (m *model) Init() tea.Cmd { return tea.Batch(logicTick(), frameTick(framePlaying)) }
+func (m *model) Init() tea.Cmd {
+	cmds := []tea.Cmd{logicTick(), frameTick(framePlaying)}
+	if m.cfg.Theme == "" || m.cfg.Theme == "auto" {
+		// ask the terminal for its background once; the answer picks the palette
+		cmds = append(cmds, tea.RequestBackgroundColor)
+	}
+	return tea.Batch(cmds...)
+}
 
 // nbSend enqueues v without ever blocking the caller: on a full buffer it drops
 // the oldest queued item and retries once. Stale commands are coalesced/aged-out
@@ -115,12 +123,23 @@ func (m *model) setVol(v int) {
 	value, persist := m.st.SetVol(v)
 	m.savePremute(persist)
 	m.send(64, strconv.Itoa(value))
+	m.volumeNotice(value)
 }
 
 func (m *model) adjustVol(delta int) {
 	value, persist := m.st.AdjustVol(delta)
 	m.savePremute(persist)
 	m.send(64, strconv.Itoa(value))
+	m.volumeNotice(value)
+}
+
+// volumeNotice prints the level a volume key just set, or "muted".
+func (m *model) volumeNotice(value int) {
+	if value == 0 {
+		m.notify("muted", noticeFor)
+		return
+	}
+	m.notify(fmt.Sprintf("volume %d%%", value), noticeFor)
 }
 
 func (m *model) do(action string) {
@@ -180,11 +199,22 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rows, m.cols = msg.Height, msg.Width
 		m.cellW, m.cellH = cellPixelSize() // window px changed; refresh the cover's pixel footprint
 		return m, nil
+	case tea.BackgroundColorMsg:
+		dark := msg.IsDark()
+		m.bgDark = &dark
+		m.ensureTheme() // rebuilds the palette when the answer differs from the one drawn
+		return m, nil
 	case logicMsg:
 		m.scroll++       // advance the now-playing marquee (independent of play state)
 		s := m.st.Snap() // one snapshot per tick, reused below
 		m.syncStats()    // device emits @@s only while the diag overlay is open
-		m.sleepFire(time.Now(), s)
+		now := time.Now()
+		m.sleepFire(now, s)
+		m.trackConnection(s, now)
+		// follow mode: refetch the open log every 10 s (100 ticks) while it shows
+		if m.logFollow && m.view == viewLogs && m.scroll%100 == 0 {
+			m.logRequest()
+		}
 		// The window title rides View (tea.View.WindowTitle under bubbletea v2),
 		// so the tick only has to keep the cached string current.
 		m.curTitle = m.computeTitle(s)
