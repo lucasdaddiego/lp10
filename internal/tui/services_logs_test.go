@@ -910,3 +910,99 @@ func TestLogsPaneKeysAndViewportAgreeOnPageSize(t *testing.T) {
 		t.Errorf("after one page up = %v, want [%d..%d]", got, 100-2*page, 100-page-1)
 	}
 }
+
+// The pane now says where each flag came from and how the live engine got
+// there: the fixture's dirty list holds the Spotify pair and Tidal but not
+// Qobuz, and its engine has been up 7 d 9 h since an ssh session launched it.
+func TestServicesPaneShowsOriginAndEngineStart(t *testing.T) {
+	m, _, _ := paneModel(t, ovServices)
+	flat := clean(m.viewContent())
+	for _, want := range []string{
+		"set by you",      // Spotify / Tidal: a runtime setenv wrote the flag
+		"factory default", // Qobuz: never touched, follows the firmware
+		"started",
+		"7d 9h",
+		"launched from an ssh session",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("services pane missing %q", want)
+		}
+	}
+	if n := strings.Count(flat, "set by you"); n != 2 {
+		t.Errorf("%d rows tagged 'set by you', want Spotify and Tidal", n)
+	}
+	// The tag is a fact, never a warning: no row gained an "enter →".
+	if n := strings.Count(flat, "enter →"); n != 1 {
+		t.Errorf("%d rows show an action, want exactly the focused one", n)
+	}
+}
+
+// An engine init started, and a box whose loop shipped no dirty list (no
+// sqlite3), stay honest: "launched by init", and no origin tag at all.
+func TestServicesPaneOriginUnknownAndInitStarted(t *testing.T) {
+	st := protocol.NewState()
+	protocol.ApplyRecord(st, protocol.Record{"c": {
+		"spotify.eng=newspotifyhifi", "spotify.cfg=hifi", "spotify.proc=90 0",
+		"tidal=off", "tidal.env=off",
+	}})
+	m, _, _ := modelWith(st)
+	m.rows, m.cols = 44, 120
+	m.openOverlay(ovServices)
+	flat := clean(m.viewContent())
+	if !strings.Contains(flat, "launched by init") {
+		t.Error("init-started engine not named")
+	}
+	for _, absent := range []string{"set by you", "factory default", "ssh session"} {
+		if strings.Contains(flat, absent) {
+			t.Errorf("pane shows %q with no dirty list / an init-started engine", absent)
+		}
+	}
+}
+
+// The both-set trap names its fix: the first press repairs the pair, and the
+// action says so instead of reading like an ordinary step through the cycle.
+func TestServicesPaneBothFlagsOffersRepair(t *testing.T) {
+	st := protocol.NewState()
+	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "spotify.cfg=both"}})
+	m, _, collect := modelWith(st)
+	m.rows, m.cols = 44, 120
+	m.openOverlay(ovServices)
+	m.svcFocus = 0 // Spotify is the first row
+	if got := clean(m.viewContent()); !strings.Contains(got, "enter → repair: legacy (hifi)") {
+		t.Errorf("both-set row does not offer the repair:\n%s", got)
+	}
+	m.svcToggle(time.Now())
+	got := collect()
+	if len(got) != 1 || got[0].Mid != 92 || got[0].Data != "spotify hifi" {
+		t.Errorf("repair sent %+v, want one MID-92 'spotify hifi'", got)
+	}
+}
+
+// The engine section carries the box's own reconnect count and rate from the
+// syslog digest; a quiet log says so, and a busy one turns amber past 1/h.
+func TestServicesPaneReconnectReadout(t *testing.T) {
+	m, st, _ := paneModel(t, ovServices)
+	now := time.Now()
+	since := now.Add(-23 * time.Hour).Format("Jan _2 15:04:05")
+	protocol.ApplyRecord(st, protocol.Record{"o": {"n=54", "t=" + since, "u="}})
+	flat := clean(m.viewContent())
+	for _, want := range []string{"54 reconnects", "/h", "since"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("reconnect readout missing %q", want)
+		}
+	}
+	protocol.ApplyRecord(st, protocol.Record{"o": {"n=0", "t=" + since, "u="}})
+	if flat := clean(m.viewContent()); !strings.Contains(flat, "no reconnects") {
+		t.Error("a quiet log should read 'no reconnects'")
+	}
+	// the rate itself
+	ops := &protocol.DevOps{Reconnects: 30, ReconnectsOK: true, LogSince: now.Add(-10 * time.Hour), LogSinceOK: true}
+	if got := clean(m.reconnectReadout(ops, now)); !strings.Contains(got, "3.0/h") {
+		t.Errorf("rate = %q, want 3.0/h", got)
+	}
+	// too short a window for a rate: count and since only
+	ops.LogSince = now.Add(-5 * time.Minute)
+	if got := clean(m.reconnectReadout(ops, now)); strings.Contains(got, "/h") {
+		t.Errorf("rate shown over a 5-minute window: %q", got)
+	}
+}
