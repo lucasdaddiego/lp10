@@ -119,9 +119,9 @@ func TestEQSummaryOrderWidthAndFocus(t *testing.T) {
 	// focused render differs from the unfocused one — i.e. the selected band is
 	// visibly marked. The plain text is identical, so any difference is the cue.
 
-	m.pane, m.eqFocus = paneNow, 3
+	m.view, m.eqFocus = viewPlayer, 3
 	unfocused := strings.Join(m.eqSummary(80), "\n")
-	m.pane = paneEQ // Mid focused (eqOrder index 3)
+	m.view = viewEQ // Mid focused (eqOrder index 3)
 	focused := strings.Join(m.eqSummary(80), "\n")
 	if focused == unfocused {
 		t.Error("the focused band should be visibly marked when the EQ pane has focus")

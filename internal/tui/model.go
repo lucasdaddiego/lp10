@@ -46,21 +46,33 @@ const (
 // actions is the focusable transport-button order in the now-playing pane.
 var actions = []string{"prev", "toggle", "next"}
 
-// pane identifiers (which half of the dashboard has focus).
+// view is which screen the frame shows. Exactly one is up at a time: the
+// player, or one of the four others reached by number, letter or tab — and
+// the help page behind ?. The header's view strip names them in this order.
+type view int
+
 const (
-	paneNow = 0 // now-playing transport
-	paneEQ  = 1 // equalizer strip
+	viewPlayer view = iota
+	viewEQ
+	viewServices
+	viewLogs
+	viewDiag
+	viewHelp
 )
 
-// Overlay identifiers for the two INTERACTIVE full-screen panes. The read-only
-// diagnostics overlay keeps its own m.diag flag: it is dismissed by any key,
-// while these two own their key handling, so folding all three into one enum
-// would put two unrelated dismissal rules behind one value. The openers hold the
-// invariant that at most one of (m.diag, m.ov) is ever engaged.
+// numberedViews is how many views the 1-5 keys (and tab) reach; help sits
+// outside the cycle and behind ? alone.
+const numberedViews = 5
+
+// viewNames labels the view strip, in view order.
+var viewNames = [...]string{"player", "equalizer", "services", "logs", "diagnostics", "help"}
+
+// The old overlay names, kept as aliases for the callers (and tests) that
+// grew up with them.
 const (
-	ovNone = iota
-	ovServices
-	ovLogs
+	ovNone     = viewPlayer
+	ovServices = viewServices
+	ovLogs     = viewLogs
 )
 
 // miniMode reports whether the terminal is too small for the dashboard, so only
@@ -82,14 +94,12 @@ type model struct {
 	premutePath string
 
 	focus         int  // transport-button focus (index into actions)
-	pane          int  // paneNow | paneEQ
+	view          view // the screen on show (viewPlayer … viewHelp)
 	eqFocus       int  // EQ-strip display position (index into eqOrder)
 	frame         int  // animation frame for the art motif (advances while playing)
 	motifLive     bool // the plasma motif was actually drawn last render (gates the fast frame tick)
 	searchLive    bool // the connecting search figure was drawn last render (keeps the frame clock ticking while idle)
 	scroll        int  // tick counter driving the now-playing marquee (advances every tick)
-	diag          bool
-	ov            int // ovNone | ovServices | ovLogs (the interactive overlays)
 	showRemaining bool
 
 	// services pane: the focused row, and the row awaiting a device answer after

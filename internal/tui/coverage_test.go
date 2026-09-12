@@ -422,14 +422,17 @@ func TestCov_KeyRunes(t *testing.T) {
 	}
 	// e focuses the EQ pane
 	m.key(kr('e'))
-	if m.pane != paneEQ {
+	if m.view != viewEQ {
 		t.Error("e should focus EQ pane")
 	}
 	// an unmapped rune is a no-op
 	if m.key(kr('z')) {
 		t.Error("an unmapped rune should not quit")
 	}
-	// Q quits too
+	// Q backs out of a view first, then quits from the player
+	if m.key(kr('Q')) || m.view != viewPlayer {
+		t.Error("Q in a view should return to the player, not quit")
+	}
 	if !m.key(kr('Q')) {
 		t.Error("Q should quit")
 	}
@@ -439,7 +442,7 @@ func TestCov_KeyPanes(t *testing.T) {
 	m, _, _ := makeModel(t)
 
 	// EQ pane: up/down move the band selection, left/right adjust, enter toggles
-	m.pane = paneEQ
+	m.view = viewEQ
 	m.eqFocus = 1 // TRE (ranged)
 	m.key(ke(kUp))
 	if m.eqFocus != 0 {
@@ -461,14 +464,14 @@ func TestCov_KeyPanes(t *testing.T) {
 	}
 
 	// shift+tab also switches panes (it folds into kTab at translate)
-	p := m.pane
+	p := m.view
 	m.key(translate(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if m.pane == p {
+	if m.view == p {
 		t.Error("shift+tab should switch panes")
 	}
 
 	// now-playing pane: up/down adjust volume
-	m.pane = paneNow
+	m.view = viewPlayer
 	m.st.SetVol(50)
 	m.key(ke(kUp))
 	if v := m.st.Snap().Vol; v != 52 {
@@ -550,7 +553,7 @@ func TestCov_eqToggleNoop(t *testing.T) {
 	m, st, _ := modelWith(protocol.NewState())
 	// eqToggleFocused is a no-op on a ranged control
 	st.ApplyTunnel("TRE", 3)
-	m.pane, m.eqFocus = paneEQ, 1 // TRE (ranged)
+	m.view, m.eqFocus = viewEQ, 1 // TRE (ranged)
 	m.eqToggleFocused()
 	if nv, _ := st.EQValue("TRE"); nv != 3 {
 		t.Error("eqToggleFocused on a ranged band must be a no-op")
@@ -833,9 +836,9 @@ func TestCov_dividerAndMetaIdleAndFooter(t *testing.T) {
 	}
 
 	// footer EQ-pane hint (a tone band: the generic hint)
-	m.pane = paneEQ
+	m.view = viewEQ
 	m.eqFocus = 2
-	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "pick") || !strings.Contains(got, "adjust") {
+	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "select") || !strings.Contains(got, "adjust") {
 		t.Errorf("footer EQ hint = %q", got)
 	}
 }
@@ -1028,7 +1031,7 @@ func TestCov_renderDiagWifiStacked(t *testing.T) {
 	applyRaw(st, wifiS2)
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 99 // W = 93 < diagCardsMinW -> stacked
-	m.diag = true
+	m.view = viewDiag
 	out := clean(m.viewContent())
 	for _, want := range []string{"wi-fi", "HomeNet", "ch 36", "5 GHz", "signal", "latency", "you", "gw"} {
 		if !strings.Contains(out, want) {
@@ -1044,7 +1047,7 @@ func TestCov_renderDiagWifiCards(t *testing.T) {
 	applyRaw(st, wifiS2)
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120 // W = 114 >= diagCardsMinW -> cards
-	m.diag = true
+	m.view = viewDiag
 	out := clean(m.viewContent())
 	for _, want := range []string{"─ network", "wi-fi", "ch 6", "2.4 GHz", "snr", "dns", "rate", "433 Mbit/s"} {
 		if !strings.Contains(out, want) {
@@ -1060,7 +1063,7 @@ func TestCov_renderDiagStackedShortPane(t *testing.T) {
 	applyRaw(st, wifiS2)
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 18, 99 // too short: the read-out must be trimmed with a hint
-	m.diag = true
+	m.view = viewDiag
 	out := clean(m.viewContent())
 	if !strings.Contains(out, "resize for more") {
 		t.Errorf("a short diag pane should trim with a 'resize for more' hint:\n%s", out)
@@ -1303,7 +1306,7 @@ func richDiag(t *testing.T, freq string, over map[int]string) (*model, *protocol
 func TestCov_diagRichCards(t *testing.T) {
 	m, _ := richDiag(t, "5180", nil) // 5 GHz, buffer warn (fill ~0.3), SNR via noise
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	out := clean(m.viewContent())
 	for _, want := range []string{"5 GHz", "ch 36", "snr", "2 ch", "mDNS", "live", "─ latency", "─ connection"} {
 		if !strings.Contains(out, want) {
@@ -1315,7 +1318,7 @@ func TestCov_diagRichCards(t *testing.T) {
 func TestCov_diagRichStacked(t *testing.T) {
 	m, _ := richDiag(t, "5180", nil)
 	m.rows, m.cols = 44, 99
-	m.diag = true
+	m.view = viewDiag
 	out := clean(m.viewContent())
 	for _, want := range []string{"5 GHz", "link 50/70", "mDNS"} {
 		if !strings.Contains(out, want) {
@@ -1329,7 +1332,7 @@ func TestCov_diagCardsBufferRedAndLinkQ(t *testing.T) {
 	// absent noise floor falls back to the link-quality SNR detail; ncpu 0 -> clamp.
 	m, _ := richDiag(t, "5180", map[int]string{18: "30000", 25: "-", 6: "0"})
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	if out := clean(m.viewContent()); !strings.Contains(out, "link 50/70") {
 		t.Errorf("buffer-red cards should fall back to link quality: missing in\n%s", out)
 	}
@@ -1373,7 +1376,7 @@ func TestCov_diagStackedNcpuZero(t *testing.T) {
 	// ncpu 0 -> the nc<1 clamp on the stacked resources gauge
 	m, _ := richDiag(t, "5180", map[int]string{6: "0"})
 	m.rows, m.cols = 44, 99
-	m.diag = true
+	m.view = viewDiag
 	if clean(m.viewContent()) == "" {
 		t.Error("stacked diag with ncpu 0 should still render")
 	}
@@ -1383,7 +1386,7 @@ func TestCov_diagCardsBufferWarn(t *testing.T) {
 	// bufAvail 15435 of 22050 -> fill ~0.30 -> the stWarn buffer arm
 	m, _ := richDiag(t, "5180", map[int]string{18: "15435"})
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	if !strings.Contains(clean(m.viewContent()), "buffer") {
 		t.Error("buffer-warn cards should still draw the buffer gauge")
 	}
@@ -1398,7 +1401,7 @@ func TestCov_diagCardsMissingPing(t *testing.T) {
 	applyRaw(st, sRec(map[int]string{15: "-", 16: "-"})) // gw + net pings absent
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	out := clean(m.viewContent())
 	if !strings.Contains(out, "─ latency") || !strings.Contains(out, "you") {
 		t.Errorf("latency card should still show the 'you' row: %q", out)
@@ -1409,7 +1412,7 @@ func TestCov_diagCardsDeviceError(t *testing.T) {
 	m, st := richDiag(t, "5180", nil)
 	st.Note("Connection refused") // a device error pins to the card tail (derr != "")
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	if !strings.Contains(clean(m.viewContent()), "the device refused the connection") {
 		t.Error("a device error should show its friendly reason in the cards tail")
 	}

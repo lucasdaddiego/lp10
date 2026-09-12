@@ -67,67 +67,58 @@ var svcRows = []svcDef{
 	{
 		id: "spotify", label: "Spotify", gate: gateEngine,
 		detail: []string{
-			"legacy (hifi) is the older eSDK: it tops out at Ogg/AAC — no lossless, ever.",
-			"new (pro) is the newer eSDK and the only one that negotiates FLAC. its volume",
-			"was broken right after the 8530 OTA (output pinned at full scale); with vendor",
-			"app v32 it drives the softvol like hifi does, from the app, phone and remote.",
-			"either choice sticks: the pair is written as dirty rows in the box's env store,",
-			"which the boot-time factory merge keeps — so a reboot, or the next OTA's factory",
-			"default, does not move it (teardown §5). the ZeroConf port follows the engine.",
-			"if both flags read set (an OTA's factory flip on top of your pin) neither engine",
-			"starts and the web page still says on; enter then repairs the pair first.",
+			"Two engines, one runs. HiFi is the older Spotify SDK and tops out at Ogg/AAC;",
+			"Pro is the newer one and the only engine that plays FLAC (its volume works since app v32).",
+			"Either choice survives reboots and firmware updates — the flags are written as your settings.",
+			"If both flags ever read set, neither engine starts: enter repairs the pair first.",
 		},
 	},
 	{
 		id: "airplay", label: "AirPlay 2", gate: gateDaemon,
 		detail: []string{
-			"S99airplay_v2 has no env test — it starts airplaydemo on every netready whatever",
-			"the flag says, so switching it off here lasts until the next reboot.",
+			"AirPlay starts on every network event whatever its flag says,",
+			"so switching it off here lasts until the next reboot.",
 		},
 	},
 	{
 		id: "dlna", label: "DLNA / UPnP", gate: gateDaemon,
 		detail: []string{
-			"S99dmr never reads DMPEnable — its restart() is just \"killall -9 dmr; dmr &\" with",
-			"no env test — so the flag is inert and the daemon returns on every netready.",
-			"that is why the flag and the daemon can disagree here without anything being",
-			"wrong; AirPlay is in exactly the same position, its flag just happens to agree.",
+			"DLNA's flag is never read by its start script, so the daemon returns on every network event.",
+			"That is why its flag and its state can disagree without anything being wrong.",
 		},
 	},
 	{
 		id: "tidal", label: "Tidal", gate: gateEnv,
 		detail: []string{
-			"gated inside the tidalConnect binary rather than its init script — the script",
-			"starts it either way and the process exits on its own when the flag is clear.",
+			"Tidal Connect checks its flag itself: the process starts either way and exits when the flag is clear.",
 		},
 	},
 	{
 		id: "qobuz", label: "Qobuz", gate: gateEnv,
 		detail: []string{
-			"S50avahi-daemon reads the same flag, so enabling Qobuz also brings up avahi.",
+			"Enabling Qobuz Connect also brings up the box's Avahi (mDNS) daemon, which reads the same flag.",
 		},
 	},
 	{
 		id: "usb", label: "USB playback", gate: gateEnv,
 		detail: []string{
-			"there is no daemon to kick for this one: the flag is read at startup, so the",
-			"change only lands on the next boot.",
+			"USB playback has no daemon to restart: the flag is read at boot, so the change lands on the next one.",
 		},
 	},
 	{
 		id: "bt", label: "Bluetooth", gate: gateFixed,
 		reason: "the remote control runs on it",
 		detail: []string{
-			"deliberately not offered: the LP10's remote control IS a Bluetooth device, so",
-			"stopping bluetoothd would take the remote down with it.",
+			"Not offered on purpose: the LP10's remote control is a Bluetooth device,",
+			"so stopping Bluetooth would take the remote down with it.",
 		},
 	},
 	{
 		id: "cast", label: "Google Cast", gate: gateFixed,
-		reason: "set in /etc/libre_ConfigureENV",
+		reason: "gated where setenv cannot reach",
 		detail: []string{
-			"gated by CF_GOOGLE_CAST in /etc/libre_ConfigureENV, a different config layer that",
-			"setenv cannot reach — a switch here would report success and do nothing.",
+			"Google Cast is gated in a different config layer that setenv cannot reach —",
+			"a switch here would report success and do nothing.",
 		},
 	},
 }
@@ -137,8 +128,8 @@ var svcRows = []svcDef{
 // device loop's tg() accepts.
 var spotifyStates = []struct{ wire, label string }{
 	{"off", "off"},
-	{"hifi", "legacy (hifi)"},
-	{"pro", "new (FLAC)"},
+	{"hifi", "HiFi engine"},
+	{"pro", "Pro engine (FLAC)"},
 }
 
 // svcPendingFor bounds how long a row can sit on "applying…" when the device
@@ -408,8 +399,8 @@ func (m *model) renderServices(now time.Time, W int) []string {
 	t := m.sty.pens()
 	cv := m.st.ConfView()
 	if cv == nil {
-		return frameBody([]string{t.dmr.render("reading services from device…")},
-			[]string{m.svcFooter(W)}, m.rows-2, true)
+		return frameBody([]string{t.dmr.render("reading services from the device…")},
+			[]string{m.svcFooter(W)}, m.bodyRows(), true)
 	}
 
 	row := func(i int, d svcDef) string {
@@ -434,20 +425,20 @@ func (m *model) renderServices(now time.Time, W int) []string {
 			content = append(content, row(i, d))
 		}
 	}
-	content = append(content, "", m.sectionHead("reported only · not switchable from here", W), "")
+	content = append(content, "", m.sectionHead("not switchable here", W), "")
 	for i, d := range svcRows {
 		if d.gate == gateFixed {
 			content = append(content, row(i, d))
 		}
 	}
 
-	content = append(content, "", m.sectionHead("spotify engine", W), "")
+	content = append(content, "", m.sectionHead("Spotify engine", W), "")
 	content = append(content, m.spotifyInsight(cv, m.st.DiagnosticView(now), now, W)...)
 	content = append(content, "", m.sectionHead(svcRows[m.svcFocus].label, W), "")
 	for _, d := range svcRows[m.svcFocus].detail {
 		content = append(content, t.dmr.render(Clip(d, W)))
 	}
-	return frameBody(content, []string{"", m.svcFooter(W)}, m.rows-2, false)
+	return frameBody(content, []string{"", m.svcFooter(W)}, m.bodyRows(), false)
 }
 
 // spotifyInsight is the deep readout the rest of the pane's rows don't need: the
@@ -465,9 +456,9 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnaps
 	case "":
 		out = append(out, m.diagLine("engine", t.dim.render("none running")))
 	case "newspotifyhifi":
-		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · legacy · Ogg/AAC only")))
+		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · HiFi · Ogg/AAC only")))
 	case "spotifymusicpro":
-		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · new · FLAC capable")))
+		out = append(out, m.diagLine("engine", t.txt.render(eng)+t.dmr.render(" · Pro · FLAC capable")))
 	default:
 		out = append(out, m.diagLine("engine", t.txt.render(eng)))
 	}
@@ -565,8 +556,8 @@ func (m *model) sectionHead(title string, W int) string {
 }
 
 func (m *model) svcFooter(W int) string {
-	left := "↑↓ select · enter toggle · esc back"
-	right := "writes the device's config"
+	left := "↑↓ select · enter switch · esc player · ? help"
+	right := "enter writes the device's config"
 	return between(m.sty.pens().dmr.render(left), DispW(left),
 		m.sty.pens().dmr.render(right), DispW(right), W)
 }

@@ -165,7 +165,7 @@ func TestDiagErrorIsFriendly(t *testing.T) {
 	st.Note("ssh: Could not resolve hostname lp10.local: nodename nor servname provided, or not known")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 32, 100
-	m.diag = true
+	m.view = viewDiag
 	view := clean(m.viewContent())
 	if strings.Contains(view, "Could not resolve hostname") {
 		t.Error("the diag overlay must not show the raw ssh error")

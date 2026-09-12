@@ -164,17 +164,17 @@ func TestBareEscIsInertAndDiagClosesOnAnyKey(t *testing.T) {
 	if m.key(ke(kEsc)) {
 		t.Error("bare esc should not quit")
 	}
-	if m.pane != paneNow {
+	if m.view != viewPlayer {
 		t.Error("bare esc on the player should leave the pane alone")
 	}
-	m.key(kr('?'))
-	if !m.diag {
-		t.Error("? should open diag")
+	m.key(kr('i'))
+	if m.view != viewDiag {
+		t.Error("i should open the diagnostics")
 	}
 	if m.key(kr('q')) {
-		t.Error("any key closes diag (no quit)")
+		t.Error("q in a view returns to the player (no quit)")
 	}
-	if m.diag {
+	if m.view == viewDiag {
 		t.Error("diag should be closed")
 	}
 }
@@ -205,7 +205,7 @@ func TestTTogglesRemaining(t *testing.T) {
 
 func TestControllerInitialization(t *testing.T) {
 	m := newModel(protocol.NewState(), defaultCfg(), make(chan *protocol.Command, 1), nil)
-	if m.focus != 1 || m.diag || !m.showRemaining || len(m.flash) != 0 || m.pane != paneNow {
+	if m.focus != 1 || m.view == viewDiag || !m.showRemaining || len(m.flash) != 0 || m.view != viewPlayer {
 		t.Errorf("init state wrong: %+v", m)
 	}
 }
@@ -474,7 +474,7 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 	}
 
 	// opening it sends a single "on"
-	m.diag = true
+	m.view = viewDiag
 	m.syncStats()
 	if c := collect(); len(c) != 1 || c[0].Mid != 90 || c[0].Data != "1" {
 		t.Fatalf("diag open should send 90 1, got %+v", c)
@@ -494,7 +494,7 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 	}
 
 	// closing it sends a single "off", then goes quiet
-	m.diag = false
+	m.view = viewPlayer
 	m.syncStats()
 	if c := collect(); len(c) != 1 || c[0].Mid != 90 || c[0].Data != "0" {
 		t.Fatalf("diag close should send 90 0, got %+v", c)
@@ -513,11 +513,11 @@ func TestDiagShowsExpandedFields(t *testing.T) {
 	applyFixtureRecords(st, "playing_record.txt") // @@s: temp / byte counters / pings
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 100
-	m.diag = true
+	m.view = viewDiag
 	out := m.viewContent()
 	for _, want := range []string{
 		"diagnostics", "link", "ethernet", "100 Mbit/s", "full duplex",
-		"address", "latency", "you", "±", "storage", "any other key returns",
+		"address", "latency", "you", "±", "storage", "esc player",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("diag overlay missing %q", want)
@@ -690,7 +690,7 @@ func TestDiagLatencyBlockFullRender(t *testing.T) {
 	}
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 100
-	m.diag = true
+	m.view = viewDiag
 	full := stripANSI(m.viewContent())
 	// the gateway row's peak-hold must have caught the 48ms spike
 	if !strings.Contains(full, "max 48") {
@@ -714,7 +714,7 @@ func TestDiagTagsDiscoveredHost(t *testing.T) {
 	cfg.Discovered = true
 	m := newModel(st, cfg, make(chan *protocol.Command, 8), nil)
 	m.rows, m.cols = 44, 100
-	m.diag = true
+	m.view = viewDiag
 	if !strings.Contains(stripANSI(m.viewContent()), "mDNS") {
 		t.Error("a discovered host should be tagged · mDNS on the diag host line")
 	}

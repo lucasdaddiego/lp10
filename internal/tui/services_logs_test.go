@@ -11,7 +11,7 @@ import (
 
 // paneModel is a sized model with the capability fixture applied and one of the
 // interactive overlays open.
-func paneModel(t *testing.T, which int) (*model, *protocol.State, func() []protocol.Command) {
+func paneModel(t *testing.T, which view) (*model, *protocol.State, func() []protocol.Command) {
 	t.Helper()
 	st := protocol.NewState()
 	applyFixtureRecords(st, "config_record.txt")
@@ -34,14 +34,14 @@ func TestServicesPaneShowsStateAndAction(t *testing.T) {
 		"─ services", "Spotify", "AirPlay 2", "DLNA / UPnP", "Tidal", "Qobuz",
 		"USB playback", "Bluetooth", "Google Cast",
 		"● on", "○ off",
-		"legacy (hifi)",                            // the engine, not a boolean
-		"enter → new (FLAC)",                       // and what enter does to the focused row
-		"reported only · not switchable from here", // its own group, not a broken row
-		"the remote control runs on it",            // and why, in the action column
-		"─ spotify engine",                         // the deep readout
-		"newspotifyhifi",                           // which binary is live
-		"3.203.239-g1d6bd565",                      // its eSDK build
-		"writes the device's config",               // honest about what enter does
+		"HiFi engine",                   // the engine, not a boolean
+		"enter → Pro engine (FLAC)",     // and what enter does to the focused row
+		"not switchable here",           // its own group, not a broken row
+		"the remote control runs on it", // and why, in the action column
+		"─ Spotify engine",              // the deep readout
+		"newspotifyhifi",                // which binary is live
+		"3.203.239-g1d6bd565",           // its eSDK build
+		"writes the device's config",    // honest about what enter does
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("services pane missing %q", want)
@@ -180,7 +180,7 @@ func TestLogsPaneFetchesOnceThenOnDemand(t *testing.T) {
 	if len(got) != 1 || got[0].Mid != 93 || got[0].Data != "1" {
 		t.Fatalf("opening the logs pane sent %+v, want one MID 93 \"1\"", got)
 	}
-	m.ov = ovNone
+	m.view = viewPlayer
 	m.openOverlay(ovLogs)
 	if got := collect(); len(got) != 0 {
 		t.Errorf("reopening re-fetched: %+v", got)
@@ -288,47 +288,47 @@ func TestOverlayKeyRouting(t *testing.T) {
 	if quit := m.key(keyEvent{kind: kRune, r: 'l'}); quit {
 		t.Fatal("l quit the app")
 	}
-	if m.ov != ovLogs {
-		t.Errorf("l inside the services pane went to %d, want the logs pane", m.ov)
+	if m.view != ovLogs {
+		t.Errorf("l inside the services pane went to %d, want the logs pane", m.view)
 	}
 	m.key(keyEvent{kind: kRune, r: 'l'})
-	if m.ov != ovNone {
+	if m.view != viewPlayer {
 		t.Error("l did not close the logs pane")
 	}
 	m.key(keyEvent{kind: kRune, r: 'c'})
-	if m.ov != ovServices {
+	if m.view != ovServices {
 		t.Error("c did not open the services pane")
 	}
 	m.key(keyEvent{kind: kEsc})
-	if m.ov != ovNone {
+	if m.view != viewPlayer {
 		t.Error("esc did not back out of the logs pane")
 	}
 	// The read-only diagnostics overlay is reachable from inside a pane, and
 	// opening a pane closes it again — at most one of the three is ever up.
 	m.key(keyEvent{kind: kRune, r: 'c'})
-	m.key(keyEvent{kind: kRune, r: '?'})
-	if !m.diag || m.ov != ovNone {
-		t.Errorf("? inside a pane did not open the diag overlay: diag=%v ov=%d", m.diag, m.ov)
+	m.key(keyEvent{kind: kRune, r: 'i'})
+	if m.view != viewDiag {
+		t.Errorf("i inside a view did not open the diagnostics: view=%d", m.view)
 	}
-	m.key(keyEvent{kind: kOther}) // any key closes the diag overlay again
-	m.diag = true
+	m.key(keyEvent{kind: kEsc}) // esc returns to the player
+	m.view = viewDiag
 	m.openOverlay(ovLogs)
-	if m.diag || m.ov != ovLogs {
-		t.Errorf("opening a pane left the diag overlay up: diag=%v ov=%d", m.diag, m.ov)
+	if m.view == viewDiag || m.view != ovLogs {
+		t.Errorf("opening a pane left the diag overlay up: diag=%v ov=%d", m.view == viewDiag, m.view)
 	}
 	for _, r := range []rune{'q', 'Q'} {
 		m.openOverlay(ovServices)
 		if quit := m.key(keyEvent{kind: kRune, r: r}); quit {
 			t.Errorf("%c quit the app from inside a pane", r)
 		}
-		if m.ov != ovNone {
+		if m.view != viewPlayer {
 			t.Errorf("%c did not back out of the pane", r)
 		}
 	}
 	// Back on the dashboard, q quits; a pasted "qq" inside a pane only closes it.
 	m.openOverlay(ovLogs)
-	if m.dispatchKeys(runeEvents("qq")) || m.ov != ovNone {
-		t.Errorf("pasted qq inside a pane: want closed, not quit (ov=%d)", m.ov)
+	if m.dispatchKeys(runeEvents("qq")) || m.view != viewPlayer {
+		t.Errorf("pasted qq inside a pane: want closed, not quit (ov=%d)", m.view)
 	}
 	if quit := m.key(keyEvent{kind: kRune, r: 'q'}); !quit {
 		t.Error("q did not quit from the dashboard")
@@ -343,8 +343,8 @@ func TestOverlayNotOpenedAtMiniSize(t *testing.T) {
 	m.rows, m.cols = 6, 40
 	m.openOverlay(ovServices)
 	m.openOverlay(ovLogs)
-	if m.ov != ovNone {
-		t.Errorf("a pane opened at mini size: ov=%d", m.ov)
+	if m.view != viewPlayer {
+		t.Errorf("a pane opened at mini size: ov=%d", m.view)
 	}
 	if got := collect(); len(got) != 0 {
 		t.Errorf("a pane that never opened still talked to the device: %+v", got)
@@ -358,7 +358,7 @@ func TestServicesPaneWaitsForDevice(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
 	m.openOverlay(ovServices)
-	if !strings.Contains(clean(m.viewContent()), "reading services from device…") {
+	if !strings.Contains(clean(m.viewContent()), "reading services from the device…") {
 		t.Error("services pane did not say it was waiting")
 	}
 }
@@ -373,12 +373,12 @@ func TestServicesPanePendingClearsOnDeviceAnswer(t *testing.T) {
 	m.svcFocus = 0 // Spotify: the fixture has it on hifi, so enter asks for pro
 	m.svcToggle(now)
 	// pending shows the state it is HEADING TO, not a blank "applying"
-	if !strings.Contains(clean(m.renderJoin(now)), "… new (FLAC)") {
+	if !strings.Contains(clean(m.renderJoin(now)), "… Pro engine (FLAC)") {
 		t.Fatal("a just-toggled row did not read as pending")
 	}
 	// the device reports something else: still waiting
 	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=", "spotify.cfg=hifi"}})
-	if !strings.Contains(clean(m.renderJoin(now)), "… new (FLAC)") {
+	if !strings.Contains(clean(m.renderJoin(now)), "… Pro engine (FLAC)") {
 		t.Error("pending cleared on an answer that was not the state asked for")
 	}
 	// the device reports the state that was asked for: done, well inside the window
@@ -468,7 +468,7 @@ func TestOverlayKeyHandlers(t *testing.T) {
 	}
 	// a key neither pane claims is simply ignored
 	lm.key(keyEvent{kind: kRune, r: 'z'})
-	if lm.ov != ovLogs {
+	if lm.view != ovLogs {
 		t.Error("an unclaimed key closed the pane")
 	}
 }
@@ -506,8 +506,8 @@ func TestLogsPaneEmptyStates(t *testing.T) {
 // is running — the row it replaces would otherwise imply Spotify simply works.
 func TestSpotifyInsightPerEngine(t *testing.T) {
 	cases := []struct{ eng, want string }{
-		{"newspotifyhifi", "legacy · Ogg/AAC only"},
-		{"spotifymusicpro", "new · FLAC capable"},
+		{"newspotifyhifi", "HiFi · Ogg/AAC only"},
+		{"spotifymusicpro", "Pro · FLAC capable"},
 		{"", "none running"},
 		{"somethingelse", "somethingelse"},
 	}
@@ -562,8 +562,8 @@ func TestLogsPaneTinyFrame(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols, m.sty = MiniRows+1, 80, newTheme()
 	m.openOverlay(ovLogs)
-	if got := m.renderLogs(time.Now(), 74); len(got) != m.rows-2 {
-		t.Errorf("tiny frame produced %d lines, want %d", len(got), m.rows-2)
+	if got := m.renderLogs(time.Now(), 74); len(got) != m.rows-3 {
+		t.Errorf("tiny frame produced %d lines, want %d", len(got), m.rows-3)
 	}
 }
 
@@ -589,7 +589,7 @@ func TestServicesPaneCyclesFasterThanTheDevice(t *testing.T) {
 		t.Errorf("presses asked for %v, want %v", asked, want)
 	}
 	// The row shows where it is heading, not a blank "applying".
-	if got := clean(m.renderJoin(now)); !strings.Contains(got, "… new (FLAC)") {
+	if got := clean(m.renderJoin(now)); !strings.Contains(got, "… Pro engine (FLAC)") {
 		t.Error("a pending row did not show the state it is heading to")
 	}
 	// And a burst reaches the device as one command carrying the final choice.
@@ -968,7 +968,7 @@ func TestServicesPaneBothFlagsOffersRepair(t *testing.T) {
 	m.rows, m.cols = 44, 120
 	m.openOverlay(ovServices)
 	m.svcFocus = 0 // Spotify is the first row
-	if got := clean(m.viewContent()); !strings.Contains(got, "enter → repair: legacy (hifi)") {
+	if got := clean(m.viewContent()); !strings.Contains(got, "enter → repair: HiFi engine") {
 		t.Errorf("both-set row does not offer the repair:\n%s", got)
 	}
 	m.svcToggle(time.Now())

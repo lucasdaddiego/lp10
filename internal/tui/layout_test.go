@@ -101,7 +101,7 @@ func TestLayoutInvariants(t *testing.T) {
 			}
 			dump(fmt.Sprintf("%s_%02dx%03d", sc.name, rows, cols), view)
 			if sc.name == "play" || sc.name == "wifi" { // also the diagnostics overlay
-				m.diag = true
+				m.view = viewDiag
 				dview := m.viewContent()
 				if rows >= MiniRows && cols >= MiniCols {
 					check(t, fmt.Sprintf("diag_%s_%dx%d", sc.name, rows, cols), rows, cols, dview)

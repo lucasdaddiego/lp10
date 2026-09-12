@@ -92,11 +92,11 @@ func (m *model) send(mid int, data string) {
 // box does no /proc gathering at all.
 func (m *model) syncStats() {
 	switch {
-	case m.diag && (!m.statsOn || m.statsTicks <= 0):
+	case m.view == viewDiag && (!m.statsOn || m.statsTicks <= 0):
 		m.send(90, "1")
 		m.statsOn = true
 		m.statsTicks = StatsReassertTicks
-	case m.diag:
+	case m.view == viewDiag:
 		m.statsTicks--
 	case m.statsOn:
 		m.send(90, "0")
@@ -236,11 +236,11 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 // skip the track; a second 'q' would quit the app).
 func (m *model) dispatchKeys(evs []keyEvent) (quit bool) {
 	for _, ev := range evs {
-		wasOpen := m.diag || m.ov != ovNone
+		wasOpen := m.view != viewPlayer
 		if m.key(ev) {
 			return true
 		}
-		if wasOpen && !m.diag && m.ov == ovNone {
+		if wasOpen && m.view == viewPlayer {
 			return false
 		}
 	}

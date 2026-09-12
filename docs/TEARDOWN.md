@@ -1313,10 +1313,10 @@ drives the device over **two independent channels**:
 
 - **Discovery:** startup mDNS for the **`am=LP10`** advertisement resolves the current IP
   (so a changed DHCP lease never needs a config edit), falling back to the configured host.
-- **Views:** *player* (now-playing + transport), *equalizer* (the :2018 controls), and
-  *diagnostics* (`?`) — which gathers the live `@@s` metrics + link health, and also surfaces
-  the device's **`@@c` streaming-capability matrix** (the marketed services, on/off) plus the
-  model's static hardware facts from this teardown.
+- **Views** (one at a time, `1`–`5` / `tab`): *player* (now-playing + transport + a one-line tone
+  strip), *equalizer* (the :2018 controls), *services* (the `@@c` running-vs-configured matrix and the
+  MID-92 switches), *logs* (the MID-93 tails), and *diagnostics* (`i`) — which gathers the live `@@s`
+  metrics + link health, the `@@o` digest, and the model's static hardware facts from this teardown.
 - **Auth:** the root password comes from the OS secret store via `SSH_ASKPASS`; host-key
   verification is disabled **by design** (the box regenerates its ramfs host key each boot,
   §3/§15) — the one deliberate tradeoff, fine only on a trusted LAN.

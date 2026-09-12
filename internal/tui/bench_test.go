@@ -53,7 +53,7 @@ func BenchmarkViewCompact(b *testing.B) {
 
 func BenchmarkViewDiag(b *testing.B) {
 	m := benchModel(b, 44, 150)
-	m.diag = true
+	m.view = viewDiag
 	b.ReportAllocs()
 	for b.Loop() {
 		sinkS = m.viewContent()

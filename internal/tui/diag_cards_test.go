@@ -22,7 +22,7 @@ func TestDiagCardsLayoutWide(t *testing.T) {
 	applyFixtureRecords(st, "playing_record.txt") // @@s: audio-chain tail
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 40, 120
-	m.diag = true
+	m.view = viewDiag
 
 	view := m.viewContent()
 	flat := clean(view)

@@ -21,7 +21,7 @@ import (
 const diagCardsMinW = 100
 
 // diagFooter is the overlay's bottom help line (both layouts).
-const diagFooter = "live · u asks the vendor about updates · any other key returns to the dashboard"
+const diagFooter = "live · u asks the vendor about updates · esc player · ? help"
 
 // ---- shared severity model -----------------------------------------------------
 //
@@ -1241,11 +1241,11 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 	tail = append(tail, t.pens().dmr.render(diagFooter))
 
 	// on a too-short pane, trim the read-out from the bottom and flag it
-	if room := m.rows - 2 - len(tail); room > 2 && len(L) > room {
+	if room := m.bodyRows() - len(tail); room > 2 && len(L) > room {
 		L = L[:room]
 		L[room-1] = t.pens().dmr.render("… resize for more")
 	}
-	return frameBody(L, tail, m.rows-2, false) // top-aligned: read-out hugs the top, footer stays pinned below
+	return frameBody(L, tail, m.bodyRows(), false) // top-aligned: read-out hugs the top, footer stays pinned below
 }
 
 // renderDiagCards is the wide diagnostics layout: a minimal masthead — the
@@ -1292,7 +1292,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 		tail = append(tail, line, "")
 	}
 	tail = append(tail, between(t.pens().dmr.render(diagFooter), DispW(diagFooter), legend, DispW("● good   ● warn   ● fault"), W))
-	return frameBody(content, tail, m.rows-2, false)
+	return frameBody(content, tail, m.bodyRows(), false)
 }
 
 // ---- device capabilities + hardware (shown in the diagnostics overlay) -------
