@@ -21,6 +21,8 @@
 package tui
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,6 +74,8 @@ var svcRows = []svcDef{
 			"either choice sticks: the pair is written as dirty rows in the box's env store,",
 			"which the boot-time factory merge keeps — so a reboot, or the next OTA's factory",
 			"default, does not move it (teardown §5). the ZeroConf port follows the engine.",
+			"if both flags read set (an OTA's factory flip on top of your pin) neither engine",
+			"starts and the web page still says on; enter then repairs the pair first.",
 		},
 	},
 	{
@@ -321,6 +325,9 @@ func (m *model) svcAction(row svcDef, cv *protocol.ConfInfo, focused, pending bo
 	want := m.svcWant(row, cv, pending)
 	var dest string
 	switch {
+	case row.gate == gateEngine && cv.Cfg() == "both" && !pending:
+		// the both-set trap: the first press is a repair, and says so
+		dest = "repair: " + svcLabelFor(row, want)
 	case row.gate == gateEngine:
 		dest = svcLabelFor(row, want)
 	case want == "1":
@@ -353,10 +360,45 @@ func (m *model) svcFlagNote(row svcDef, cv *protocol.ConfInfo) string {
 	if row.gate == gateDaemon {
 		return m.sty.pens().dmr.render("flag not consulted")
 	}
-	if row.id == "usb" || !cv.Divergent(row.id) {
+	if row.id != "usb" && cv.Divergent(row.id) {
+		return m.sty.sevs[1].Render("⚠ flag says " + cv.Env(row.id))
+	}
+	return m.svcOrigin(row, cv)
+}
+
+// svcEnvKeys is the env flag (pair, for Spotify) each switchable row is gated
+// on — the rows whose origin the dirty list can settle.
+var svcEnvKeys = map[string][]string{
+	"spotify": {"SpotifyEnabled", "SpotifyProEnabled"},
+	"tidal":   {"TidalEnabled"},
+	"qobuz":   {"QobuzConnectEnabled"},
+	"usb":     {"USBEnable"},
+}
+
+// svcOrigin says whether the row's flag is one somebody set or the factory
+// default still standing — the device's env store marks every runtime setenv
+// as a dirty row, and dirty rows are what the boot-time factory merge keeps.
+// "" when the loop had no list to give (no sqlite3 on the box) or the row has
+// no consulted flag. The distinction matters at OTA time: a flag you set
+// survives the new firmware's default, one you never touched follows it.
+func (m *model) svcOrigin(row svcDef, cv *protocol.ConfInfo) string {
+	keys := svcEnvKeys[row.id]
+	if len(keys) == 0 {
 		return ""
 	}
-	return m.sty.sevs[1].Render("⚠ flag says " + cv.Env(row.id))
+	known, yours := false, false
+	for _, k := range keys {
+		d, ok := cv.Dirty(k)
+		known = known || ok
+		yours = yours || d
+	}
+	switch {
+	case !known:
+		return ""
+	case yours:
+		return m.sty.pens().dim.render("set by you")
+	}
+	return m.sty.pens().dmr.render("factory default")
 }
 
 // renderServices draws the pane: the services this app can move, then the ones it
@@ -432,6 +474,12 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnaps
 	if sdk := cv.SDK(); sdk != "" {
 		out = append(out, m.diagLine("eSDK", t.txt.render(sdk)))
 	}
+	if st := m.engineStarted(cv); st != "" {
+		out = append(out, m.diagLine("started", st))
+	}
+	if rc := m.reconnectReadout(d.Ops, now); rc != "" {
+		out = append(out, m.diagLine("link", rc))
+	}
 	if cv.Cfg() == "both" {
 		out = append(out, m.diagLine("config", m.sty.sevs[2].Render(
 			"both engine flags set — each init script is blocked by the other, so neither starts")))
@@ -447,6 +495,69 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnaps
 
 // sectionHead is the pane's rule-and-title row, matching the dashboard's
 // equalizer divider so the overlays read as the same product.
+// engineStarted is the live engine's age and who launched it: init at boot or
+// netready (the normal case — the engines restart on every network event), or
+// an ssh session, which is what a toggle from this pane is. An engine that was
+// started from ssh eleven minutes after a cold boot is how the 2026-09-04
+// engine switch was traced; this line makes that a glance rather than a dig.
+func (m *model) engineStarted(cv *protocol.ConfInfo) string {
+	age, ok := cv.EngineUptime()
+	if !ok {
+		return ""
+	}
+	t := m.sty.pens()
+	out := t.txt.render(fmtUptime(strconv.Itoa(int(age.Seconds()))) + " ago")
+	switch by, known := cv.EngineBySSH(); {
+	case !known:
+	case by:
+		out += t.dmr.render(" · launched from an ssh session (this pane, or a shell)")
+	default:
+		out += t.dmr.render(" · launched by init (boot / network event)")
+	}
+	return out
+}
+
+// reconnectReadout is the engine's own account of its Spotify link: how often
+// the eSDK logged "the connection to Spotify has been lost" in the box's syslog
+// (which holds roughly the last day), as a count and a per-hour rate. It is
+// what the syslog says, not a diagnosis — the Pro engine was seen doing this
+// 54 times in 23 h while everything else on the link stayed up.
+func (m *model) reconnectReadout(ops *protocol.DevOps, now time.Time) string {
+	if ops == nil || !ops.ReconnectsOK {
+		return ""
+	}
+	t := m.sty.pens()
+	n := ops.Reconnects
+	if n == 0 {
+		return t.txt.render("no reconnects") + t.dmr.render(" in the box's syslog")
+	}
+	s := t.txt.render(fmt.Sprintf("%d reconnect%s", n, plural(n)))
+	if ops.LogSinceOK {
+		if win := now.Sub(ops.LogSince); win >= 30*time.Minute {
+			rate := float64(n) / win.Hours()
+			pen := t.txt
+			if rate >= reconnectWarnPerHour {
+				pen = t.warn
+			}
+			s += t.dmr.render(" · ") + pen.render(fmt.Sprintf("%.1f/h", rate))
+		}
+		s += t.dmr.render(" since " + ops.LogSince.Format("Jan 2 15:04"))
+	}
+	return s
+}
+
+// reconnectWarnPerHour is where the reconnect rate turns the readout (and the
+// diagnostics verdict) amber: a healthy Connect session re-logs in on network
+// events, not on the hour.
+const reconnectWarnPerHour = 1.0
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 func (m *model) sectionHead(title string, W int) string {
 	lead := 2
 	body := " " + title + " "
