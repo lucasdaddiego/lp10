@@ -286,7 +286,10 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// tick and skips the position read
 		`94) case "$data" in 1) pv=1;; *) pv=0;; esac;;`,
 		`[ $pv = 0 ] && w=3;`,
-		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; }`,
+		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; tk=2; }`,
+		// one LUCI read per tick, alternating state and volume (tk), both after a burst
+		`if [ $tk != 0 ]; then echo @@t;`,
+		`if [ $tk != 1 ]; then echo @@v;`,
 		`MemAvailable:) ma=$v; break;;`,
 		// position poll gated to every 3rd tick, with the read-flag that keeps the
 		// track-skip detector working across skip ticks

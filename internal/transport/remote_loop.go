@@ -120,4 +120,4 @@ func sanitizeHost(h string) string {
 }
 
 // maxPingHostLen is the longest ping_host that reaches the device loop.
-const maxPingHostLen = 64
+const maxPingHostLen = 48
