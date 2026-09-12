@@ -13,7 +13,8 @@
 ```
 $ lp10
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃  ♪ LP10 · Living  ● 16:27                            1  2  3  4  5    Vol    ┃
+┃  ♪ LP10 · Living  ● 16:59       1 play  2 eq  3 svc  4 log  5 diag    Vol    ┃
+┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
@@ -37,7 +38,6 @@ $ lp10
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
-┃  tone   EQ off · Flat · T+3 M0 B+3 · sub on 15 · bal 0 · max 100             ┃
 ┃       space play · ↑↓ volume · m mute · s sleep · d night · ? help · q quit  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
@@ -75,8 +75,7 @@ get one screen.
 - **Equalizer** (`2` or `e`) — the EQ switch and its preset, treble / mid / bass
   tone, the deep-bass switch and level, balance, and the output cap (Max
   volume) as wide slider rows, each with a note on what it does on this box.
-  Driven over the device's own control channel; the player keeps a one-line
-  **tone strip** so the settings stay in view. Paints instantly from a cached
+  Driven over the device's own control channel. Paints instantly from a cached
   snapshot on launch.
 - **Diagnostics** (`5` or `i`) — a one-line **status band** — a color-coded
   health verdict (`healthy` / `warn` / `fault`) and the clock, nothing else —
@@ -281,9 +280,9 @@ lp10 is connected — see the media-keys bullet under [Features](#features) for
 the Accessibility grant this needs.
 
 The player adapts to the terminal size: the full **dashboard** (the album
-cover, a vertical volume rail, and the tone strip) at ≥ 25 rows / 70 cols, a
-**compact** frame (no art, inline volume, the tone strip) below that, and a
-one-line **mini** view below 9 rows / 58 cols. The header's view strip shows
+cover and a vertical volume rail) at ≥ 25 rows / 70 cols, a **compact** frame
+(no art, inline volume) below that, and a one-line **mini** view below 9 rows /
+58 cols. The header's view strip shows
 the view names when they fit and bare numerals when they do not.
 
 There's no mouse support — lp10 is keyboard-only, so the terminal's native
@@ -299,8 +298,7 @@ Classical · Pop · Jazz · Rock · Vocal, named by the device), the **Treble / 
 **Balance**, and **Max volume**, the output cap, kept last as it's rarely
 touched. `↑` / `↓` select a row; `←` / `→` adjust it; `enter` flips a switch or
 steps to the next preset. Under the rows, a short note explains the selected
-control. The player keeps the same settings in view as a one-line **tone
-strip** above its footer.
+control.
 
 > **How the two EQ rows relate:** the **tone sliders are always live**, EQ on or
 > off. **EQ** only decides whether the selected **Preset** curve is applied on

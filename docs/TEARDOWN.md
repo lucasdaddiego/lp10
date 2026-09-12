@@ -1313,8 +1313,8 @@ drives the device over **two independent channels**:
 
 - **Discovery:** startup mDNS for the **`am=LP10`** advertisement resolves the current IP
   (so a changed DHCP lease never needs a config edit), falling back to the configured host.
-- **Views** (one at a time, `1`–`5` / `tab`): *player* (now-playing + transport + a one-line tone
-  strip), *equalizer* (the :2018 controls), *services* (the `@@c` running-vs-configured matrix and the
+- **Views** (one at a time, `1`–`5` / `tab`): *player* (now-playing + transport),
+  *equalizer* (the :2018 controls), *services* (the `@@c` running-vs-configured matrix and the
   MID-92 switches), *logs* (the MID-93 tails), and *diagnostics* (`i`) — which gathers the live `@@s`
   metrics + link health, the `@@o` digest, and the model's static hardware facts from this teardown.
 - **Auth:** the root password comes from the OS secret store via `SSH_ASKPASS`; host-key

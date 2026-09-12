@@ -162,10 +162,14 @@ func TestDashboardRenders(t *testing.T) {
 	m, _, _ := eqModel(t)
 	protocol.ApplyRecord(m.st, playingRecord())
 	out := m.viewContent()
-	for _, want := range []string{"tone", "EQ off", "max 40"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("dashboard render missing %q", want)
+	// the equalizer lives in its own view: nothing of it on the player
+	for _, absent := range []string{"tone", "EQ off", "Max volume"} {
+		if strings.Contains(out, absent) {
+			t.Errorf("dashboard render carries %q", absent)
 		}
+	}
+	if !strings.Contains(out, "pause") && !strings.Contains(out, "play") {
+		t.Error("dashboard render lacks the transport")
 	}
 }
 

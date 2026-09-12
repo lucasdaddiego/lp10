@@ -189,10 +189,9 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	inner := m.bodyRows()
 
 	if full {
-		// The tone strip — the equalizer's one-line read-out — and the footer
-		// pin to the bottom; the equalizer itself is its own view now (2), so
+		// The footer pins to the bottom; the equalizer is its own view (2), so
 		// the cover gets the rows the slider block used to take.
-		tail := []string{m.toneStrip(W), m.footerRow(W)}
+		tail := []string{m.footerRow(W)}
 		if errLine != "" {
 			tail = append(tail, errLine)
 		}
@@ -258,26 +257,22 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		art := centreRows(m.boxArt(m.artColumn(s, coverW, coverH), coverW), blockH)
 		block := joinCols(art, mid, m.volRail(s, blockH-1), midW)
 
-		// header and notice (above) pinned top, tone strip + footer pinned
-		// bottom, the cover block centred between
+		// header and notice (above) pinned top, footer pinned bottom, the
+		// cover block centred between
 		return stack(nil, block, tail, inner)
 	}
 
 	// Compact: no art / volume rail — metadata + seek + controls centred in the
-	// body, with the tone strip and footer pinned to the bottom.
+	// body, with the footer pinned to the bottom.
 	meta := m.metaLines(s, W)
 	seek, controls := m.seekRow(s, W), m.controlsRow(s, now, W, true)
-	tail := []string{m.toneStrip(W), m.footerRow(W)}
+	tail := []string{m.footerRow(W)}
 	if errLine != "" {
 		tail = append(tail, errLine)
 	}
 	content := compactBody(meta, seek, controls, true)
-	// Too short for everything (rows 9–13): the tone strip yields first, then
-	// the blank separators — a player without its transport is worse than one
-	// without a tone read-out or breathing room.
-	if len(content)+len(tail) > inner {
-		tail = tail[1:]
-	}
+	// Too short for everything (rows 9–10): the blank separators yield — a
+	// player without its transport is worse than one without breathing room.
 	if len(content)+len(tail) > inner {
 		content = compactBody(meta, seek, controls, false)
 	}

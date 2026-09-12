@@ -36,11 +36,6 @@ type theme struct {
 	// field so the gauges don't rebuild the triple on every row.
 	sevs [3]lipgloss.Style
 
-	// sFocusBU is the eqSummary focused-band style (accent+bold+underline). It
-	// is deliberately NOT a pen: lipgloss renders underline styles rune-by-rune
-	// (UnderlineSpaces handling), which a flattened prefix/suffix cannot mimic.
-	sFocusBU lipgloss.Style
-
 	trueColor     bool // terminal advertises 24-bit color (gates the half-block album art)
 	kittyGraphics bool // terminal supports the Kitty graphics protocol (true-pixel album art)
 
@@ -97,7 +92,6 @@ func newThemeFor(dark bool) *theme {
 		t.segOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#2a313b")).Background(lipgloss.Color("#e3e7ec"))
 	}
 	t.sevs = [3]lipgloss.Style{t.sAcc, stWarn, stRed}
-	t.sFocusBU = t.sAcc.Bold(true).Underline(true)
 	t.trueColor = colorprofile.Detect(os.Stdout, os.Environ()) == colorprofile.TrueColor
 	t.kittyGraphics = detectKittyGraphics()
 	return t
@@ -220,7 +214,6 @@ func writeDec(b *strings.Builder, v uint8) {
 // classes are NOT pen-safe and must stay on Style.Render: multi-line strings
 // (lipgloss styles each line separately) and Underline/Strikethrough styles
 // (lipgloss renders those rune-by-rune to keep the decoration off spaces — the
-// eqSummary focus style, sFocusBU, is the one such style here).
 // TestPenMatchesStyleRender pins the equivalence for every pen below.
 // lipgloss v2 renders profile-independently (the program's renderer does the
 // downsampling), so one flattening serves the whole process.
