@@ -317,7 +317,7 @@ lg() { grep " [EWIDNF]/" $ml 2>/dev/null | grep -v luci_serv | tl; };
 #      available", or the offered package) — it asks the vendor every 4 h on
 #      its own, so lp10 never has to. Sent at connect and whenever the
 #      diagnostics overlay opens. ──
-ot() { echo @@o; { echo "n=$(grep -c 'has been lost' $ml)"; echo "t=$(head -c 15 $ml)"; echo "u=$(grep -h 'error string\|otapackage' $ml | tail -1)"; } 2>/dev/null; E; };
+ot() { echo @@o; { echo "n=$(grep -c 'has been lost' $ml)"; echo "t=$(head -c 15 $ml)"; echo "u=$(grep 'error string' $ml | tail -1)"; } 2>/dev/null; E; };
 
 
 # ── @@d device details (reg 92 JSON: serial / MACs / MCU + full fw version) and
@@ -345,25 +345,33 @@ ot;
 # tick (the watchdog and the other views' playback keys need them fresh-ish),
 # metadata every 5th. That cuts the per-second forks by about two thirds while
 # the services, logs, diagnostics or help are showing.
-i=0; prev=; ef=0; idl=0; bw=0; dg=0; pv=1; pc49=0; pgc=0; cq=0;
+i=0; prev=; ef=0; idl=0; bw=0; dg=0; pv=1; pc49=0; pgc=0; cq=0; tk=2;
 while :; do
 
-  # @@B now-playing metadata (MB42), re-read every ~5 ticks, only when it changes
+  # @@B now-playing metadata (MB42): re-read every 15 ticks as a fallback, only
+  # shipped when it changes. Track changes never wait for it — a backward
+  # position jump, a play-state change or a command burst force i=0 below.
   if [ $i -le 0 ]; then
     b=$(LUCI_local -r 42 2>/dev/null);
     if [ -n "$b" ] && [ "$b" != "$prev" ]; then prev=$b; echo @@B; printf '%s\n' "$b"; fi;
-    i=5;
+    i=15;
   fi;
 
   # @@p position (reg 49) — polled every 3rd tick (pc49) unless idle; rd flags a read
   echo @@p; pn=; rd=0; pc49=$((pc49-1));
   if [ $pv = 1 ] && [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then
-    pv=$(LUCI_local -r 49 2>/dev/null); echo "$pv"; pn=${pv#*Data:}; pn=${pn%% *}; rd=1; pc49=3;
+    pq=$(LUCI_local -r 49 2>/dev/null); echo "$pq"; pn=${pq#*Data:}; pn=${pn%% *}; rd=1; pc49=5;
   fi;
 
-  # @@t play-state (reg 51) and @@v volume (reg 64) — both every tick (watchdog)
-  echo @@t; tv=$(LUCI_local -r 51 2>/dev/null); echo "$tv";
-  echo @@v; LUCI_local -r 64 2>/dev/null;
+  # @@t play-state (reg 51) and @@v volume (reg 64): ONE of the two per tick,
+  # alternating — a LUCI_local fork costs ~30 ms of CPU on this SoC, and both
+  # every tick was the loop's single biggest expense. Each record still
+  # carries data (the watchdog), and either value is at most one tick stale.
+  # tk: 1 = read state this tick, 0 = read volume, 2 = both (the first tick,
+  # and the tick after a command burst).
+  if [ $tk != 0 ]; then echo @@t; tv=$(LUCI_local -r 51 2>/dev/null); echo "$tv"; fi;
+  if [ $tk != 1 ]; then echo @@v; LUCI_local -r 64 2>/dev/null; fi;
+  tk=$((1-tk%2));
 
   # @@s resource stats — gathered ONLY while the diagnostics overlay is open (dg=1)
   if [ "$dg" = 1 ]; then
@@ -455,7 +463,7 @@ while :; do
       read -r -t 0 || break;
       read -r -t 1 mid data || break;
     done;
-    [ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; };
+    [ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; tk=2; };
   else
     read -r u1 ux < /proc/uptime;
     el=$(( (${u1%%.*} - ${u0%%.*}) * 100 + 1${u1#*.} - 1${u0#*.} ));

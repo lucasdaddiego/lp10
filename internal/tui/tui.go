@@ -40,6 +40,9 @@ func startupNote(warn string, keyErr error) string {
 // Run wires up State, the worker goroutines, and the Bubble Tea program, then
 // tears everything down on exit. Returns the process exit code: 0 clean quit,
 // 130 Ctrl-C, 143 SIGTERM/SIGHUP.
+// renderFPS caps the renderer's flush rate (see Run).
+const renderFPS = 15
+
 func Run(cfg config.Config) (int, error) {
 	st := protocol.NewState()
 	background := workers.StartRuntime(st, cfg)
@@ -47,9 +50,13 @@ func Run(cfg config.Config) (int, error) {
 	m := newModel(st, cfg, background.Commands, background.EQCommands)
 	m.baseline = sweep.Load(config.SweepPath(cfg)) // the last `lp10 sweep`, for the diagnostics' since-sweep row
 	// The alt screen and window title ride tea.View under bubbletea v2 (see
-	// model.View), so the only program-level option left is signal handling,
-	// which Run owns below.
-	p := tea.NewProgram(m, tea.WithoutSignalHandler())
+	// model.View). The frame rate is capped well under the default 60: the
+	// renderer re-parses the whole frame on every flush whether or not it
+	// changed, so on a 200×50 terminal the default cost ~7 % of a core for a
+	// static view and ~17 % with the motif animating; 15 flushes a second is
+	// more than the 10 Hz logic tick and the motif need, at a quarter of the
+	// cost. Signal handling is Run's own, below.
+	p := tea.NewProgram(m, tea.WithoutSignalHandler(), tea.WithFPS(renderFPS))
 
 	// Media transport keys (macOS): drive the device from the keyboard's
 	// play/pause, next, and prev even when lp10 isn't focused. The tap only

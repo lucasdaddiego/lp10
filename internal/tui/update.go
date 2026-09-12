@@ -47,7 +47,7 @@ func keyToAction(k mediakey.Key) (action string, ok bool) {
 
 const (
 	logicInterval = 100 * time.Millisecond
-	framePlaying  = 33 * time.Millisecond  // ~30fps while playing
+	framePlaying  = 66 * time.Millisecond  // ~15fps while playing: the plasma drifts slowly, and every frame is a full re-parse in the renderer
 	frameSearch   = 350 * time.Millisecond // one searching-arc step per tick (~1.4s per pulse) while connecting
 	frameIdle     = 250 * time.Millisecond // frozen motif: just keep the clock alive
 )

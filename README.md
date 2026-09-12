@@ -411,16 +411,23 @@ on-device loop mid-session. Any key returns to the dashboard.
 One direct `ssh` child is the whole transport — no ControlMaster, no expect. A
 BusyBox-ash loop on the device streams framed snapshots:
 
-- **Polls only what is on screen** — measured on the box, the loop costs about
-  4 % of one core while the player shows (two register reads a second, the
-  position every third, metadata on change), about 5 % with the diagnostics
-  open (the resource stats, the ALSA chain and three pings ride along only
-  then), and drops to a 3-second tick with no position reads when any other
-  view is up. The LSSDP and ZeroConf probes run while connected only while the
-  services or the diagnostics show their answers; disconnected they always
-  run, since the connecting screen is built on them. The one-shot facts
-  (capabilities, device details, the syslog digest) are read at connect and
-  after a toggle, the logs only on request.
+- **Polls only what is on screen, and as little as it can** — every forked
+  read costs about 30 ms of CPU on the LP10's A1, so the loop reads one
+  register a tick (play state and volume alternate, both after a keypress),
+  the position every fifth tick and the metadata on change with a fallback
+  every fifteenth. Measured on the box, that is about 4 % of one core with the
+  player showing, 5 % with the diagnostics open (the resource stats, the ALSA
+  chain and three pings ride along only then), and a 3-second tick with no
+  position reads when any other view is up. The LSSDP and ZeroConf probes run
+  while connected only while the services or the diagnostics show their
+  answers; disconnected they always run, since the connecting screen is built
+  on them. The one-shot facts (capabilities, device details, the syslog
+  digest) are read at connect and after a toggle, the logs only on request.
+- **Light on the laptop too** — the renderer is capped at 15 frames a second
+  (bubbletea re-parses the whole frame on every flush, changed or not), and
+  the album motif animates at the same rate. On a 200×50 terminal against a
+  simulated device that is about 11 % of one core with the motif animating
+  and under 5 % on a static view, at ~30 MB resident.
 - **Adaptive cadence** — cheap reads roughly once a second while playing,
   stretching to ~3 s when idle. The now-playing JSON is shipped only when it
   changes; the play position is resynced periodically while the UI extrapolates
