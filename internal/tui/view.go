@@ -906,7 +906,7 @@ func (m *model) footerRow(W int) string {
 	var hint string
 	switch {
 	case m.pane == paneEQ && m.eqSpec().Code == "MXV":
-		// The one band with a device-wide gotcha (teardown §5.3): a low output cap
+		// The one band with a device-wide gotcha (teardown §6.3): a low output cap
 		// is why the remote / Spotify volume feels stuck near the top.
 		hint = "Max Vol caps remote & Spotify volume · ←→ adjust · q quit"
 	case m.pane == paneEQ && m.eqSpec().Code == "EQE":
