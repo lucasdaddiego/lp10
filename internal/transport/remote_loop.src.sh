@@ -336,8 +336,16 @@ nm;
 ot;
 
 # ── main streaming loop ── (state: i=metadata countdown, idl=idle ticks, bw=burst
-# window, dg=diag overlay flag, pc49=position-poll gate, pgc=ping gate, ef=EOF streak)
-i=0; prev=; ef=0; idl=0; bw=0; dg=0; pc49=0; pgc=0; cq=0;
+# window, dg=diag overlay flag, pv=player-visible flag, pc49=position-poll gate,
+# pgc=ping gate, ef=EOF streak)
+#
+# pv (MID 94) is the laptop saying whether the player view is on screen. Off
+# it, nobody reads the position or watches the seek bar, so the loop stretches
+# to the 3 s tick and skips the reg-49 read; state and volume still ride every
+# tick (the watchdog and the other views' playback keys need them fresh-ish),
+# metadata every 5th. That cuts the per-second forks by about two thirds while
+# the services, logs, diagnostics or help are showing.
+i=0; prev=; ef=0; idl=0; bw=0; dg=0; pv=1; pc49=0; pgc=0; cq=0;
 while :; do
 
   # @@B now-playing metadata (MB42), re-read every ~5 ticks, only when it changes
@@ -349,7 +357,7 @@ while :; do
 
   # @@p position (reg 49) — polled every 3rd tick (pc49) unless idle; rd flags a read
   echo @@p; pn=; rd=0; pc49=$((pc49-1));
-  if [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then
+  if [ $pv = 1 ] && [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then
     pv=$(LUCI_local -r 49 2>/dev/null); echo "$pv"; pn=${pv#*Data:}; pn=${pn%% *}; rd=1; pc49=3;
   fi;
 
@@ -427,7 +435,7 @@ while :; do
   # reg 51 Data:0 = playing -> reset the idle counter; anything else accrues
   # idle ticks, stretching the read timeout from 1s to 3s after 5 of them
   case "$tv" in *"Data:0 "*) idl=0;; *) idl=$((idl+1));; esac;
-  w=1; [ $idl -ge 5 ] && w=3;
+  w=1; [ $idl -ge 5 ] && w=3; [ $pv = 0 ] && w=3;
   read -r u0 ux < /proc/uptime;
 
   # blocking read of one command (timeout $w). On a command: run it (whitelist only),
@@ -439,6 +447,7 @@ while :; do
       case "$mid" in
         __MIDS__) LUCI_local "$mid" "$data" >/dev/null 2>&1; pc=1;;
         90) case "$data" in 1) dg=1; ot;; *) dg=0;; esac;;
+        94) case "$data" in 1) pv=1;; *) pv=0;; esac;;
         91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name="$an" $nv >/dev/null 2>&1; nm;;
         92) tg "$data";;
         93) case "$data" in 2) echo @@L; tl 2>/dev/null < /lsync/app.log;; *) echo @@l; lg;; esac; E;;

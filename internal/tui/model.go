@@ -110,6 +110,12 @@ type model struct {
 	// logFollow refetches the open log every few seconds (the F key)
 	logFollow bool
 
+	// playerShown mirrors what the loop was last told with MID 94 (the player
+	// view on screen or not), and hiddenTicks re-asserts "hidden" so a
+	// reconnected loop — which starts visible — is told again; see syncViews.
+	playerShown bool
+	hiddenTicks int
+
 	// baseline is the last `lp10 sweep` (nil: none saved); the diagnostics
 	// name what has moved since it
 	baseline *sweep.Report
@@ -210,6 +216,7 @@ func newModel(st *protocol.State, cfg config.Config, cmds chan *protocol.Command
 		st: st, cfg: cfg, cmds: cmds, eqcmds: eqcmds,
 		premutePath:   config.PremutePath(cfg),
 		focus:         1,
+		playerShown:   true, // the loop's own default
 		showRemaining: true,
 		flash:         map[string]time.Time{},
 	}

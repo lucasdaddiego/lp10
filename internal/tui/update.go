@@ -93,6 +93,30 @@ func (m *model) send(mid int, data string) {
 	nbSend(m.cmds, &protocol.Command{Mid: mid, Data: data, TS: time.Now()})
 }
 
+// syncViews tells the device loop whether the player is on screen (MID 94 —
+// off it, the loop drops to a 3 s tick and skips the position read) and the
+// probe workers whether anyone is looking at what LSSDP and ZeroConf find (only
+// the services and the diagnostics show them). The loop starts every
+// connection assuming the player is visible, so "hidden" is re-asserted every
+// StatsReassertTicks the way the stats flag is; "visible" is the default and
+// is sent once when the player comes back.
+func (m *model) syncViews() {
+	shown := m.view == viewPlayer || m.miniMode()
+	switch {
+	case shown && !m.playerShown:
+		m.send(94, "1")
+		m.playerShown = true
+	case !shown:
+		m.hiddenTicks--
+		if m.playerShown || m.hiddenTicks <= 0 {
+			m.send(94, "0")
+			m.playerShown = false
+			m.hiddenTicks = StatsReassertTicks
+		}
+	}
+	m.st.SetProbeQuiet(m.view != viewServices && m.view != viewDiag)
+}
+
 // syncStats keeps the device's resource-stat (@@s) emission aligned with the
 // diagnostics overlay: send "on" (90 1) when it opens and re-assert every
 // StatsReassertTicks so a reconnect resumes it; send "off" (90 0) once when it
@@ -208,6 +232,7 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scroll++       // advance the now-playing marquee (independent of play state)
 		s := m.st.Snap() // one snapshot per tick, reused below
 		m.syncStats()    // device emits @@s only while the diag overlay is open
+		m.syncViews()    // the loop's poll cadence and the LAN probes follow the view on screen
 		now := time.Now()
 		m.sleepFire(now, s)
 		m.trackConnection(s, now)

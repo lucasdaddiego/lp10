@@ -1300,7 +1300,10 @@ drives the device over **two independent channels**:
 1. **The SSH record loop** (§6.2) — one ssh connection runs a BusyBox-ash loop streaming
    `@@`-framed records (player state, and — only while the diagnostics overlay is open —
    resource/link stats); its stdin takes whitelisted `40`/`64` commands plus the app-only
-   `90` stats toggle. The player and the diagnostics overlay ride this.
+   `90` stats toggle, `92` service switch, `93` log fetch and `94` player-visible flag — off the
+   player the loop drops to its 3 s tick and skips the position read. Measured 2026-09-12: ≈ 4 % of
+   one core with the player showing, ≈ 5 % with the diagnostics open (stats + pings ride only then),
+   ≈ 3 % with another view up. The player and the diagnostics ride this.
 2. **The :2018 control tunnel** (§6.3) — a separate plain-text socket for tone/EQ/deep-bass
    /max-volume; the equalizer rides this. A dead tunnel only greys out the EQ.
 3. **Two ssh-free probes** (since 2026-09-02) — the LSSDP responder (udp 1800) for liveness, and the

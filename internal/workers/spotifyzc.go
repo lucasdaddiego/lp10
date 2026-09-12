@@ -105,6 +105,10 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 		if control.stop.IsSet() {
 			return
 		}
+		if st.Snap().Connected && !st.ProbeWanted() {
+			wait = probeQuietPoll // see lssdpWorker: nobody is looking
+			continue
+		}
 		probe()
 		if st.Snap().Connected {
 			wait = zcConnected

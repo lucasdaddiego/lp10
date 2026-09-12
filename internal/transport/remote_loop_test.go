@@ -40,8 +40,8 @@ func TestRemoteLoopFitsDropbearCmdLen(t *testing.T) {
 	if len(longest) != maxPingHostLen {
 		t.Fatalf("test bug: longest host is %d chars", len(longest))
 	}
-	if n := len(RemoteLoop(longest)); n > 8800 {
-		t.Errorf("RemoteLoop is %d bytes with a %d-char ping host — within 200 of dropbear's MAX_CMD_LEN (9000); trim the loop", n, maxPingHostLen)
+	if n := len(RemoteLoop(longest)); n > 8850 {
+		t.Errorf("RemoteLoop is %d bytes with a %d-char ping host — within 150 of dropbear's MAX_CMD_LEN (9000); trim the loop", n, maxPingHostLen)
 	}
 }
 

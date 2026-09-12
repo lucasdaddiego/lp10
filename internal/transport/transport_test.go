@@ -282,11 +282,15 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		`ot() { echo @@o;`,
 		`if [ "$dg" = 1 ]; then`,
 		`90) case "$data" in 1) dg=1; ot;; *) dg=0;; esac;;`,
+		// the player-visible toggle: off the player the loop stretches to the 3 s
+		// tick and skips the position read
+		`94) case "$data" in 1) pv=1;; *) pv=0;; esac;;`,
+		`[ $pv = 0 ] && w=3;`,
 		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; }`,
 		`MemAvailable:) ma=$v; break;;`,
 		// position poll gated to every 3rd tick, with the read-flag that keeps the
 		// track-skip detector working across skip ticks
-		`pc49=$((pc49-1));if [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then`,
+		`pc49=$((pc49-1));if [ $pv = 1 ] && [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then`,
 		`if [ $rd -eq 1 ]; then case "$pn" in`,
 		// latency ping poll gated to every 3rd tick (mirrors pc49) so an unreachable
 		// target can't stall every stats tick; skipped ticks emit "-" (no sample)
