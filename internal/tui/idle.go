@@ -67,7 +67,7 @@ func sourcesOn(cv *protocol.ConfInfo) string {
 
 // renderIdle is the full player's body when the box is connected and nothing
 // plays: the clock, then what would wake it. Returned already sized to h rows
-// (the tail — tone strip and footer — stays pinned below by the caller).
+// (the footer stays pinned below by the caller).
 func (m *model) renderIdle(s protocol.Snapshot, now time.Time, W, h int) []string {
 	ps := m.sty.pens()
 	var mid []string

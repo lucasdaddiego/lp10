@@ -106,34 +106,11 @@ func TestBalanceRowAndSummary(t *testing.T) {
 	}
 	st.PreloadEQ(map[string]int{"EQE": 1, "EQS": 3, "BAL": -10})
 	st.SetEQPresets(livePresets)
-	sum := stripANSI(strings.Join(m.eqSummary(200), " "))
-	for _, want := range []string{"EQ on", "Jazz", "Bal L10"} {
-		if !strings.Contains(sum, want) {
-			t.Errorf("summary %q lacks %q", sum, want)
-		}
-	}
-}
-
-func TestEQSummaryWrapsToTwoLines(t *testing.T) {
-	m, st, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
-	st.PreloadEQ(map[string]int{"EQE": 0, "EQS": 0, "TRE": 0, "MID": 0, "BAS": 0, "VBS": 0, "VBI": 0, "BAL": 0, "MXV": 100})
-	st.SetEQPresets(livePresets)
-	one := m.eqSummary(200)
-	if len(one) != 1 || !strings.Contains(stripANSI(one[0]), "Max Vol 100") {
-		t.Errorf("wide summary = %q, want one line ending in Max Vol", one)
-	}
-	two := m.eqSummary(52) // the compact minimum width
-	if len(two) != 2 {
-		t.Fatalf("narrow summary = %d lines, want 2: %q", len(two), two)
-	}
-	joined := stripANSI(strings.Join(two, " "))
-	if !strings.Contains(joined, "EQ off") || !strings.Contains(joined, "Max Vol 100") {
-		t.Errorf("narrow summary lost a control: %q", joined)
-	}
-	for _, l := range two {
-		if DispW(stripANSI(l)) > 52 {
-			t.Errorf("line %q exceeds 52", stripANSI(l))
+	m.view = viewEQ
+	view := stripANSI(strings.Join(m.renderEQ(200), "\n"))
+	for _, want := range []string{"● on", "Jazz", "L10"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("equalizer view %q lacks %q", view, want)
 		}
 	}
 }

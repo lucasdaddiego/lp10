@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // The header's view strip names the five views with the one on show lit, falls
@@ -38,32 +36,6 @@ func TestViewStripAdaptsToWidth(t *testing.T) {
 				t.Errorf("view %d line %d is %d wide, want %d", v, i, w, m.cols)
 				break
 			}
-		}
-	}
-}
-
-// The tone strip is the player's one-line read-out of the equalizer: full
-// words when they fit, the compact form otherwise, and a pointer to view 2
-// before anything has been read.
-func TestToneStripForms(t *testing.T) {
-	m, st, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
-	if got := stripANSI(m.toneStrip(80)); !strings.Contains(got, "not read yet") {
-		t.Errorf("unread strip = %q", got)
-	}
-	st.PreloadEQ(map[string]int{"EQE": 0, "EQS": 0, "TRE": 3, "MID": 0, "BAS": 3, "VBS": 1, "VBI": 15, "BAL": 0, "MXV": 100})
-	st.SetEQPresets([]string{"Flat", "Classical", "Pop", "Jazz", "Rock", "Vocal"})
-	wide := stripANSI(m.toneStrip(120))
-	if wide != "tone   EQ off · Flat · treble +3 · mid 0 · bass +3 · sub on 15 · balance 0 · max 100" {
-		t.Errorf("wide strip = %q", wide)
-	}
-	narrow := stripANSI(m.toneStrip(74))
-	if narrow != "tone   EQ off · Flat · T+3 M0 B+3 · sub on 15 · bal 0 · max 100" {
-		t.Errorf("compact strip = %q", narrow)
-	}
-	for _, w := range []int{74, 52, 30} {
-		if got := DispW(stripANSI(m.toneStrip(w))); got > w {
-			t.Errorf("strip at %d is %d wide", w, got)
 		}
 	}
 }

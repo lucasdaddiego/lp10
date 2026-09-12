@@ -920,8 +920,8 @@ func TestCov_renderDashboardCompactAndErrors(t *testing.T) {
 	m, _, _ := makeModel(t)
 	m.rows, m.cols = 20, 64
 	out := clean(m.viewContent())
-	if !strings.Contains(out, "equalizer") {
-		t.Errorf("compact dashboard should still show the EQ summary header")
+	if strings.Contains(out, "EQ off") || !strings.Contains(out, GL["rew"]) {
+		t.Errorf("compact dashboard should show the transport and nothing of the equalizer:\n%s", out)
 	}
 
 	// a connected error paints the red error line in the compact tail
@@ -1228,23 +1228,6 @@ func TestCov_headerRowReconnectAndNarrow(t *testing.T) {
 	}
 	// a tiny width drives the device-name budget below its floor (nameMax clamp)
 	_ = m.headerRow(m.st.Snap(), time.Now(), 12, false)
-}
-
-func TestCov_eqSummaryArms(t *testing.T) {
-	// unknown values -> "code —" parts
-	mu, _, _ := modelWith(protocol.NewState())
-	mu.sty = newTheme()
-	if got := stripANSI(strings.Join(mu.eqSummary(120), " ")); !strings.Contains(got, "—") {
-		t.Errorf("eqSummary unknown = %q", got)
-	}
-	// a toggle that's on -> "on"
-	on := protocol.NewState()
-	on.PreloadEQ(map[string]int{"EQE": 1})
-	mo, _, _ := modelWith(on)
-	mo.sty = newTheme()
-	if got := stripANSI(strings.Join(mo.eqSummary(120), " ")); !strings.Contains(got, "EQ on") {
-		t.Errorf("eqSummary toggle-on = %q", got)
-	}
 }
 
 func TestCov_eqSliderRowTogglePadClamp(t *testing.T) {
