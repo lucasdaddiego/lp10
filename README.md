@@ -157,6 +157,18 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   scale; since vendor app v32 its volume works like the legacy one's.) The pane
   always writes the Spotify flags as a coherent pair so the vendor's both-set
   trap is unreachable from here.
+- **`lp10 sweep`** — the "did it update?" command: one read-only pass over
+  the box (firmware, MCU, kernel, the vendor app and its md5, sha256 of the
+  binaries an OTA or the app loader would replace, the boot reason and time,
+  every listener, the Spotify flag pair and running daemons, how many env keys
+  were set at runtime, the engine's reconnect count), the LAN's ssh-free
+  answers (LSSDP, the engine's ZeroConf), and the vendor's view (the
+  manifest's verdict for the running build, and the newest bundle it serves —
+  size, date, etag). It prints a report and diffs it against the previous
+  sweep, kept as a baseline in `~/.local/state/lp10/`; `--json` prints the
+  baseline's shape, `--no-save` leaves the old one in place. This is the one
+  lp10 command that asks the vendor on its own — by design, since that is the
+  question it answers.
 - **Device log** (`l`) — the tail of one of the box's own logs, fetched on demand
   over the same ssh stream (zero cost while the pane is closed). The **device
   log** (`/var/log/syslog/messages.log`) is the only place the box records a
@@ -552,6 +564,7 @@ cmd/fakessh/            fake ssh transport for tests (substituted via LP10_SSH)
 internal/testutil/      test helpers (env isolation, fake/binary builders)
 internal/e2e/           end-to-end tests (argv contract, pty smoke)
 docs/TEARDOWN.md        device teardown & technical reference (hardware, audio path, env store, LUCI/MsgBox, protocols, OTA, firmware history)
+internal/sweep/         `lp10 sweep` — the read-only inventory, its baseline and diff
 ```
 
 ## Dependencies

@@ -42,7 +42,7 @@ func TestArgvContractExits2(t *testing.T) {
 	if !ok || ee.ExitCode() != 2 {
 		t.Fatalf("exit = %v, want code 2", err)
 	}
-	if !strings.Contains(errb.String(), "takes no arguments") {
+	if !strings.Contains(errb.String(), "run `lp10` for the live TUI") {
 		t.Errorf("stderr = %q", errb.String())
 	}
 }

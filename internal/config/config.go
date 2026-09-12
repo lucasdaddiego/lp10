@@ -252,6 +252,16 @@ func (cfg Config) stateKey() string {
 	return cfg.Host
 }
 
+// SweepPath is `lp10 sweep`'s per-device baseline file under the state dir
+// (the last sweep's findings, diffed against the next), or "" when there is no
+// usable state dir.
+func SweepPath(cfg Config) string {
+	if d := StateDir(); d != "" {
+		return filepath.Join(d, "sweep-"+slug(cfg.stateKey())+".json")
+	}
+	return ""
+}
+
 // ArtCacheDir is the album-art cache directory (state dir /art), created on
 // demand, or "" when there's no usable state dir (art then works network-only).
 // It is shared across hosts: covers are keyed by URL, which is already unique.

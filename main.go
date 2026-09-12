@@ -1,6 +1,6 @@
 // Command lp10 is a terminal player for the Arylic LP10 (LibreWireless LUCI
-// over SSH). Run `lp10` (no arguments) for the live TUI; there are no other
-// commands.
+// over SSH). Run `lp10` (no arguments) for the live TUI, or `lp10 sweep` for a
+// one-shot read-only inventory of the box diffed against the last one.
 //
 // Transport: ONE direct ssh connection to root@LP10 (password from the OS
 // secret store — the macOS Keychain item service=lp10 account=root, or
@@ -31,6 +31,7 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/discovery"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/sweep"
 	"github.com/lucasdaddiego/lp10/internal/transport"
 	"github.com/lucasdaddiego/lp10/internal/tui"
 )
@@ -42,7 +43,7 @@ import (
 // that reason; the configured host is the fallback.
 const discoverTimeout = 1 * time.Second
 
-const usage = "lp10: takes no arguments — run `lp10` for the live TUI; `lp10 --version` prints the build"
+const usage = "lp10: run `lp10` for the live TUI; `lp10 sweep [--json] [--no-save]` inventories the box read-only and diffs it against the last sweep; `lp10 --version` prints the build"
 
 // versionString is what --version prints: the module version (a tag when
 // installed as a module, "(devel)" from a checkout), the commit and its time
@@ -171,6 +172,14 @@ func main() {
 		case "--help", "-help", "-h":
 			fmt.Println(usage)
 			return
+		case "sweep":
+			ctx, finish := signalContext()
+			cfg := resolveDevice(ctx, config.Load(), discovery.FindLP10, discovery.FindLP10LSSDP)
+			code := sweep.Main(ctx, cfg, os.Args[2:], os.Stdout, os.Stderr)
+			if c := finish(); c != 0 {
+				code = c
+			}
+			os.Exit(code)
 		}
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

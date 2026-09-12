@@ -55,42 +55,42 @@ func TestOTACheckVerdicts(t *testing.T) {
 		return 200, `not json`
 	})
 	ctx := context.Background()
-	if v := otaCheck(ctx, srv.URL, "AR241CE_8530"); !v.UpToDate || v.Err != "" || v.Asked != "AR241CE_8530" || v.At.IsZero() {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_8530"); !v.UpToDate || v.Err != "" || v.Asked != "AR241CE_8530" || v.At.IsZero() {
 		t.Errorf("current build: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_9243"); v.UpToDate || v.Offered != "AR241CE_8530" || v.Err != "" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_9243"); v.UpToDate || v.Offered != "AR241CE_8530" || v.Err != "" {
 		t.Errorf("older build: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_0001"); v.Offered != "a newer build" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_0001"); v.Offered != "a newer build" {
 		t.Errorf("offer without a version: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_0002"); v.Err != "vendor said: Unknown model" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_0002"); v.Err != "vendor said: Unknown model" {
 		t.Errorf("vendor error: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_0003"); v.Err != "unexpected vendor reply" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_0003"); v.Err != "unexpected vendor reply" {
 		t.Errorf("bare vendor error: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_0004"); v.Err != "unexpected vendor reply" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_0004"); v.Err != "unexpected vendor reply" {
 		t.Errorf("http 500: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_0005"); v.Err != "unexpected vendor reply" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_0005"); v.Err != "unexpected vendor reply" {
 		t.Errorf("non-JSON: %+v", v)
 	}
 	// nothing leaves for a build that is missing or not build-shaped
 	before := hits.Load()
-	if v := otaCheck(ctx, srv.URL, ""); v.Err != "unrecognised firmware string" {
+	if v := OTACheck(ctx, srv.URL, ""); v.Err != "unrecognised firmware string" {
 		t.Errorf("no build: %+v", v)
 	}
-	if v := otaCheck(ctx, srv.URL, "AR241CE_8530; drop"); v.Err != "unrecognised firmware string" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_8530; drop"); v.Err != "unrecognised firmware string" {
 		t.Errorf("odd build: %+v", v)
 	}
 	if hits.Load() != before {
 		t.Error("a request left for an unusable build")
 	}
-	if v := otaCheck(ctx, "http://127.0.0.1:1/v1", "AR241CE_8530"); v.Err != "vendor unreachable" {
+	if v := OTACheck(ctx, "http://127.0.0.1:1/v1", "AR241CE_8530"); v.Err != "vendor unreachable" {
 		t.Errorf("dead vendor: %+v", v)
 	}
-	if v := otaCheck(ctx, "::not a url", "AR241CE_8530"); v.Err != "bad manifest url" {
+	if v := OTACheck(ctx, "::not a url", "AR241CE_8530"); v.Err != "bad manifest url" {
 		t.Errorf("bad url: %+v", v)
 	}
 }
