@@ -2,6 +2,7 @@ package transport
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/lucasdaddiego/lp10/internal/transport/loopgen"
@@ -31,10 +32,29 @@ func TestEmbeddedLoopMatchesSource(t *testing.T) {
 // The whole loop rides one ssh exec-request string; dropbear rejects requests
 // longer than MAX_CMD_LEN (9000 by default) with a connection-fatal error whose
 // stderr classifies as transient — a silent infinite reconnect loop. Guard the
-// headroom so growth is caught here, not on the device.
+// headroom so growth is caught here, not on the device. The budget is measured
+// with the LONGEST ping target sanitizeHost lets through (maxPingHostLen), so
+// the remaining margin is real headroom, not a hostname's worth of luck.
 func TestRemoteLoopFitsDropbearCmdLen(t *testing.T) {
-	if n := len(RemoteLoop("a-hostname-of-plausible-length.example.com")); n >= 8500 {
-		t.Errorf("RemoteLoop is %d bytes — within 500 of dropbear's MAX_CMD_LEN (9000); trim the loop", n)
+	longest := strings.Repeat("h", maxPingHostLen-len(".example.com")) + ".example.com"
+	if len(longest) != maxPingHostLen {
+		t.Fatalf("test bug: longest host is %d chars", len(longest))
+	}
+	if n := len(RemoteLoop(longest)); n > 8800 {
+		t.Errorf("RemoteLoop is %d bytes with a %d-char ping host — within 200 of dropbear's MAX_CMD_LEN (9000); trim the loop", n, maxPingHostLen)
+	}
+}
+
+// A ping_host longer than the loop's byte budget allows falls back whole (the
+// device loop must fit dropbear's command ceiling with any accepted target).
+func TestSanitizeHostCapsLength(t *testing.T) {
+	long := strings.Repeat("a", maxPingHostLen+1)
+	if got := sanitizeHost(long); got != "spotify.com" {
+		t.Errorf("sanitizeHost(%d chars) = %q, want the default target", len(long), got)
+	}
+	ok := strings.Repeat("a", maxPingHostLen-4) + ".com"
+	if got := sanitizeHost(ok); got != ok {
+		t.Errorf("sanitizeHost(%d chars) = %q, want it kept", len(ok), got)
 	}
 }
 

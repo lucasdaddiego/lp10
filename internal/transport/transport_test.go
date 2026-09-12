@@ -92,7 +92,7 @@ func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 	if strings.Contains(body, "eval") {
 		t.Error("remote loop must not contain eval")
 	}
-	for _, tag := range []string{"@@B", "@@p", "@@t", "@@v", "@@s", "@@i", "@@c", "@@E"} {
+	for _, tag := range []string{"@@B", "@@p", "@@t", "@@v", "@@s", "@@i", "@@c", "@@o", "@@E"} {
 		if !strings.Contains(body, tag) {
 			t.Errorf("missing wire tag %q", tag)
 		}
@@ -266,21 +266,22 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// protocol's TestSysStatsFieldOrder)
 		`echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--} ${sv:--}"`,
 		// the one-shot raw register ships (device details + multiroom group)
-		`echo @@d; LUCI_local -r 92 2>/dev/null; E;`,
-		`echo @@g; LUCI_local -r 39 2>/dev/null; E;`,
+		`for q in d:92 g:39; do echo @@${q%:*}; LUCI_local -r ${q#*:} 2>/dev/null; E; done;`,
 		// the FriendlyName read keeps spaces (suffix-strip, not first-word)
 		`case "$fn" in *Data:*) fn=${fn#*Data:}; fn=${fn% Length:*};; *) fn=;; esac;`,
 		// the new diag-gated gathers (all default to "-" so absent paths don't break the line)
-		`for ad in /proc/asound/card*/pcm*p/sub*; do`,
+		`for ad in /proc/asound/card*/pcm*p/sub*/status /proc/asound/card*/pcm*p/sub*/hw_params; do`,
 		`buffer_size) bs=$av;;`,
 		`2>/dev/null < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq`,
 		`ns=${nz%.}`, // Wi-Fi noise floor (for SNR)
 		// the @@i block is ONE printf: seventeen of them cost ~230 bytes of the
 		// ssh command-length budget, and the loop sits at dropbear's ceiling.
-		`printf 'net=%s\niface=%s\nip=%s\n`,
-		`\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\n' "$net"`,
+		`printf 'net=%s\nip=%s\nmac=%s\n`,
+		`\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\nrboot=%s\n' "$net"`,
+		// the @@o syslog digest rides the overlay-open toggle (and connect)
+		`ot() { echo @@o;`,
 		`if [ "$dg" = 1 ]; then`,
-		`90) case "$data" in 1) dg=1;; *) dg=0;; esac;;`,
+		`90) case "$data" in 1) dg=1; ot;; *) dg=0;; esac;;`,
 		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; }`,
 		`MemAvailable:) ma=$v; break;;`,
 		// position poll gated to every 3rd tick, with the read-flag that keeps the
@@ -310,7 +311,7 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 func TestRemoteLoopAudioChainParses(t *testing.T) {
 	// The ALSA gather as the loop actually carries it: the defaults through the
 	// pcm glob's closing done.
-	snip := loopSlice(t, "as=-;", `< "$ad/hw_params";done`)
+	snip := loopSlice(t, "as=-;", `< "$ad";done`)
 	// realStatus/realHW mirror the probed AR241CE: aligned colons, avail/avail_max,
 	// no xruns line; hw_params carries buffer_size.
 	const realStatus = "state: RUNNING\nowner_pid   : 14748\ntrigger_time: 237278.20\ntstamp      : 0.0\ndelay       : 17216\navail       : 4834\navail_max   : 27490\n-----\nhw_ptr      : 2231488\nappl_ptr    : 2248704\n"
@@ -328,7 +329,7 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 		return dir
 	}
 	run := func(t *testing.T, dir string) string {
-		s := strings.Replace(snip, "/proc/asound", filepath.Join(dir, "asound"), 1)
+		s := strings.ReplaceAll(snip, "/proc/asound", filepath.Join(dir, "asound"))
 		out, err := exec.Command("sh", "-c", s+`; printf '%s %s %s %s %s %s' "$as" "$ab" "$ar" "$af" "$ac" "$bs"`).Output()
 		if err != nil {
 			t.Fatalf("sh: %v", err)
@@ -396,15 +397,26 @@ func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "tcp6"), []byte(
 		"  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"+
 			"   0: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1236 1 0 100 0 0 10 0\n"), 0o644)
+	// The live engine's process facts, read from the same fake /proc directory
+	// the comm scan found it in: pid 1's stat says it started at tick 67504
+	// (field 22) against an uptime of 68180 s, so it has been up 67505 s, and its
+	// environment carries SSH_CLIENT — launched from an ssh session, the way the
+	// services pane does it. sqlite3 answers the dirty-key query with the two
+	// Spotify flags.
+	os.WriteFile(filepath.Join(dir, "1", "stat"), []byte("1 (newspotifyhifi) S 0 1 1 0 -1 4194560 100 0 0 0 5 3 0 0 20 0 4 0 67504 100000 500 4294967295 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "1", "environ"), []byte("USER=root\x00SSH_CLIENT=192.0.2.3 51411 22\x00HOME=/root\x00"), 0o644)
+	os.WriteFile(filepath.Join(dir, "uptime"), []byte("68180.00 135000.00\n"), 0o644)
 	local := strings.NewReplacer(
 		"/proc/[0-9]*/comm", filepath.Join(dir, "[0-9]*", "comm"),
 		"/proc/net/tcp6", filepath.Join(dir, "tcp6"),
 		"/proc/net/tcp", filepath.Join(dir, "tcp"),
+		"/proc/uptime", filepath.Join(dir, "uptime"),
 	).Replace(snip)
 	const stub = `E() { echo @@E; }; getenv() { case "$1" in ` +
 		`TidalEnabled) echo " [ TidalEnabled ]: 0";; USBEnable) echo " [ USBEnable ]: off";; ` +
 		`SpotifyEnabled) echo " [ SpotifyEnabled ]: 1";; SpotifyProEnabled) echo " [ SpotifyProEnabled ]: 0";; ` +
-		`esac; }; `
+		`esac; }; ` +
+		`sqlite3() { printf 'SpotifyEnabled\nSpotifyProEnabled\n'; }; `
 	out, err := exec.Command("sh", "-c", stub+local).Output()
 	if err != nil {
 		t.Fatalf("sh: %v", err)
@@ -417,6 +429,7 @@ func TestRemoteLoopCapabilityProbeParses(t *testing.T) {
 	// never read.
 	const want = "@@c\n" +
 		"spotify.eng=newspotifyhifi\nspotify.sdk=\nspotify.cfg=hifi\n" +
+		"spotify.proc=67505 1\ndirty=SpotifyEnabled SpotifyProEnabled \n" +
 		"airplay=off\ndlna=off\nbt=on\ncast=off\n" +
 		"tidal=off\ntidal.env=off\nqobuz=off\nqobuz.env=\nusb=off\n" +
 		"telnet=on\nadb=off\nweb=on\ncontrol=off\n@@E\n"

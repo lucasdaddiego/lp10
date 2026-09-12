@@ -109,8 +109,15 @@ func sanitizeHost(h string) string {
 			b.WriteRune(r)
 		}
 	}
-	if h == "" || b.String() != h {
+	// Longer than 64 characters falls back too: the loop rides one ssh exec
+	// request that sits close under dropbear's 9000-byte MAX_CMD_LEN, and the
+	// target is substituted into it — TestRemoteLoopFitsDropbearCmdLen budgets
+	// for exactly this ceiling. No sane ping target is longer.
+	if h == "" || len(h) > maxPingHostLen || b.String() != h {
 		return "spotify.com"
 	}
 	return h
 }
+
+// maxPingHostLen is the longest ping_host that reaches the device loop.
+const maxPingHostLen = 64

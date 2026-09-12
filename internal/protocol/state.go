@@ -35,6 +35,8 @@ type State struct {
 	logsAt    time.Time   // when that tail arrived (zero == none yet this run)
 	vlogs     []string    // vendor app log tail (@@L, only in answer to MID 93 "2")
 	vlogsAt   time.Time
+	ops       *DevOps   // syslog digest (@@o: at connect and on each overlay open)
+	opsAt     time.Time // when that digest arrived
 
 	posMs    int
 	posAt    time.Time
@@ -412,6 +414,12 @@ type DiagnosticSnapshot struct {
 	// OTAPending is a check the overlay asked for that has not answered yet.
 	OTA        *OTAInfo
 	OTAPending bool
+
+	// Ops is the device's own syslog digest — the Spotify engine's reconnect
+	// count over the log's window and the box's own last manifest answer (nil:
+	// none received this connection); OpsAt is when it arrived.
+	Ops   *DevOps
+	OpsAt time.Time
 }
 
 // ---- volume / mute ----
@@ -693,6 +701,8 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		ZCOKAt:          st.zcOKAt,
 		OTA:             st.ota,
 		OTAPending:      st.otaWant,
+		Ops:             st.ops,
+		OpsAt:           st.opsAt,
 	}
 }
 
