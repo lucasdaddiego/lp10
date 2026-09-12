@@ -120,8 +120,10 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 	}
 }
 
-// Opening the diagnostics overlay is the one gesture that asks the vendor
-// whether the firmware is current; the device card then carries the verdict.
+// Opening the diagnostics overlay asks the vendor nothing: the update line is
+// the verdict the box fetched itself (its ota daemon asks every 4 h and logs
+// the answer). A vendor query is the u key inside the overlay, and its answer
+// lands on a separate "vendor" line.
 func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
@@ -130,10 +132,21 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 		t.Fatal("pending before the overlay opened")
 	}
 	m.key(keyEvent{kind: kRune, r: '?'})
-	if !m.diag || !st.DiagnosticView(time.Now()).OTAPending {
-		t.Fatal("? did not open the overlay and request a check")
+	if !m.diag || st.DiagnosticView(time.Now()).OTAPending {
+		t.Fatal("? did not open the overlay, or asked the vendor on its own")
 	}
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "checking…") {
+	// the box's own verdict, from the syslog digest
+	protocol.ApplyRecord(st, protocol.Record{"o": {"n=2", "t=Sep 11 01:47:58",
+		"u=" + time.Now().Add(-3*time.Hour).Format("Jan _2 15:04:05") + ":000000 E/ota[923]: ota: OTA:error string =  No update available"}})
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update    up to date · the box asked 3h ago · it asks every 4 h") {
+		t.Errorf("the box's own verdict missing:\n%s", out)
+	}
+	// u asks the vendor; the overlay stays open
+	m.key(keyEvent{kind: kRune, r: 'u'})
+	if !m.diag || !st.DiagnosticView(time.Now()).OTAPending {
+		t.Fatal("u did not request a vendor check (or closed the overlay)")
+	}
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "vendor    checking…") {
 		t.Errorf("pending check not shown:\n%s", out)
 	}
 	// from inside another overlay too
@@ -146,7 +159,7 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	st.TakeOTARequest()
 	now := time.Now()
 	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_8530", UpToDate: true})
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update    up to date · checked") {
+	if out := stripANSI(m.viewContent()); !strings.Contains(out, "vendor    up to date · checked") {
 		t.Errorf("up-to-date verdict missing:\n%s", out)
 	}
 	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_9243", Offered: "AR241CE_8530"})
@@ -173,12 +186,80 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 }
 
 // At mini size the diagnostics overlay cannot be drawn, so ? must not pretend
-// to open it — and must not send the vendor a firmware query for nothing.
+// to open it.
 func TestDiagAtMiniSizeIsInert(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.rows, m.cols = MiniRows-1, 40
 	m.key(keyEvent{kind: kRune, r: '?'})
 	if m.diag || st.DiagnosticView(time.Now()).OTAPending {
 		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.diag, st.DiagnosticView(time.Now()).OTAPending)
+	}
+}
+
+// The device card says how the box came up, and the connection and network
+// sections carry the engine's own reconnect account and the radio warning —
+// each of which also moves the health verdict.
+func TestDiagBootReconnectsAndRadio(t *testing.T) {
+	m, st, _ := makeModel(t)
+	m.sty = newTheme()
+	m.rows, m.cols = 44, 160
+	now := time.Now()
+	// a wired box that came up from a power loss 2 days ago, quiet log
+	protocol.ApplyRecord(st, protocol.Record{
+		"i": {"net=eth", "ip=192.0.2.13", "rboot=cold_boot"},
+		"s": {"172800.00 0.10 0.10 0.10 100000 220000 2 AR241CE_8530.23 Linux-5.15"},
+		"o": {"n=0", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
+		"v": {"MID-Read:64 Data:40 Length:2"},
+	})
+	m.key(keyEvent{kind: kRune, r: '?'})
+	out := stripANSI(m.viewContent())
+	for _, want := range []string{
+		"boot      power-on (cold boot) · " + now.Add(-172800*time.Second).Format("Jan 2 15:04") + " · 2d 0h 0m ago",
+		"engine    no reconnects",
+		"● healthy",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("overlay missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "on wi-fi") {
+		t.Error("radio warning shown on a wired box")
+	}
+	// the same box on its radio, with a reconnect storm: both are warns
+	protocol.ApplyRecord(st, protocol.Record{
+		"i": {"net=wifi", "ip=192.0.2.13", "ssid=home", "freq=5180", "rboot=normal"},
+		"o": {"n=40", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
+		"v": {"MID-Read:64 Data:40 Length:2"},
+	})
+	out = stripANSI(m.viewContent())
+	for _, want := range []string{
+		"boot      software reboot (normal)",
+		"40 reconnects · 2.0/h",
+		"radio     ⚠ on wi-fi · the radio firmware can wedge — wire it",
+		"● warn",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("overlay missing %q:\n%s", want, out)
+		}
+	}
+	// the stacked layout carries the same rows
+	m.cols = 70
+	out = stripANSI(m.viewContent())
+	for _, want := range []string{"power-on", "software reboot", "40 reconnects", "on wi-fi"} {
+		if want == "power-on" {
+			continue // the second record replaced the reason
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("stacked overlay missing %q:\n%s", want, out)
+		}
+	}
+	// no reason shipped (an older loop): no boot row at all
+	if f := bootFact(protocol.DiagnosticSnapshot{DevInfo: &protocol.DevInfo{Net: "eth"}}, now); f != "" {
+		t.Errorf("boot fact without a reason = %q", f)
+	}
+	// an offered update is carried as the box logged it
+	d := protocol.DiagnosticSnapshot{Ops: &protocol.DevOps{OTAOK: true, OTAText: "update offered", OTAAt: now.Add(-time.Hour)}}
+	if f := boxUpdateFact(d, now); f != "update offered · the box asked 60m ago · it asks every 4 h" {
+		t.Errorf("offered fact = %q", f)
 	}
 }

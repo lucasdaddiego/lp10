@@ -517,7 +517,7 @@ func TestDiagShowsExpandedFields(t *testing.T) {
 	out := m.viewContent()
 	for _, want := range []string{
 		"diagnostics", "link", "ethernet", "100 Mbit/s", "full duplex",
-		"address", "latency", "you", "±", "storage", "any key returns",
+		"address", "latency", "you", "±", "storage", "any other key returns",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("diag overlay missing %q", want)

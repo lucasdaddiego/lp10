@@ -532,15 +532,14 @@ func (m *model) reconnectReadout(ops *protocol.DevOps, now time.Time) string {
 		return t.txt.render("no reconnects") + t.dmr.render(" in the box's syslog")
 	}
 	s := t.txt.render(fmt.Sprintf("%d reconnect%s", n, plural(n)))
-	if ops.LogSinceOK {
-		if win := now.Sub(ops.LogSince); win >= 30*time.Minute {
-			rate := float64(n) / win.Hours()
-			pen := t.txt
-			if rate >= reconnectWarnPerHour {
-				pen = t.warn
-			}
-			s += t.dmr.render(" · ") + pen.render(fmt.Sprintf("%.1f/h", rate))
+	if rate, ok := reconnectRate(ops, now); ok {
+		pen := t.txt
+		if rate >= reconnectWarnPerHour {
+			pen = t.warn
 		}
+		s += t.dmr.render(" · ") + pen.render(fmt.Sprintf("%.1f/h", rate))
+	}
+	if ops.LogSinceOK {
 		s += t.dmr.render(" since " + ops.LogSince.Format("Jan 2 15:04"))
 	}
 	return s
