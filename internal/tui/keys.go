@@ -102,7 +102,14 @@ func (m *model) key(ev keyEvent) (quit bool) {
 		return m.overlayKey(ev)
 	}
 	if m.diag {
-		m.diag = false // any key closes the overlay
+		// u asks the vendor's manifest directly — the one request that leaves
+		// the LAN, so it is a deliberate keystroke, never a side effect of
+		// opening the overlay (which shows the box's own 4-hourly verdict).
+		if ev.kind == kRune && (ev.r == 'u' || ev.r == 'U') {
+			m.st.RequestOTA()
+			return false
+		}
+		m.diag = false // any other key closes the overlay
 		return false
 	}
 
@@ -212,16 +219,17 @@ func (m *model) key(ev keyEvent) (quit bool) {
 	return false
 }
 
-// openDiag engages the diagnostics overlay. Opening it is also the one gesture
-// that asks the vendor whether the firmware is current: the check leaves the
-// LAN, so it runs on this explicit request and never on a timer (the worker
-// answers from its last verdict when one is recent).
+// openDiag engages the diagnostics overlay. Nothing leaves the LAN for it:
+// the firmware line shows the verdict the box itself fetched from the vendor
+// (it asks every 4 h on its own timer and logs the answer — the loop ships that
+// line), and a fresh vendor query is a separate keystroke, u, inside the
+// overlay. Opening also makes the loop re-read that syslog digest (the 90 1
+// toggle carries it).
 func (m *model) openDiag() {
 	if m.miniMode() {
-		return // no room to draw it (View drops it on the next paint) — and no vendor round trip for nothing
+		return // no room to draw it (View drops it on the next paint)
 	}
 	m.diag, m.ov = true, ovNone
-	m.st.RequestOTA()
 }
 
 // openOverlay engages one interactive pane, closing whatever else was open —

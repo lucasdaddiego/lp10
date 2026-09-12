@@ -21,7 +21,7 @@ import (
 const diagCardsMinW = 100
 
 // diagFooter is the overlay's bottom help line (both layouts).
-const diagFooter = "live · any key returns to the dashboard"
+const diagFooter = "live · u asks the vendor about updates · any other key returns to the dashboard"
 
 // ---- shared severity model -----------------------------------------------------
 //
@@ -196,6 +196,15 @@ type diagVitals struct {
 	playing bool // ALSA reports RUNNING — gates the buffer's health meaning
 
 	levelDesync bool // softvol out of step with the reported volume (State's tracker)
+
+	// onWifi: the box is on its radio. Not a fault in general, but on this
+	// product the aml_w1 firmware wedge (RX ok, TX dead until a power-cycle)
+	// only ever triggered off the wire, so the wire is the healthy state.
+	onWifi bool
+	// the Spotify engine's own reconnect rate from the syslog digest (per hour
+	// over the log's window); haveReconnect gates it.
+	reconnectRate float64
+	haveReconnect bool
 }
 
 // collectVitals parses the @@s/@@i numerics both layouts gauge (either source may
@@ -308,6 +317,14 @@ func diagErrLine(s protocol.Snapshot, now time.Time, W int) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// wifiWarning is the network section's note when the box is on its radio: the
+// SDIO Wi-Fi firmware on this product can wedge RX-ok / TX-dead on a link
+// event and never recover until a power-cycle — the cause of every stream drop
+// before this box went on the wire — so being off the wire is worth a warn.
+func wifiWarning() string {
+	return stWarn.Render(GL["warn"] + " on wi-fi · the radio firmware can wedge — wire it")
 }
 
 // wifiBand renders the " · ch N · 2.4|5 GHz" suffix from the @@i freq (MHz), or
@@ -509,6 +526,9 @@ func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now tim
 	if zr := m.zcReadout(d, now); zr != "" {
 		rows = append(rows, m.diagLine("spotify", zr))
 	}
+	if rc := m.reconnectReadout(d.Ops, now); rc != "" {
+		rows = append(rows, m.diagLine("engine", rc))
+	}
 	return append(rows,
 		m.diagLine("ssh", m.sshReadout(status, d.ConnectAttempts)),
 		m.diagLine("tunnel", m.tunnelReadout(status)),
@@ -611,6 +631,7 @@ func fmtAgeShort(d time.Duration) string {
 func identityFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
 	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
 	return presentKVs([]kv{
+		{"boot", bootFact(d, now)},
 		{"bt", id.bt},
 		{"build", id.build},
 		{"firmware", id.fw},
@@ -619,13 +640,55 @@ func identityFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
 		{"name", id.name},
 		{"os", id.os},
 		{"serial", id.serial},
-		{"update", otaFact(d, now)},
+		{"update", boxUpdateFact(d, now)},
+		{"vendor", otaFact(d, now)},
 	})
 }
 
-// otaFact is the device card's firmware-check line: "" until the overlay has
-// asked, "checking…" while the vendor is being asked, then the verdict with its
-// age — "up to date", "AR241CE_9xxx available", or why there is none.
+// bootFact turns the kernel's reboot reason and the uptime into the sentence
+// the logs never write: "power-on (cold boot) · Sep 4 14:55 · 8d 0h 20m ago".
+// A cold boot is the bootloader finding no reboot reason — the mains went
+// away — where a software reboot / OTA leaves its own word. "" until the loop
+// has shipped the reason.
+func bootFact(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.DevInfo == nil || d.DevInfo.Reboot == "" {
+		return ""
+	}
+	s := "software reboot (" + d.DevInfo.Reboot + ")"
+	if d.DevInfo.Reboot == "cold_boot" {
+		s = "power-on (cold boot)"
+	}
+	if d.SysInfo != nil {
+		if secs, err := strconv.ParseFloat(strings.TrimSpace(d.SysInfo.Up), 64); err == nil && secs >= 0 {
+			at := now.Add(-time.Duration(secs * float64(time.Second)))
+			s += " · " + at.Format("Jan 2 15:04") + " · " + fmtUptime(d.SysInfo.Up) + " ago"
+		}
+	}
+	return s
+}
+
+// boxUpdateFact is the firmware verdict the box fetched itself — its ota
+// daemon asks the vendor manifest every 4 h and logs the answer, which the
+// loop's syslog digest carries — so the overlay says whether the build is
+// current without lp10 making a request of its own. "" until a digest with an
+// answer has arrived (a box rebooted within the last 4 h has none yet).
+func boxUpdateFact(d protocol.DiagnosticSnapshot, now time.Time) string {
+	if d.Ops == nil || !d.Ops.OTAOK {
+		return ""
+	}
+	s := d.Ops.OTAText
+	if d.Ops.OTAUpToDate {
+		s = "up to date"
+	}
+	if !d.Ops.OTAAt.IsZero() {
+		s += " · the box asked " + fmtAgeShort(now.Sub(d.Ops.OTAAt)) + " ago"
+	}
+	return s + " · it asks every 4 h"
+}
+
+// otaFact is the device card's vendor line: "" until u has asked, "checking…"
+// while the vendor is being asked, then the verdict with its age — "up to
+// date", "AR241CE_9xxx available", or why there is none.
 func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 	if d.OTA == nil {
 		if d.OTAPending {
@@ -716,7 +779,8 @@ func (m *model) diagStackedNetworkRows(d protocol.DiagnosticSnapshot, w, gaugeW 
 		}
 		if dev.Net == "wifi" {
 			rows = append(rows, m.diagLine("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+
-				t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))))
+				t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))),
+				m.diagLine("radio", wifiWarning()))
 		} else {
 			rows = append(rows, m.diagLine("link", t.pens().bri.render("ethernet")+
 				t.pens().dim.render(ethDetail(dev.Speed, dev.Duplex))))
@@ -883,7 +947,36 @@ func diagWorst(v diagVitals, lastRx, now time.Time) int {
 	if v.levelDesync {
 		bump(1) // the room isn't at the volume every display claims
 	}
+	if v.onWifi {
+		bump(1) // the radio is where the known firmware wedge lives
+	}
+	if v.haveReconnect && v.reconnectRate >= reconnectWarnPerHour {
+		bump(1) // the engine keeps losing and re-making its Spotify session
+	}
 	return worst
+}
+
+// withOpsVitals folds the health inputs collectVitals cannot see — they come
+// from the @@i medium and the @@o digest, not the stats line — into v.
+func withOpsVitals(v diagVitals, d protocol.DiagnosticSnapshot, now time.Time) diagVitals {
+	v.levelDesync = d.LevelDesync
+	v.onWifi = d.DevInfo != nil && d.DevInfo.Net == "wifi"
+	v.reconnectRate, v.haveReconnect = reconnectRate(d.Ops, now)
+	return v
+}
+
+// reconnectRate is the engine's reconnects per hour over the syslog's window,
+// false until the window is at least half an hour (a fresh log would otherwise
+// turn two events into a storm).
+func reconnectRate(ops *protocol.DevOps, now time.Time) (float64, bool) {
+	if ops == nil || !ops.ReconnectsOK || !ops.LogSinceOK {
+		return 0, false
+	}
+	win := now.Sub(ops.LogSince)
+	if win < 30*time.Minute {
+		return 0, false
+	}
+	return float64(ops.Reconnects) / win.Hours(), true
 }
 
 func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w int) string {
@@ -922,6 +1015,9 @@ func (m *model) diagCardConnectionRows(d protocol.DiagnosticSnapshot, now time.T
 	}
 	if zr := m.zcReadout(d, now); zr != "" {
 		rows = append(rows, f.styled("spotify", zr))
+	}
+	if rc := m.reconnectReadout(d.Ops, now); rc != "" {
+		rows = append(rows, f.styled("engine", rc))
 	}
 	return append(rows,
 		f.styled("ssh", m.sshReadout(ls, d.ConnectAttempts)),
@@ -963,7 +1059,8 @@ func (m *model) diagCardNetworkRows(d protocol.DiagnosticSnapshot, f diagCardFmt
 	}
 	if haveDev {
 		if dev.Net == "wifi" {
-			rows = append(rows, f.styled("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))))
+			rows = append(rows, f.styled("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))),
+				f.styled("radio", wifiWarning()))
 		} else {
 			rows = append(rows, f.styled("link", t.pens().bri.render("ethernet")+t.pens().dim.render(ethDetail(dev.Speed, dev.Duplex))))
 		}
@@ -1133,8 +1230,7 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 	t := m.sty
 	s := d.Snapshot
 	gaugeW := max(min(20, W-52), 8) // leaves room for label/value/detail
-	vit := collectVitals(d.SysInfo, d.DevInfo)
-	vit.levelDesync = d.LevelDesync
+	vit := withOpsVitals(collectVitals(d.SysInfo, d.DevInfo), d, now)
 	L := m.diagStackedContent(d, vit, now, W, gaugeW)
 
 	// footer (and any device error) pins to the bottom; the gap fills the frame
@@ -1163,8 +1259,7 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
 	t := m.sty
 	s := d.Snapshot
-	vit := collectVitals(d.SysInfo, d.DevInfo)
-	vit.levelDesync = d.LevelDesync
+	vit := withOpsVitals(collectVitals(d.SysInfo, d.DevInfo), d, now)
 	colW := (W - diagCardsGutter) / 2
 	rightW := W - diagCardsGutter - colW // absorbs the odd column
 	format := diagCardFmt{m: m, inner: colW - 2}

@@ -74,10 +74,11 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   health verdict (`healthy` / `warn` / `fault`) and the clock, nothing else —
   over two ruled columns on a wide terminal (a stacked read-out when
   narrow): device & firmware identity (down to the serial, MCU version, and BT
-  address, plus an **update** line — opening the overlay is the one gesture
-  that asks the vendor's own manifest whether the build is current, the same
-  public endpoint the box polls; the verdict is kept for half an hour, and
-  nothing ever asks on a timer); lp10's own **connection** to the box (ssh stream freshness and the
+  address, plus a **boot** line — power-on or software reboot, when — and an
+  **update** line that is the verdict the box fetched itself: its updater asks
+  the vendor every four hours and logs the answer, so nothing leaves the LAN
+  for it; `u` inside the overlay asks the vendor's manifest directly, on a
+  separate line, and that verdict is kept for half an hour); lp10's own **connection** to the box (ssh stream freshness and the
   `:2018` control-tunnel state, the LSSDP liveness answer, and the Spotify
   engine's own ZeroConf answer — the two readable even while ssh is down); the
   active network link (Wi-Fi or ethernet, with live throughput, error/drop

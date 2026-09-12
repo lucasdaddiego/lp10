@@ -1305,9 +1305,10 @@ drives the device over **two independent channels**:
    /max-volume; the equalizer rides this. A dead tunnel only greys out the EQ.
 3. **Two ssh-free probes** (since 2026-09-02) — the LSSDP responder (udp 1800) for liveness, and the
    Spotify engine's ZeroConf `getInfo` (port from the `_spotify-connect._tcp` SRV record, §8.1) for
-   "is the engine up, on which eSDK, signed in as whom". Opening the diagnostics overlay also asks
-   the vendor manifest (§10.1) whether the build is current — the one request that leaves the LAN,
-   and only on that gesture. The log pane can tail `/lsync/app.log` (§10.2) beside the syslog.
+   "is the engine up, on which eSDK, signed in as whom". The overlay's update line is the verdict the
+   box fetched itself (its `ota` daemon asks the vendor every 4 h and logs the answer — the loop's `@@o`
+   digest, §10.1); `u` inside the overlay asks the manifest directly — the one request that leaves the
+   LAN, and only on that keystroke. The log pane can tail `/lsync/app.log` (§10.2) beside the syslog.
 
 - **Discovery:** startup mDNS for the **`am=LP10`** advertisement resolves the current IP
   (so a changed DHCP lease never needs a config edit), falling back to the configured host.
