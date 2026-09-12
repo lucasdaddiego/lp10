@@ -221,6 +221,7 @@ func (m *model) svcToggle(now time.Time) {
 	}
 	m.svcPending, m.svcPendingWant, m.svcPendingAt = row.id, next, now
 	m.send(92, row.id+" "+next)
+	m.notify(row.label+" → "+svcLabelFor(row, next)+" · asked the device", noticeFor)
 }
 
 // svcSettled reports whether the device has confirmed the pending toggle, so the
@@ -282,14 +283,14 @@ func (m *model) svcState(row svcDef, cv *protocol.ConfInfo) string {
 		case "both":
 			return m.sty.sevs[2].Render("⚠ both flags set — neither runs")
 		case "none":
-			return t.dim.render("○") + " " + t.dim.render("off")
+			return m.engineSegments(0)
 		case "":
 			// Unknown, not off: a record that carried no cfg at all would otherwise
 			// fall through to the first cycle position and paint a lit dot beside
 			// the word "off" — a cell contradicting itself.
 			return t.dmr.render("—")
 		}
-		return t.acc.render("●") + " " + t.txt.render(spotifyStates[spotifyStateIdx(cv)].label)
+		return m.engineSegments(spotifyStateIdx(cv))
 	}
 	switch cv.Svc[row.id] {
 	case "on":
@@ -305,6 +306,24 @@ func (m *model) svcState(row svcDef, cv *protocol.ConfInfo) string {
 // game — but printing the same phrase on every row is noise, and only one row is
 // ever actionable. Naming the destination also makes the Spotify row's three-way
 // obvious without a legend.
+// engineSegments draws the Spotify three-way as segments with the current
+// one lit — off · HiFi · Pro — so the row shows the whole cycle, not one word.
+func (m *model) engineSegments(cur int) string {
+	t := m.sty.pens()
+	var b strings.Builder
+	for i, seg := range [...]string{"off", "HiFi", "Pro"} {
+		if i > 0 {
+			b.WriteString(t.dmr.render(" · "))
+		}
+		if i == cur {
+			b.WriteString(t.accB.render(seg))
+		} else {
+			b.WriteString(t.dmr.render(seg))
+		}
+	}
+	return b.String()
+}
+
 func (m *model) svcAction(row svcDef, cv *protocol.ConfInfo, focused, pending bool) string {
 	t := m.sty.pens()
 	if row.gate == gateFixed {

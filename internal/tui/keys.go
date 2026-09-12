@@ -283,6 +283,15 @@ func (m *model) logsKey(ev keyEvent) bool {
 		m.logCycleSource() // the logs' s wins over the sleep timer here
 	case ev.kind == kRune && ev.r == 'r':
 		m.logRequest()
+	case ev.kind == kRune && ev.r == 'F':
+		// follow: refetch every 10 s while the view is open (see the logic tick)
+		m.logFollow = !m.logFollow
+		if m.logFollow {
+			m.logRequest()
+			m.notify("following the log · refetching every 10 s", noticeFor)
+		} else {
+			m.notify("follow off", noticeFor)
+		}
 	default:
 		return false
 	}
@@ -312,11 +321,27 @@ func (m *model) playbackKey(ev keyEvent) {
 		m.showRemaining = !m.showRemaining
 	case 's':
 		m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
+		m.notify(m.sleepNotice(), noticeFor)
 	case 'S':
 		m.sleepCancel()
+		m.notify("sleep timer cancelled", noticeFor)
 	case 'b':
 		m.bedtimeCycle(time.Now()) // sleep step + night mode on, restored when the timer ends
+		m.notify("bedtime · "+m.sleepNotice()+" · night mode on", noticeFor)
 	case 'd':
 		m.nightToggle() // night mode: the device's multi-band DRC
+		if m.st.Snap().Night {
+			m.notify("night mode on · multi-band compressor", noticeFor)
+		} else {
+			m.notify("night mode off", noticeFor)
+		}
 	}
+}
+
+// sleepNotice words the sleep timer's state for the notice line.
+func (m *model) sleepNotice() string {
+	if lbl, _ := m.sleepLabel(time.Now()); lbl != "" {
+		return "sleep timer set · " + lbl
+	}
+	return "sleep timer off"
 }

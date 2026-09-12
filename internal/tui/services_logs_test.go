@@ -34,7 +34,7 @@ func TestServicesPaneShowsStateAndAction(t *testing.T) {
 		"─ services", "Spotify", "AirPlay 2", "DLNA / UPnP", "Tidal", "Qobuz",
 		"USB playback", "Bluetooth", "Google Cast",
 		"● on", "○ off",
-		"HiFi engine",                   // the engine, not a boolean
+		"off · HiFi · Pro",              // the engine three-way, the current one lit
 		"enter → Pro engine (FLAC)",     // and what enter does to the focused row
 		"not switchable here",           // its own group, not a broken row
 		"the remote control runs on it", // and why, in the action column
@@ -562,8 +562,8 @@ func TestLogsPaneTinyFrame(t *testing.T) {
 	m, _, _ := modelWith(st)
 	m.rows, m.cols, m.sty = MiniRows+1, 80, newTheme()
 	m.openOverlay(ovLogs)
-	if got := m.renderLogs(time.Now(), 74); len(got) != m.rows-3 {
-		t.Errorf("tiny frame produced %d lines, want %d", len(got), m.rows-3)
+	if got := m.renderLogs(time.Now(), 74); len(got) != m.rows-4 {
+		t.Errorf("tiny frame produced %d lines, want %d", len(got), m.rows-4)
 	}
 }
 

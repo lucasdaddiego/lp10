@@ -52,34 +52,77 @@ type theme struct {
 	penCache *penSet // per-profile flattened styles; see pens()
 }
 
-func newTheme() *theme {
+func newTheme() *theme { return newThemeFor(true) }
+
+// newThemeFor builds the palette for a dark or a light terminal background.
+// The two share the accent family and the warning colours; the light one
+// swaps the greys so text stays legible on white and deepens the accent so a
+// lit strip entry or a knob still reads against a pale ground.
+func newThemeFor(dark bool) *theme {
 	fg := func(hex string) lipgloss.Style { return lipgloss.NewStyle().Foreground(lipgloss.Color(hex)) }
-	t := &theme{border: lipgloss.Color("#4a5562")}
-	t.sAcc = fg("#34d9ad")
-	t.sBri = fg("#f0f2f5").Bold(true)
-	t.sTxt = fg("#d7dbe2")
-	t.sDim = fg("#6b7480")
-	t.sDmr = fg("#515863")
-	for _, h := range []string{"#157a63", "#1d9e75", "#2bbf94", "#34d9ad", "#5fe0bf"} {
-		t.fill = append(t.fill, fg(h))
+	t := &theme{}
+	if dark {
+		t.border = lipgloss.Color("#4a5562")
+		t.sAcc = fg("#34d9ad")
+		t.sBri = fg("#f0f2f5").Bold(true)
+		t.sTxt = fg("#d7dbe2")
+		t.sDim = fg("#6b7480")
+		t.sDmr = fg("#515863")
+		for _, h := range []string{"#157a63", "#1d9e75", "#2bbf94", "#34d9ad", "#5fe0bf"} {
+			t.fill = append(t.fill, fg(h))
+		}
+		t.track = fg("#3a4150") // empty meter/rail cells: a visible grey, not near-black
+		t.head = fg("#8af0d4")
+		t.warmKnob, t.coolKnob = fg("#ffc861"), fg("#86b6ff")
+		t.btnOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true).Padding(0, 1)
+		t.btnOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#6b7480")).Padding(0, 1)
+		t.segOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true)
+		t.segOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#aab3c0")).Background(lipgloss.Color("#1c222c"))
+	} else {
+		t.border = lipgloss.Color("#9aa3b0")
+		t.sAcc = fg("#0f8a6c")
+		t.sBri = fg("#0f1318").Bold(true)
+		t.sTxt = fg("#2a313b")
+		t.sDim = fg("#5d6672")
+		t.sDmr = fg("#8a93a0")
+		for _, h := range []string{"#0b5e4a", "#0f7a5f", "#118f6f", "#14a37f", "#1fb88f"} {
+			t.fill = append(t.fill, fg(h))
+		}
+		t.track = fg("#c5ccd6")
+		t.head = fg("#0b6b54")
+		t.warmKnob, t.coolKnob = fg("#a86b00"), fg("#2b62c9")
+		t.btnOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#f4fbf8")).Background(lipgloss.Color("#0f8a6c")).Bold(true).Padding(0, 1)
+		t.btnOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#5d6672")).Padding(0, 1)
+		t.segOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#f4fbf8")).Background(lipgloss.Color("#0f8a6c")).Bold(true)
+		t.segOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#2a313b")).Background(lipgloss.Color("#e3e7ec"))
 	}
-	t.track = fg("#3a4150") // empty meter/rail cells: a visible grey, not near-black
-	t.head = fg("#8af0d4")
-	// Tone colours for the graphic-EQ slider knob: a boosted band reads warm, a cut
-	// band reads cool — so the sign of a tone control is legible at a glance.
-	t.warmKnob, t.coolKnob = fg("#ffc861"), fg("#86b6ff")
 	t.sevs = [3]lipgloss.Style{t.sAcc, stWarn, stRed}
 	t.sFocusBU = t.sAcc.Bold(true).Underline(true)
-	// colorprofile replaces v1's termenv: same env-driven detection (COLORTERM /
-	// TERM / NO_COLOR), used only to gate the half-block album art — everything
-	// else renders 24-bit and lets the program's renderer downsample.
 	t.trueColor = colorprofile.Detect(os.Stdout, os.Environ()) == colorprofile.TrueColor
 	t.kittyGraphics = detectKittyGraphics()
-	t.btnOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true).Padding(0, 1)
-	t.btnOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#6b7480")).Padding(0, 1)
-	t.segOn = lipgloss.NewStyle().Foreground(lipgloss.Color("#06231b")).Background(lipgloss.Color("#34d9ad")).Bold(true)
-	t.segOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#aab3c0")).Background(lipgloss.Color("#1c222c"))
 	return t
+}
+
+// ensureTheme builds the palette the first time and rebuilds it when the
+// choice changes: theme = dark | light in config.toml decides outright; auto
+// (the default) follows the terminal's reported background, dark until it
+// answers. Colour is dropped altogether under NO_COLOR by the colour profile
+// every style renders through.
+func (m *model) ensureTheme() {
+	dark := true
+	switch m.cfg.Theme {
+	case "light":
+		dark = false
+	case "dark":
+	default:
+		if m.bgDark != nil {
+			dark = *m.bgDark
+		}
+	}
+	if m.sty == nil || m.themeDark != dark {
+		m.sty, m.themeDark = newThemeFor(dark), dark
+		m.amb = nil // the ambient tint derives from the palette; rebuilt lazily
+	}
 }
 
 // detectKittyGraphics reports whether the terminal is known to support the Kitty

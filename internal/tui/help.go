@@ -37,6 +37,7 @@ var helpGroups = []struct {
 	{"logs", [][2]string{
 		{"↑↓ · ←→", "scroll · page"},
 		{"s · f · r", "source (device syslog / vendor app) · filter · refresh"},
+		{"F", "follow: refetch every 10 s while the view is open"},
 	}},
 	{"diagnostics", [][2]string{
 		{"u", "ask the vendor's manifest about updates (the box asks by itself every 4 h)"},

@@ -31,9 +31,7 @@ func (m *model) View() tea.View {
 
 // viewContent renders the whole frame as a styled string (the v1 View body).
 func (m *model) viewContent() string {
-	if m.sty == nil {
-		m.sty = newTheme()
-	}
+	m.ensureTheme()
 	rows, cols := m.rows, m.cols
 	if rows == 0 || cols == 0 {
 		return ""
@@ -55,7 +53,9 @@ func (m *model) viewContent() string {
 	if m.view == viewPlayer {
 		m.refreshAmbient(s) // recolour the meter/frame/dot to the cover (must precede headerRow)
 	}
-	header := m.headerRow(s, now, W, full && m.view == viewPlayer)
+	// "Vol" labels the rail only when the full player draws one: not on the idle screen
+	header := m.headerRow(s, now, W, full && m.view == viewPlayer && !(s.Track == nil && s.Connected))
+	notice := m.noticeRow(now, W)
 	var body []string
 	switch m.view {
 	case viewEQ:
@@ -71,12 +71,12 @@ func (m *model) viewContent() string {
 	default:
 		body = m.renderDashboard(s, now, W, full)
 	}
-	return m.frameLines(append([]string{header}, body...), W)
+	return m.frameLines(append([]string{header, notice}, body...), W)
 }
 
 // bodyRows is the height a view renders into: the frame's inner height less
-// the shared header row.
-func (m *model) bodyRows() int { return m.rows - 3 }
+// the shared header and notice rows.
+func (m *model) bodyRows() int { return m.rows - 4 }
 
 // frameLines wraps the body lines in the full-window thick border with the
 // side padding, in one builder pass. It replaces the old
@@ -196,6 +196,10 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		if errLine != "" {
 			tail = append(tail, errLine)
 		}
+		if s.Track == nil && s.Connected {
+			// connected, nothing playing: the idle screen instead of an empty sleeve
+			return append(m.renderIdle(s, now, W, inner-len(tail)), tail...)
+		}
 		// The framed cover fills the region between the header and that tail. Its
 		// height comes from the real region; its width makes the box *square in
 		// device pixels* using the measured cell aspect (cells are ~2:1, but the
@@ -254,9 +258,9 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		art := centreRows(m.boxArt(m.artColumn(s, coverW, coverH), coverW), blockH)
 		block := joinCols(art, mid, m.volRail(s, blockH-1), midW)
 
-		// header (above) pinned top, tone strip + footer pinned bottom, the
-		// cover block centred between
-		return stack([]string{""}, block, tail, inner)
+		// header and notice (above) pinned top, tone strip + footer pinned
+		// bottom, the cover block centred between
+		return stack(nil, block, tail, inner)
 	}
 
 	// Compact: no art / volume rail — metadata + seek + controls centred in the
@@ -495,7 +499,7 @@ func btoi(b bool) int {
 // lights up.
 func (m *model) viewStrip(room int) (string, int) {
 	ps := m.sty.pens()
-	render := func(names bool) (string, int) {
+	render := func(names []string) (string, int) {
 		var b strings.Builder
 		w := 0
 		for v := range view(numberedViews) {
@@ -505,14 +509,14 @@ func (m *model) viewStrip(room int) (string, int) {
 			}
 			num := string(rune('1' + v))
 			label := num
-			if names {
-				label = num + " " + viewNames[v]
+			if names != nil {
+				label = num + " " + names[v]
 			}
 			switch {
 			case v == m.view:
 				b.WriteString(ps.accB.render(label))
-			case names:
-				b.WriteString(ps.dim.render(num) + ps.dmr.render(" "+viewNames[v]))
+			case names != nil:
+				b.WriteString(ps.dim.render(num) + ps.dmr.render(" "+names[v]))
 			default:
 				b.WriteString(ps.dmr.render(label))
 			}
@@ -520,14 +524,17 @@ func (m *model) viewStrip(room int) (string, int) {
 		}
 		return b.String(), w
 	}
-	if s, w := render(true); w <= room {
-		return s, w
-	}
-	if s, w := render(false); w <= room {
-		return s, w
+	// full names, then the short ones, then bare numerals, then nothing
+	for _, names := range [][]string{viewNames[:numberedViews], viewShort[:], nil} {
+		if s, w := render(names); w <= room {
+			return s, w
+		}
 	}
 	return "", 0
 }
+
+// viewShort are the strip's labels for widths the full names overflow.
+var viewShort = [...]string{"play", "eq", "svc", "log", "diag"}
 
 // Now-playing marquee tuning: a line wider than its column scrolls horizontally,
 // looping with a gap and pausing briefly at the start so the head stays readable.
@@ -571,7 +578,7 @@ func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 		out := []string{ps.dim.render(Clip(msg, w))}
 		switch {
 		case s.Connected:
-			out = append(out, ps.dmr.render(Clip("start something on Spotify / AirPlay / BT", w)))
+			out = append(out, ps.dmr.render(Clip("start something on "+sourcesOn(m.st.ConfView()), w)))
 		case s.Error != "":
 			// disconnected: a calm reason under "connecting…", not a red bottom line
 			out = append(out, ps.dmr.render(Clip(friendlyError(s.Error), w)))
@@ -971,12 +978,25 @@ var playerHints = []string{
 // in the view body.
 const eqHint = "↑↓ select · ←→ adjust · enter toggle · esc player · ? help"
 
+// playerHintsRare is the player footer's second page — the keys the first
+// page has no room for — shown for four seconds in every sixteen, so the help
+// page is not the only place they appear.
+var playerHintsRare = []string{
+	"n · p next · previous · +/- volume · S cancel sleep · t remaining ⇄ elapsed · e c l i views by letter · tab cycles",
+	"n · p next · previous · S cancel sleep · t remaining ⇄ elapsed · tab cycles the views",
+	"n · p next · previous · S cancel sleep · t remaining",
+}
+
 // footerRow right-aligns the current view's key hint.
 func (m *model) footerRow(W int) string {
 	hint := eqHint
 	if m.view != viewEQ {
-		hint = playerHints[len(playerHints)-1]
-		for _, h := range playerHints {
+		ladder := playerHints
+		if m.scroll%160 >= 120 { // ticks are 100 ms: 12 s first page, 4 s second
+			ladder = playerHintsRare
+		}
+		hint = ladder[len(ladder)-1]
+		for _, h := range ladder {
 			if DispW(h) <= W {
 				hint = h
 				break

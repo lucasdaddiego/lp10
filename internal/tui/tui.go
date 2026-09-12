@@ -17,6 +17,7 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/mediakey"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/sweep"
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
@@ -44,6 +45,7 @@ func Run(cfg config.Config) (int, error) {
 	background := workers.StartRuntime(st, cfg)
 
 	m := newModel(st, cfg, background.Commands, background.EQCommands)
+	m.baseline = sweep.Load(config.SweepPath(cfg)) // the last `lp10 sweep`, for the diagnostics' since-sweep row
 	// The alt screen and window title ride tea.View under bubbletea v2 (see
 	// model.View), so the only program-level option left is signal handling,
 	// which Run owns below.

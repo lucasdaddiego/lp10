@@ -77,14 +77,20 @@ type Config struct {
 	Discovered bool   // set at runtime when discovery resolved the host
 	Art        bool   // render real album art (from the track's CoverArtUrl)
 	ArtMode    string // auto|kitty|halfblock|off — how album art is drawn
+	Theme      string // auto|light|dark — auto follows the terminal's reported background
 	Warn       string
 }
+
+// themes is the set of accepted theme values.
+var themes = map[string]bool{"auto": true, "light": true, "dark": true}
+
+const defTheme = "auto"
 
 // Load reads ~/.config/lp10/config.toml (honoring XDG_CONFIG_HOME), applies
 // strict per-field typing, clamps vol_step, and lets LP10_HOST override the
 // host for a single run.
 func Load() Config {
-	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode}
+	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Theme: defTheme}
 
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -125,7 +131,7 @@ func Load() Config {
 // configKeys are the recognised config.toml keys and the type each takes.
 var configKeys = map[string]string{
 	"host": "string", "user": "string", "name": "string", "ping_host": "string",
-	"discover": "bool", "art": "bool", "art_mode": "string", "vol_step": "number",
+	"discover": "bool", "art": "bool", "art_mode": "string", "theme": "string", "vol_step": "number",
 }
 
 // applyTOML copies recognized keys with strict typing: string fields accept
@@ -176,6 +182,15 @@ func applyTOML(cfg *Config, data map[string]any) (complaints []string) {
 			}
 			if ok = isStr; ok {
 				cfg.ArtMode = sv
+			}
+		case "theme":
+			sv, isStr := v.(string)
+			if isStr && !themes[sv] {
+				complaints = append(complaints, fmt.Sprintf("theme %q ignored (auto|light|dark)", sv))
+				continue
+			}
+			if ok = isStr; ok {
+				cfg.Theme = sv
 			}
 		case "vol_step":
 			switch n := v.(type) {
