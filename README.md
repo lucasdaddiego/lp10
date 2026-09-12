@@ -411,6 +411,16 @@ on-device loop mid-session. Any key returns to the dashboard.
 One direct `ssh` child is the whole transport — no ControlMaster, no expect. A
 BusyBox-ash loop on the device streams framed snapshots:
 
+- **Polls only what is on screen** — measured on the box, the loop costs about
+  4 % of one core while the player shows (two register reads a second, the
+  position every third, metadata on change), about 5 % with the diagnostics
+  open (the resource stats, the ALSA chain and three pings ride along only
+  then), and drops to a 3-second tick with no position reads when any other
+  view is up. The LSSDP and ZeroConf probes run while connected only while the
+  services or the diagnostics show their answers; disconnected they always
+  run, since the connecting screen is built on them. The one-shot facts
+  (capabilities, device details, the syslog digest) are read at connect and
+  after a toggle, the logs only on request.
 - **Adaptive cadence** — cheap reads roughly once a second while playing,
   stretching to ~3 s when idle. The now-playing JSON is shipped only when it
   changes; the play position is resynced periodically while the UI extrapolates

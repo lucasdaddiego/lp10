@@ -318,3 +318,26 @@ func TestConfInfoValuesAreVocabularyChecked(t *testing.T) {
 		t.Errorf("an over-long sdk string must be dropped: %+v", cv)
 	}
 }
+
+// MID 94 is the player-visible toggle: 0 or 1, nothing else — and the probe
+// flag it pairs with defaults to "wanted".
+func TestValidatePayloadPlayerVisible(t *testing.T) {
+	for _, ok := range []string{"0", "1"} {
+		if !ValidatePayload(94, ok) {
+			t.Errorf("94 %q should validate", ok)
+		}
+	}
+	for _, bad := range []string{"", "2", "on", "1 "} {
+		if ValidatePayload(94, bad) {
+			t.Errorf("94 %q should not validate", bad)
+		}
+	}
+	st := NewState()
+	if !st.ProbeWanted() {
+		t.Error("probes should run by default")
+	}
+	st.SetProbeQuiet(true)
+	if st.ProbeWanted() {
+		t.Error("quiet should stop connected-cadence probes")
+	}
+}

@@ -127,3 +127,36 @@ func TestLSSDPWorkerStopsMidProbe(t *testing.T) {
 		t.Fatal("worker did not stop with a probe in flight")
 	}
 }
+
+// Connected with nobody looking at the answer, the worker asks the box nothing
+// and polls the flag instead; the moment a view wants it, the next probe fires
+// within the quiet poll.
+func TestLSSDPWorkerQuietWhileConnected(t *testing.T) {
+	addr := fakeLSSDP(t, "HTTP/1.1 200 OK\r\nFWVERSION:AR241CE_8530.23.2\r\nState:S\r\nNETMODE:ETH0\r\nCAST_MODEL:LP10\r\n\r\n")
+	t.Setenv("LP10_LSSDP_HOST", addr)
+	st := protocol.NewState()
+	protocol.ApplyRecord(st, protocol.Record{"v": {"MID-Read:64 Data:40 Length:2"}}) // connected
+	st.SetProbeQuiet(true)
+	control := newRunControl()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { lssdpWorker(ctx, control, st, config.Config{Host: addr}); close(done) }()
+	time.Sleep(lssdpFirstProbeLag + 300*time.Millisecond)
+	if d := st.DiagnosticView(time.Now()); !d.LSSDPProbeAt.IsZero() {
+		t.Errorf("a quiet, connected worker probed at %v", d.LSSDPProbeAt)
+	}
+	st.SetProbeQuiet(false)
+	deadline := time.Now().Add(probeQuietPoll + 2*time.Second)
+	for time.Now().Before(deadline) {
+		if d := st.DiagnosticView(time.Now()); !d.LSSDPProbeAt.IsZero() {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if d := st.DiagnosticView(time.Now()); d.LSSDPProbeAt.IsZero() {
+		t.Error("once wanted, the worker should probe within the quiet poll")
+	}
+	cancel()
+	<-done
+}

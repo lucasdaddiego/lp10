@@ -22,6 +22,10 @@ const (
 	lssdpDisconnected  = 5 * time.Second
 	lssdpConnected     = 30 * time.Second
 	lssdpFirstProbeLag = 500 * time.Millisecond // let the ssh connect race ahead at startup
+	// probeQuietPoll is how often a quiet probe worker (connected, nothing
+	// showing its answer) re-checks whether a view now wants it — a flag read,
+	// no network.
+	probeQuietPoll = 2 * time.Second
 )
 
 // lssdpHost is the probe target: the configured host, or LP10_LSSDP_HOST
@@ -56,6 +60,12 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 		}
 		if control.stop.IsSet() {
 			return
+		}
+		if st.Snap().Connected && !st.ProbeWanted() {
+			// connected and nobody is looking at the answer: ask nothing, and
+			// look again soon so an opened view gets a fresh probe within seconds
+			wait = probeQuietPoll
+			continue
 		}
 		probe()
 		if st.Snap().Connected {

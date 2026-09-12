@@ -99,7 +99,7 @@ func ValidatePayload(mid int, data string) bool {
 		}
 		n, _ := strconv.Atoi(data)
 		return n <= 100
-	case 90, 91:
+	case 90, 91, 94:
 		return data == "0" || data == "1"
 	case 92:
 		id, state, ok := strings.Cut(data, " ")

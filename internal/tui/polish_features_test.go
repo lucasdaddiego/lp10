@@ -178,19 +178,28 @@ func TestLogsFollowMode(t *testing.T) {
 	if out := stripANSI(m.viewContent()); !strings.Contains(out, "following") || !strings.Contains(out, "F follow") {
 		t.Errorf("follow state not shown:\n%s", out)
 	}
+	fetches := func() int {
+		n := 0
+		for _, c := range collect() {
+			if c.Mid == 93 {
+				n++
+			}
+		}
+		return n
+	}
 	m.scroll = 99
 	m.dispatch(logicMsg{})
-	if len(collect()) != 1 {
+	if fetches() != 1 {
 		t.Error("the 100th tick should refetch")
 	}
 	m.dispatch(logicMsg{})
-	if len(collect()) != 0 {
+	if fetches() != 0 {
 		t.Error("an ordinary tick should not fetch")
 	}
 	m.setView(viewPlayer)
 	m.scroll = 199
 	m.dispatch(logicMsg{})
-	if len(collect()) != 0 {
+	if fetches() != 0 {
 		t.Error("follow must not fetch while another view shows")
 	}
 	m.setView(viewLogs)

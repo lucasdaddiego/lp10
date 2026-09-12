@@ -113,6 +113,14 @@ type State struct {
 	otaWant bool
 	ota     *OTAInfo
 
+	// probeQuiet is raised by the TUI while no view shows what the LSSDP and
+	// ZeroConf probes find (anything but the services and the diagnostics);
+	// the probe workers then skip their connected-cadence rounds — the box is
+	// asked nothing it will not be shown. Disconnected, the probes always run:
+	// the connecting screen is built on them. Default off, so a State without
+	// a TUI (tests, the sweep) probes as before.
+	probeQuiet bool
+
 	// night mode: the device's multi-band DRC enable as last read back (@@n),
 	// and the value seen first this process, which quit restores. Known flags
 	// distinguish "off" from "never reported".
@@ -310,6 +318,22 @@ func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
 // RequestOTA asks for a firmware update check. Raised by the TUI when the
 // diagnostics overlay opens — the check contacts the vendor, so it only ever
 // runs on that explicit gesture, never on a timer.
+// SetProbeQuiet tells the probe workers whether their answers are on screen
+// (quiet = nobody is looking). See probeQuiet.
+func (st *State) SetProbeQuiet(quiet bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.probeQuiet = quiet
+}
+
+// ProbeWanted reports whether a connected-cadence probe should run now: it
+// should unless the TUI has said nobody is looking.
+func (st *State) ProbeWanted() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return !st.probeQuiet
+}
+
 func (st *State) RequestOTA() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
