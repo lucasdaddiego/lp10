@@ -405,7 +405,10 @@ BusyBox-ash loop on the device streams framed snapshots:
   preset list are identical across both. What did move: Spotify's ZeroConf
   endpoint (`:9095` → `:9096`), the Pro engine's SDK (3.205 → 3.211), the
   factory default for the two Spotify flags (HiFi → Pro, the services-pane
-  story above), and the OTA manifest host.
+  story above), and the OTA manifest host. Re-swept 2026-09-12: the vendor
+  manifest still has nothing newer than 8530, so the box is current; a
+  services-pane pin is a dirty row in the device's sqlite env store and
+  survives reboots (the factory config is only merged in, never rebuilt).
 
 ### Security & threat model
 
@@ -547,7 +550,7 @@ internal/fixtures/      embedded wire-record fixtures (shared by tests + fake)
 cmd/fakessh/            fake ssh transport for tests (substituted via LP10_SSH)
 internal/testutil/      test helpers (env isolation, fake/binary builders)
 internal/e2e/           end-to-end tests (argv contract, pty smoke)
-docs/TEARDOWN.md        device teardown & technical reference (hardware, audio path, LUCI/MsgBox, protocols, OTA)
+docs/TEARDOWN.md        device teardown & technical reference (hardware, audio path, env store, LUCI/MsgBox, protocols, OTA, firmware history)
 ```
 
 ## Dependencies

@@ -1218,7 +1218,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 //
 // LibreWireless reference-image baggage that this box doesn't actually offer
 // (Roon / Alexa / Matter / QPlay — installed but env-gated off, not on Arylic's
-// spec sheet; see teardown §13/§7.4) is absent from svcRows and so from here.
+// spec sheet; see teardown §12/§8.4) is absent from svcRows and so from here.
 var confServices = alphabetical(svcRows)
 
 func alphabetical(rows []svcDef) []svcDef {

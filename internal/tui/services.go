@@ -33,7 +33,9 @@ type svcGate int
 
 const (
 	// gateEnv: the init script reads the env flag and refuses to start without
-	// it. setenv + a netready kick, and it survives a reboot.
+	// it. setenv + a netready kick, and it survives a reboot: setenv marks the
+	// row dirty in the box's sqlite env store, and the boot-time factory merge
+	// leaves dirty rows alone (verified 2026-09-12, teardown §5).
 	gateEnv svcGate = iota
 	// gateDaemon: the init script has NO env test — it starts the daemon on
 	// every netready regardless. Stop/start works, but the next boot undoes it.
@@ -67,6 +69,9 @@ var svcRows = []svcDef{
 			"new (pro) is the newer eSDK and the only one that negotiates FLAC. its volume",
 			"was broken right after the 8530 OTA (output pinned at full scale); with vendor",
 			"app v32 it drives the softvol like hifi does, from the app, phone and remote.",
+			"either choice sticks: the pair is written as dirty rows in the box's env store,",
+			"which the boot-time factory merge keeps — so a reboot, or the next OTA's factory",
+			"default, does not move it (teardown §5). the ZeroConf port follows the engine.",
 		},
 	},
 	{
