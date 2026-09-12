@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
@@ -53,10 +54,17 @@ func otaURL() (string, bool) {
 	return otaManifestURL, true
 }
 
-// otaCheck performs one manifest request for build and turns the reply into a
+// ManifestURL is the vendor manifest endpoint the checks go to (LP10_OTA_URL
+// overrides it; set-but-empty disables the worker). Exported for `lp10 sweep`,
+// which asks the vendor on purpose.
+func ManifestURL() (string, bool) { return otaURL() }
+
+// OTACheck performs one manifest request for build and turns the reply into a
 // verdict. Every failure is a verdict too (Err set), so the overlay never waits
-// on a check that silently went nowhere.
-func otaCheck(ctx context.Context, url, build string) protocol.OTAInfo {
+// on a check that silently went nowhere. When the vendor offers a build, the
+// package URL it names comes back too (the sweep HEADs it for the bundle's
+// size and date).
+func OTACheck(ctx context.Context, url, build string) protocol.OTAInfo {
 	info := protocol.OTAInfo{At: time.Now(), Asked: build}
 	if !reBuild.MatchString(build) {
 		info.Err = "unrecognised firmware string"
@@ -88,6 +96,7 @@ func otaCheck(ctx context.Context, url, build string) protocol.OTAInfo {
 		ErrorCode   int    `json:"errorCode"`
 		ErrorString string `json:"errorString"`
 		Version     string `json:"version"`
+		URL         string `json:"url"`
 	}
 	if resp.StatusCode != http.StatusOK || json.Unmarshal(raw, &reply) != nil {
 		info.Err = "unexpected vendor reply"
@@ -100,6 +109,9 @@ func otaCheck(ctx context.Context, url, build string) protocol.OTAInfo {
 		info.Offered = reply.Version
 		if info.Offered == "" {
 			info.Offered = "a newer build"
+		}
+		if strings.HasPrefix(reply.URL, "https://") && len(reply.URL) <= 512 {
+			info.PackageURL = reply.URL
 		}
 	default:
 		info.Err = "vendor said: " + reply.ErrorString
@@ -134,7 +146,7 @@ func otaWorker(ctx context.Context, control *runControl, st *protocol.State) {
 			st.SetOTA(*last) // fresh enough: no second trip to the vendor
 			continue
 		}
-		info := otaCheck(ctx, url, build)
+		info := OTACheck(ctx, url, build)
 		last = &info
 		st.SetOTA(info)
 	}

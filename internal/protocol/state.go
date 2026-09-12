@@ -162,6 +162,9 @@ type OTAInfo struct {
 	UpToDate bool
 	Offered  string // the build the manifest offers instead ("" when up to date / failed)
 	Err      string // "" on a clean answer; else why there is no verdict
+	// PackageURL is the bundle the manifest names with an offer (https only,
+	// "" otherwise). Only `lp10 sweep` reads it; the overlay shows Offered.
+	PackageURL string
 }
 
 // Snapshot is an immutable view of State for rendering.
@@ -342,6 +345,7 @@ func (st *State) SetOTA(info OTAInfo) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	info.Asked, info.Offered, info.Err = printable(info.Asked), printable(info.Offered), printable(info.Err)
+	info.PackageURL = printable(info.PackageURL)
 	st.ota = &info
 }
 
