@@ -9,21 +9,21 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-// The Max-Vol-focused footer surfaces the teardown's MXV gotcha — a low output
-// cap is what makes the IR remote / Spotify volume feel stuck — instead of the
-// generic EQ hint; every other EQ slot keeps the generic hint.
+// The equalizer view's note for Max volume surfaces the teardown's MXV gotcha
+// — a low output cap is what makes the remote / Spotify volume feel stuck —
+// and the footer keeps the same generic hint for every control.
 func TestFooterRowMaxVolHint(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	m.sty = newTheme()
-	m.pane = paneEQ
-	m.eqFocus = len(eqOrder) - 1 // Max Vol is the last display slot
-	got := stripANSI(m.footerRow(80))
-	if !strings.Contains(got, "caps remote & Spotify volume") {
-		t.Errorf("Max Vol footer hint = %q, want the output-cap warning", got)
+	m.rows, m.cols = 30, 86
+	m.view = viewEQ
+	m.eqFocus = len(eqOrder) - 1 // Max volume is the last display slot
+	got := stripANSI(strings.Join(m.renderEQ(80), "\n"))
+	if !strings.Contains(got, "stuck near the top") {
+		t.Errorf("Max volume note missing the output-cap warning:\n%s", got)
 	}
-	m.eqFocus = 2 // a tone band: the generic pick/adjust hint
-	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "pick") {
-		t.Errorf("non-MXV footer hint = %q, want the generic EQ hint", got)
+	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "select") || !strings.Contains(got, "adjust") {
+		t.Errorf("EQ footer hint = %q, want the generic select/adjust hint", got)
 	}
 }
 
@@ -51,7 +51,7 @@ func TestDiagPlayingBufferReadsFull(t *testing.T) {
 	applyRaw(st, "@@v\nMID-Read:64 Data:54 Length:2\n@@E\n")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	if !strings.Contains(flat, "% full") {
 		t.Errorf("playing buffer row should read \"NN%% full\":\n%s", flat)
@@ -117,7 +117,7 @@ func TestDiagIdentityExtrasAndMultiroom(t *testing.T) {
 	applyFixtureRecords(st, "device_record.txt") // @@i (name=) + @@d + @@g
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	for _, want := range []string{
 		"Living",               // name row (FriendlyName, works without mDNS)
@@ -141,7 +141,7 @@ func TestDiagMultiroomLinked(t *testing.T) {
 	applyRaw(st, "@@g\nMID-Read:39 Data:{\"devices\":[{\"n\":\"a\"},{\"n\":\"b\"}]} Length:40\n@@E\n")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	if flat := clean(m.viewContent()); !hasRow(flat, "multiroom", "linked · 2 devices") {
 		t.Errorf("linked group should read a device count")
 	}
@@ -161,7 +161,7 @@ func TestDiagErrorsRowSessionDelta(t *testing.T) {
 	applyRaw(st, base+"0 0 256 0\n@@E\n")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	if flat := clean(m.viewContent()); !hasRow(flat, "errors", "drop 0", "session") {
 		t.Error("the first sample should baseline: boot-lifetime drops read as 0")
 	}
@@ -183,7 +183,7 @@ func TestDiagTaxonomy(t *testing.T) {
 	applyFixtureRecords(st, "playing_record.txt")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 60, 90 // narrow -> stacked, tall enough that nothing trims
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	if strings.Contains(flat, "volume") || hasRow(flat, "eq        ") {
 		t.Error("volume/eq are settings, not diagnostics — they must not render here")
@@ -231,7 +231,7 @@ func TestTasksReadoutMalformed(t *testing.T) {
 func TestDiagConnectionPreData(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	if !hasRow(flat, "ssh", "no data yet") {
 		t.Error("the ssh row should read \"no data yet\" before the first record")

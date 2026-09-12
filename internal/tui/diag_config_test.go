@@ -39,7 +39,7 @@ func TestDiagShowsServicesAndHardware(t *testing.T) {
 	applyFixtureRecords(st, "config_record.txt")  // @@c: the capability matrix
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 
 	flat := clean(m.viewContent())
 	for _, want := range []string{
@@ -81,7 +81,7 @@ func TestDiagMastheadVerdictOnly(t *testing.T) {
 	applyFixtureRecords(st, "playing_record.txt") // healthy metrics
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	// masthead verdict next to the title
 	if !hasRow(flat, "diagnostics", "healthy") {
@@ -112,7 +112,7 @@ func TestDiagVerdictWarnAndFault(t *testing.T) {
 		applyRaw(st, "@@v\nMID-Read:64 Data:44 Length:2\n@@E\n")
 		m, _, _ := modelWith(st)
 		m.rows, m.cols = 44, 120
-		m.diag = true
+		m.view = viewDiag
 		return clean(m.viewContent())
 	}
 	if !hasRow(mk("70000"), "diagnostics", "warn") {
@@ -135,7 +135,7 @@ func TestDiagIdleBufferNotFault(t *testing.T) {
 	applyRaw(st, "@@v\nMID-Read:64 Data:54 Length:2\n@@E\n")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	if hasRow(flat, "diagnostics", "fault") {
 		t.Error("an idle empty buffer must not roll up to a fault verdict")
@@ -160,7 +160,7 @@ func TestDiagStackedServicesDoNotOverflowNarrow(t *testing.T) {
 	applyFixtureRecords(st, "playing_record.txt")
 	applyFixtureRecords(st, "config_record.txt") // @@c: four services on
 	m, _, _ := modelWith(st)
-	m.diag = true
+	m.view = viewDiag
 	for _, cols := range []int{58, 59, 60, 64, 72} { // W < diagCardsMinW -> stacked
 		m.rows, m.cols = 44, cols
 		for i, ln := range strings.Split(m.viewContent(), "\n") {
@@ -180,7 +180,7 @@ func TestDiagStackedShowsServicesAndHardware(t *testing.T) {
 	applyFixtureRecords(st, "config_record.txt")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 60, 90 // narrow -> stacked, tall enough for every section
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	for _, want := range []string{"services", "hardware", "Spotify", "Bluetooth", "Amlogic A113L"} {
 		if !strings.Contains(flat, want) {
@@ -200,7 +200,7 @@ func TestDiagServicesUnknownBeforeData(t *testing.T) {
 	applyFixtureRecords(st, "playing_record.txt") // metrics present, but no @@c
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 44, 120
-	m.diag = true
+	m.view = viewDiag
 	flat := clean(m.viewContent())
 	if !strings.Contains(flat, "reading from device…") {
 		t.Error("services should show the reading note before @@c arrives")
@@ -262,7 +262,7 @@ func TestDiagLevelRowAndVerdict(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
 	m.rows, m.cols = 40, 120
-	m.diag = true
+	m.view = viewDiag
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "softvol") {
 		t.Fatal("no level row before a sample")
 	}

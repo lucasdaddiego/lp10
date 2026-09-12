@@ -13,51 +13,40 @@
 ```
 $ lp10
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃  ♪ LP10 · Living  ● 15:42           Spotify · audio/ogg · 44.1 kHz    Vol    ┃
+┃  ♪ LP10 · Living  ● 16:27                            1  2  3  4  5    Vol    ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
-┃                                                                              ┃
-┃  ╭──────────────────────────────╮                                      ▓     ┃
-┃  │██████████████████████████████│                                      ▓     ┃
-┃  │██████████████████████████████│                                      ▓     ┃
-┃  │██████████████████████████████│                                      ▓     ┃
-┃  │██████████████████████████████│  De Música Ligera                    ▓     ┃
-┃  │██████████████████████████████│  Soda Stereo                         ▓     ┃
-┃  │██████████████████████████████│  Canción Animal                      ▓     ┃
-┃  │██████████████████████████████│                                      ▓     ┃
-┃  │██████████████████████████████│  ● Spotify · audio/ogg · 44.1 k…     ▓     ┃
-┃  │██████████████████████████████│                                      ▓     ┃
-┃  │██████████████████████████████│  ▶ Playing 00:31 ●─────── -02:59     █     ┃
-┃  │██████████████████████████████│                                      █     ┃
-┃  │██████████████████████████████│     ◀◀        pause       ▶▶         █     ┃
-┃  │██████████████████████████████│                                      █     ┃
-┃  │██████████████████████████████│                                      █     ┃
-┃  │██████████████████████████████│                                      █     ┃
-┃  │██████████████████████████████│                                      █     ┃
-┃  ╰──────────────────────────────╯                                     44%    ┃
+┃  ╭─────────────────────────╮                                           ▓     ┃
+┃  │█████████████████████████│                                           ▓     ┃
+┃  │█████████████████████████│                                           ▓     ┃
+┃  │█████████████████████████│  Cause We've Ended as Lovers              ▓     ┃
+┃  │█████████████████████████│  Jeff Beck                                ▓     ┃
+┃  │█████████████████████████│  Blow By Blow                             ▓     ┃
+┃  │█████████████████████████│                                           ▓     ┃
+┃  │█████████████████████████│  ● Spotify · Ogg · 44.1 kHz · 2 ch        █     ┃
+┃  │█████████████████████████│                                           █     ┃
+┃  │█████████████████████████│  ▶ Playing 03:49 ━━━━━━━━●──── -01:52     █     ┃
+┃  │█████████████████████████│                                           █     ┃
+┃  │█████████████████████████│      ◀◀          pause         ▶▶         █     ┃
+┃  │█████████████████████████│                                           █     ┃
+┃  │█████████████████████████│                                           █     ┃
+┃  ╰─────────────────────────╯                                          50%    ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
 ┃                                                                              ┃
-┃  ─────────────────────────────── equalizer ────────────────────────────────  ┃
-┃  EQ      ○ off                                                               ┃
-┃  Preset  Flat · Classical · Pop · Jazz · Rock · Vocal                        ┃
-┃  Treble  ────────────────────────────────────────●─────────────────────  +3  ┃
-┃  Mid     ───────────────────────────────●──────────────────────────────   0  ┃
-┃  Bass    ────────────────────────────────────────●─────────────────────  +3  ┃
-┃  Sub     ● on                                                                ┃
-┃  Lvl     ─────────●────────────────────────────────────────────────────  15  ┃
-┃  Balance ───────────────────────────────●──────────────────────────────   0  ┃
-┃  Max Vol ─────────────────────────────────────────────────────────────● 100  ┃
-┃   space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit  ┃
+┃  tone   EQ off · Flat · T+3 M0 B+3 · sub on 15 · bal 0 · max 100             ┃
+┃       space play · ↑↓ volume · m mute · s sleep · d night · ? help · q quit  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
-live terminal dashboard — now-playing, transport, a graphic equalizer, and a
-diagnostics overlay — from a single Go executable. No companion
-app, no browser, no background daemon: run `lp10`, get one screen.
+live terminal dashboard — a player, an equalizer, the streaming services, the
+device's logs and a diagnostics read-out, one view at a time — from a single Go
+executable. No companion app, no browser, no background daemon: run `lp10`,
+get one screen.
 
 ## Features
 
@@ -67,10 +56,17 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   half-block raster on any other truecolor terminal, falling back to an animated
   plasma motif for radio / idle / lesser terminals. The title and artist are
   clickable (OSC 8) and link to Spotify.
-- **Graphic equalizer** — the EQ switch and treble / mid / bass tone, a deep-bass
-  switch and level, and the output cap (Max Volume) — driven over the device's
-  own control channel. Paints instantly from a cached snapshot on launch.
-- **Diagnostics overlay** (`?`) — a one-line **status band** — a color-coded
+- **Five views, one screen** — `1` player · `2` equalizer · `3` services ·
+  `4` logs · `5` diagnostics, named in the header strip; `tab` cycles them,
+  `esc` returns to the player, `?` is a help page with every key. Playback
+  keys work from every view, so a track can be paused from the diagnostics.
+- **Equalizer** (`2` or `e`) — the EQ switch and its preset, treble / mid / bass
+  tone, the deep-bass switch and level, balance, and the output cap (Max
+  volume) as wide slider rows, each with a note on what it does on this box.
+  Driven over the device's own control channel; the player keeps a one-line
+  **tone strip** so the settings stay in view. Paints instantly from a cached
+  snapshot on launch.
+- **Diagnostics** (`5` or `i`) — a one-line **status band** — a color-coded
   health verdict (`healthy` / `warn` / `fault`) and the clock, nothing else —
   over two ruled columns on a wide terminal (a stacked read-out when
   narrow): device & firmware identity (down to the serial, MCU version, and BT
@@ -132,7 +128,7 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   compressor back to the state it found. **`b` is bedtime**: the sleep timer and
   night mode in one press — compress now, pause in N minutes, and put the
   compressor back when the timer goes off.
-- **Services pane** (`c`) — the box has two independent notions of "on" and they
+- **Services** (`3` or `c`) — the box has two independent notions of "on" and they
   drift apart: an env flag, and whether a daemon is actually running. The device's
   own web page reads only the flag, so it will report `Spotify: on` with no engine
   running at all — which is exactly what an OTA did to this device in August 2026
@@ -169,7 +165,7 @@ app, no browser, no background daemon: run `lp10`, get one screen.
   baseline's shape, `--no-save` leaves the old one in place. This is the one
   lp10 command that asks the vendor on its own — by design, since that is the
   question it answers.
-- **Device log** (`l`) — the tail of one of the box's own logs, fetched on demand
+- **Device log** (`4` or `l`) — the tail of one of the box's own logs, fetched on demand
   over the same ssh stream (zero cost while the pane is closed). The **device
   log** (`/var/log/syslog/messages.log`) is the only place the box records a
   service *refusing* to start — an init script's "not enabled" line lands there
@@ -221,36 +217,44 @@ lp10
 
 ## Keys
 
-The screen is a two-pane dashboard — the **player** (now-playing + transport)
-and the **equalizer**. `tab` moves focus between them; the focused pane drives
-the arrow keys.
+The screen shows one **view** at a time — the **player**, the **equalizer**,
+the **services**, the **logs**, or the **diagnostics** — named in the header's
+view strip with the one on show lit. `1`–`5` jump straight to a view, `tab`
+cycles them, `esc` returns to the player, and `?` opens a help page listing
+everything below.
+
+| Key | Action |
+|-----|--------|
+| `1` … `5` | player · equalizer · services · logs · diagnostics |
+| `tab` / `shift-tab` | next view |
+| `esc` | back to the player |
+| `?` | help page (a second `?` closes it) |
+| `e` · `c` · `l` · `i` | also open the equalizer · services · logs · diagnostics, and close them again |
+| `q` / `Q` | quit — from a view, first back to the player |
+
+**Player**
 
 | Key | Action |
 |-----|--------|
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
-| `+` / `-` | volume ± step (`=` / `_` also work) |
-| `↑` / `↓` | player: volume ± step · equalizer: pick a band |
-| `←` / `→` | player: move button focus · equalizer: adjust the focused band |
-| `enter` | player: press the focused button · equalizer: toggle an on/off band |
-| `tab` / `shift-tab` | switch pane (player ↔ equalizer) |
-| `esc` | equalizer pane: step focus back to the player |
-| `e` | jump focus to the equalizer |
+| `↑` / `↓` · `+` / `-` | volume ± step (`=` / `_` also work) |
+| `←` / `→` · `enter` | move the transport focus · press the focused button |
 | `m` | mute (volume 0 ↔ restored level, persisted) |
 | `t` | right-hand time: remaining ↔ total |
 | `s` / `S` | sleep timer: arm / step the countdown (15 · 30 · 45 · 60 · 90 min, then off) / cancel |
 | `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
 | `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
-| `c` | services pane — what each streaming service is really doing, and switch it |
-| `l` | device log — the tail of the box's syslog, or (`s`) of the vendor app's own log |
-| `↑` / `↓` · `←` / `→` | log pane: scroll by line · by page |
-| `?` | diagnostics overlay (see below) — also asks the vendor whether the firmware is current |
-| `q` / `Q` | quit (inside an overlay: back to the dashboard) |
 
-Inside the services or log overlay, `esc` or `q` backs out and the other overlay
-letters switch straight across — toggling a service and then reading the log
-for what the device made of it is one movement, not two. The diagnostics
-overlay is a read-out: any key closes it.
+**Equalizer** — `↑` / `↓` select a control, `←` / `→` adjust it, `enter` flips
+a switch or steps the preset. **Services** — `↑` / `↓` select, `enter` switches
+(Spotify cycles off → HiFi → Pro). **Logs** — `↑` / `↓` scroll, `←` / `→` page,
+`s` source (device syslog / vendor app), `f` filter, `r` refresh.
+**Diagnostics** — `u` asks the vendor's manifest whether the firmware is
+current (the box asks by itself every four hours; the update line shows that).
+
+The playback keys (`space`, `n`, `p`, `m`, volume, the timers) work from every
+view that does not use the letter itself — in the logs, `s` is the source.
 
 > On Spotify, `p` (previous) first restarts the current track — that's the
 > device's own MID-40 `PREV` behaviour, not lp10's; press it twice to actually
@@ -261,10 +265,11 @@ the F7–F9 glyphs or their touch-bar equivalents) also work, from any app, whil
 lp10 is connected — see the media-keys bullet under [Features](#features) for
 the Accessibility grant this needs.
 
-The view adapts to the terminal size: the full **dashboard** (now-playing with
-album-motif art, a vertical volume slider, and the graphic equalizer) at ≥ 25
-rows / 70 cols, a **compact** frame (no art, inline volume, one-line EQ summary)
-below that, and a one-line **mini** view below 9 rows / 58 cols.
+The player adapts to the terminal size: the full **dashboard** (the album
+cover, a vertical volume rail, and the tone strip) at ≥ 25 rows / 70 cols, a
+**compact** frame (no art, inline volume, the tone strip) below that, and a
+one-line **mini** view below 9 rows / 58 cols. The header's view strip shows
+the view names when they fit and bare numerals when they do not.
 
 There's no mouse support — lp10 is keyboard-only, so the terminal's native
 text selection and scrolling stay untouched. There's also no seek/scrub — the
@@ -272,13 +277,15 @@ device exposes no seek command.
 
 ## Equalizer
 
-The equalizer pane (focus it with `e` or `tab`) drives the device's tone and
-output as a stack of rows — the **EQ** switch and the **Preset** it applies
-(Flat · Classical · Pop · Jazz · Rock · Vocal, named by the device), the
-**Treble / Mid / Bass** tone, the deep-bass **Sub** switch and its **Lvl**,
-**Balance**, and **Max Vol**, the output cap, kept last as it's rarely touched.
-`↑` / `↓` pick a row; `←` / `→` adjust it; `enter` flips an on/off row or steps
-to the next preset.
+The equalizer view (`2` or `e`) drives the device's tone and output as a stack
+of wide rows — the **EQ** switch and the **Preset** it applies (Flat ·
+Classical · Pop · Jazz · Rock · Vocal, named by the device), the **Treble / Mid
+/ Bass** tone, the deep-bass **Sub bass** switch and its **Sub level**,
+**Balance**, and **Max volume**, the output cap, kept last as it's rarely
+touched. `↑` / `↓` select a row; `←` / `→` adjust it; `enter` flips a switch or
+steps to the next preset. Under the rows, a short note explains the selected
+control. The player keeps the same settings in view as a one-line **tone
+strip** above its footer.
 
 > **How the two EQ rows relate:** the **tone sliders are always live**, EQ on or
 > off. **EQ** only decides whether the selected **Preset** curve is applied on
@@ -288,7 +295,7 @@ to the next preset.
 
 These ride a separate plain-text control connection to the device on TCP
 **2018** (the same channel the vendor app uses), independent of the SSH player
-stream — so a dead tunnel only greys out the equalizer, it never disturbs
+stream — so a dead tunnel only marks the equalizer read-only, it never disturbs
 playback, and the last-known values are restored instantly from cache on launch.
 
 > **Heads-up:** a low **Max Volume** is what makes the Bluetooth remote and
@@ -297,7 +304,7 @@ playback, and the last-known values are restored instantly from cache on launch.
 
 ## Diagnostics
 
-Press `?` for a full read-out of the device, connection, and link health. A one-line
+Press `5` or `i` for a full read-out of the device, connection, and link health. A one-line
 **status band** answers "is the LP10 OK?" in a glance — a health verdict beside the
 title and the key live vitals, color-coded — over two boxless, ruled columns. The
 sections run **alphabetically**, flowing down the left column and continuing down the
@@ -336,7 +343,7 @@ stacked column when narrow):
 ┃    radio     dual-band 802.11ac · BT 5.0                      lan ● telnet :23 ● adb :5555 ● web :80 ● control :2018 ┃
 ┃    soc       Amlogic A113L · 2× Cortex-A35                    env-gated · toggle in the Arylic app                   ┃
 ┃                                                                                                                      ┃
-┃  live · any key returns to the dashboard                                                  ● good   ● warn   ● fault  ┃
+┃  live · u asks the vendor about updates · esc player · ? help                             ● good   ● warn   ● fault  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
@@ -346,7 +353,7 @@ freshness), color-coded and word-paired so it still reads on a no-color terminal
 with the connection light + clock on the right. Nothing else rides up top: every
 live number lives in its section below. (The audio buffer reads `idle` when
 nothing's playing, and volume/EQ don't appear in the overlay at all — they're
-settings, not diagnostics, and live on the dashboard and the equalizer pane.)
+settings, not diagnostics, and live on the player and in the equalizer view.)
 
 Eight sections, each answering one question, in the alphabetical order they render:
 the **audio** chain (source stream in, DAC out, the ring buffer between), lp10's own

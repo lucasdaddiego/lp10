@@ -68,7 +68,7 @@ func TestSleepKeysArmAndCancel(t *testing.T) {
 		t.Error("S on an idle timer should stay off")
 	}
 	// the keys work from the EQ pane too (global rune keys)
-	m.pane = paneEQ
+	m.view = viewEQ
 	m.key(kr('s'))
 	if m.sleepAt.IsZero() {
 		t.Error("s should arm from the EQ pane")

@@ -36,7 +36,7 @@ func TestDiagLSSDPRow(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
 	m.rows, m.cols = 40, 120
-	m.diag = true
+	m.view = viewDiag
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "lssdp") {
 		t.Fatal("no lssdp row before a probe")
 	}
@@ -73,7 +73,7 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
 	m.rows, m.cols = 40, 160
-	m.diag = true
+	m.view = viewDiag
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "spotify ") && strings.Contains(out, "probed") {
 		t.Fatal("no zeroconf row before a probe")
 	}
@@ -110,7 +110,7 @@ func TestDiagAndServicesZeroConfRow(t *testing.T) {
 		t.Errorf("stacked layout lacks the row:\n%s", out)
 	}
 	// the services pane's engine section carries the same readout
-	m.diag = false
+	m.view = viewPlayer
 	m.rows, m.cols = 44, 120
 	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=newspotifyhifi", "spotify.cfg=hifi"}})
 	st.SetSpotifyZC(&protocol.SpotifyZC{ActiveUser: "lucas"}, 9096)
@@ -131,9 +131,9 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	if st.DiagnosticView(time.Now()).OTAPending {
 		t.Fatal("pending before the overlay opened")
 	}
-	m.key(keyEvent{kind: kRune, r: '?'})
-	if !m.diag || st.DiagnosticView(time.Now()).OTAPending {
-		t.Fatal("? did not open the overlay, or asked the vendor on its own")
+	m.key(keyEvent{kind: kRune, r: 'i'})
+	if m.view != viewDiag || st.DiagnosticView(time.Now()).OTAPending {
+		t.Fatal("i did not open the diagnostics, or asked the vendor on its own")
 	}
 	// the box's own verdict, from the syslog digest
 	protocol.ApplyRecord(st, protocol.Record{"o": {"n=2", "t=Sep 11 01:47:58",
@@ -143,18 +143,18 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	}
 	// u asks the vendor; the overlay stays open
 	m.key(keyEvent{kind: kRune, r: 'u'})
-	if !m.diag || !st.DiagnosticView(time.Now()).OTAPending {
+	if m.view != viewDiag || !st.DiagnosticView(time.Now()).OTAPending {
 		t.Fatal("u did not request a vendor check (or closed the overlay)")
 	}
 	if out := stripANSI(m.viewContent()); !strings.Contains(out, "vendor    checking…") {
 		t.Errorf("pending check not shown:\n%s", out)
 	}
 	// from inside another overlay too
-	m.diag = false
+	m.view = viewPlayer
 	m.openOverlay(ovServices)
-	m.key(keyEvent{kind: kRune, r: '?'})
-	if !m.diag || m.ov != ovNone {
-		t.Fatal("? from the services pane did not switch to diagnostics")
+	m.key(keyEvent{kind: kRune, r: 'i'})
+	if m.view != viewDiag {
+		t.Fatal("i from the services view did not switch to diagnostics")
 	}
 	st.TakeOTARequest()
 	now := time.Now()
@@ -190,9 +190,9 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 func TestDiagAtMiniSizeIsInert(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.rows, m.cols = MiniRows-1, 40
-	m.key(keyEvent{kind: kRune, r: '?'})
-	if m.diag || st.DiagnosticView(time.Now()).OTAPending {
-		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.diag, st.DiagnosticView(time.Now()).OTAPending)
+	m.key(keyEvent{kind: kRune, r: 'i'})
+	if m.view == viewDiag || st.DiagnosticView(time.Now()).OTAPending {
+		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.view == viewDiag, st.DiagnosticView(time.Now()).OTAPending)
 	}
 }
 
@@ -211,7 +211,7 @@ func TestDiagBootReconnectsAndRadio(t *testing.T) {
 		"o": {"n=0", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
 		"v": {"MID-Read:64 Data:40 Length:2"},
 	})
-	m.key(keyEvent{kind: kRune, r: '?'})
+	m.key(keyEvent{kind: kRune, r: 'i'})
 	out := stripANSI(m.viewContent())
 	for _, want := range []string{
 		"boot      power-on (cold boot) · " + now.Add(-172800*time.Second).Format("Jan 2 15:04") + " · 2d 0h 0m ago",

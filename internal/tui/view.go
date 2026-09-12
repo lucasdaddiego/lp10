@@ -40,30 +40,43 @@ func (m *model) viewContent() string {
 	}
 	m.motifLive, m.searchLive = false, false // set true below iff the plasma / search figure is actually drawn
 	if rows < MiniRows || cols < MiniCols {
-		m.diag, m.ov = false, ovNone
+		m.view = viewPlayer
 		return m.renderMini(m.st.Snap())
 	}
 
 	// The frame fills the whole terminal: W is the content width inside the
-	// border (1+1) and padding (2+2); the renderers fill the body to the inner
-	// height so the box touches all four window edges (no outer margin).
+	// border (1+1) and padding (2+2). The header — name, status, the view strip
+	// — is the one row every view shares; each renderer fills the rest
+	// (bodyRows) so the box touches all four window edges.
 	W := cols - 6
 	now := time.Now()
-
-	var body []string
-	switch {
-	case m.ov == ovServices:
-		body = m.renderServices(now, W)
-	case m.ov == ovLogs:
-		body = m.renderLogs(now, W)
-	case m.diag:
-		body = m.renderDiagnostic(m.st.DiagnosticView(now), now, W)
-	default:
-		full := rows >= FullRows && cols >= FullCols
-		body = m.renderDashboard(m.st.Snap(), now, W, full)
+	full := rows >= FullRows && cols >= FullCols
+	s := m.st.Snap()
+	if m.view == viewPlayer {
+		m.refreshAmbient(s) // recolour the meter/frame/dot to the cover (must precede headerRow)
 	}
-	return m.frameLines(body, W)
+	header := m.headerRow(s, now, W, full && m.view == viewPlayer)
+	var body []string
+	switch m.view {
+	case viewEQ:
+		body = m.renderEQ(W)
+	case viewServices:
+		body = m.renderServices(now, W)
+	case viewLogs:
+		body = m.renderLogs(now, W)
+	case viewDiag:
+		body = m.renderDiagnostic(m.st.DiagnosticView(now), now, W)
+	case viewHelp:
+		body = m.renderHelp(W)
+	default:
+		body = m.renderDashboard(s, now, W, full)
+	}
+	return m.frameLines(append([]string{header}, body...), W)
 }
+
+// bodyRows is the height a view renders into: the frame's inner height less
+// the shared header row.
+func (m *model) bodyRows() int { return m.rows - 3 }
 
 // frameLines wraps the body lines in the full-window thick border with the
 // side padding, in one builder pass. It replaces the old
@@ -165,8 +178,6 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 }
 
 func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full bool) []string {
-	m.refreshAmbient(s) // recolour the meter/frame/dot to the cover (must precede headerRow)
-	header := m.headerRow(s, now, W, full)
 	// The bold-red error line is only for a fatal stop or a hiccup *while
 	// connected*. A routine "can't reach the device" during reconnection is
 	// already told by the header ("reconnecting…") and the idle reason below the
@@ -175,13 +186,13 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	if s.Error != "" && (s.Fatal || (s.Connected && now.Sub(s.ErrorAt) < ErrorDisplayDuration)) {
 		errLine = stRed.Render(Clip(GL["warn"]+" "+friendlyError(s.Error), W))
 	}
-	inner := m.rows - 2
+	inner := m.bodyRows()
 
 	if full {
-		// EQ: one horizontal row per band (W-wide), pinned to the bottom under a
-		// divider. Build the tail first so the cover height is based on what's left.
-		tail := append([]string{m.dividerRow("equalizer", W)}, m.eqSliders(W)...)
-		tail = append(tail, m.footerRow(W))
+		// The tone strip — the equalizer's one-line read-out — and the footer
+		// pin to the bottom; the equalizer itself is its own view now (2), so
+		// the cover gets the rows the slider block used to take.
+		tail := []string{m.toneStrip(W), m.footerRow(W)}
 		if errLine != "" {
 			tail = append(tail, errLine)
 		}
@@ -209,7 +220,7 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 			}
 		}
 		coverW := int(float64(coverH)*cellAR*srcAR + 0.5)
-		if maxW := W - 37; coverW > maxW { // reserve room for the metadata + volume columns
+		if maxW := W - 49; coverW > maxW { // reserve a readable metadata column (≥ 36 cols) + the volume rail
 			coverW = maxW
 			coverH = int(float64(coverW)/(cellAR*srcAR) + 0.5)
 		}
@@ -243,41 +254,36 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		art := centreRows(m.boxArt(m.artColumn(s, coverW, coverH), coverW), blockH)
 		block := joinCols(art, mid, m.volRail(s, blockH-1), midW)
 
-		// header pinned top, EQ + footer pinned bottom, the cover block centred between
-		return stack([]string{header, ""}, block, tail, inner)
+		// header (above) pinned top, tone strip + footer pinned bottom, the
+		// cover block centred between
+		return stack([]string{""}, block, tail, inner)
 	}
 
-	// Compact: no art / vertical sliders — top-pinned metadata + seek + controls,
-	// with the one-line EQ summary and footer pinned to the bottom.
+	// Compact: no art / volume rail — metadata + seek + controls centred in the
+	// body, with the tone strip and footer pinned to the bottom.
 	meta := m.metaLines(s, W)
 	seek, controls := m.seekRow(s, W), m.controlsRow(s, now, W, true)
-	eq := m.eqSummary(W)
-	tail := append(append([]string{m.dividerRow("equalizer", W)}, eq...), m.footerRow(W))
+	tail := []string{m.toneStrip(W), m.footerRow(W)}
 	if errLine != "" {
 		tail = append(tail, errLine)
 	}
-	content := compactBody(header, meta, seek, controls, true)
-	// Too short for everything (rows 9–13): the EQ summary and its divider
-	// yield first, then the blank separators — frameBody trims the body from
-	// the bottom, which is the seek and transport rows, and a player without
-	// its transport is worse than one without a tone read-out or breathing
-	// room.
+	content := compactBody(meta, seek, controls, true)
+	// Too short for everything (rows 9–13): the tone strip yields first, then
+	// the blank separators — a player without its transport is worse than one
+	// without a tone read-out or breathing room.
 	if len(content)+len(tail) > inner {
-		tail = tail[1+len(eq):]
+		tail = tail[1:]
 	}
 	if len(content)+len(tail) > inner {
-		content = compactBody(header, meta, seek, controls, false)
+		content = compactBody(meta, seek, controls, false)
 	}
-	return frameBody(content, tail, inner, false)
+	return stack(nil, content, tail, inner)
 }
 
-// compactBody is the compact layout's top-pinned block — header, metadata,
-// seek row, transport row — with or without the blank lines between them.
-func compactBody(header string, meta []string, seek, controls string, gaps bool) []string {
-	out := []string{header}
-	if gaps {
-		out = append(out, "")
-	}
+// compactBody is the compact layout's player block — metadata, seek row,
+// transport row — with or without the blank lines between them.
+func compactBody(meta []string, seek, controls string, gaps bool) []string {
+	var out []string
 	out = append(out, meta...)
 	if gaps {
 		out = append(out, "")
@@ -378,7 +384,13 @@ func frameBody(content, tail []string, h int, center bool) []string {
 	return out
 }
 
-func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) string {
+// headerRow is the one row every view shares: the device name and the
+// connection light on the left; on the right the view strip (1 player …
+// 5 diagnostics, the one on show lit), the source · format read-out when the
+// player has no other place for it (the compact layout), and the "Vol" label
+// over the full player's volume rail (showVol).
+func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, showVol bool) string {
+	full := showVol
 	ps := m.sty.pens()
 	clock := now.Format("15:04")
 	note := GL["note"]
@@ -436,32 +448,85 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, full bool) 
 	left := ps.acc.render(note) + " " + ps.acc.render(name) + "  " + statStyled
 	leftW := prefixW + DispW(name) + 2 + statW
 
-	// source/format fills the gap before Vol when a track is playing and there's
-	// room; clipped to whatever space is left so the header never overflows W.
+	// the right side, outermost first: Vol over the rail (full player), the
+	// view strip, then — on the compact player, which has no source line of
+	// its own — the source · format read-out, each taking the room left.
 	right, rightW := vol, volW
-	if q := sourceFormat(s.Track); q != "" {
-		room := W - leftW - 1 // compact: one min gap before the right edge
-		if full {
-			room = W - leftW - volW - 3 // gap before quality + 2-col gap before Vol
+	room := W - leftW - 2
+	if strip, sw := m.viewStrip(room - rightW - btoi(rightW > 0)*2); sw > 0 {
+		if rightW > 0 {
+			right, rightW = strip+"  "+right, sw+2+rightW
+		} else {
+			right, rightW = strip, sw
 		}
-		if room >= 8 {
+	}
+	if q := sourceFormat(s.Track); q != "" && m.view == viewPlayer && !full {
+		if qroom := room - rightW - btoi(rightW > 0)*2; qroom >= 8 {
 			var qStyled string
 			var qW int
-			if DispW(q) <= room {
+			if DispW(q) <= qroom {
 				// fits fully: tint the source name in its brand colour, dim the format
 				qStyled, qW = m.brandSource(q, SourceName(s.Track)), DispW(q)
 			} else {
-				c := Clip(q, room)
+				c := Clip(q, qroom)
 				qStyled, qW = ps.dmr.render(c), DispW(c)
 			}
-			if full {
-				right, rightW = qStyled+"  "+vol, qW+2+volW
+			if rightW > 0 {
+				right, rightW = qStyled+"  "+right, qW+2+rightW
 			} else {
 				right, rightW = qStyled, qW
 			}
 		}
 	}
 	return between(left, leftW, right, rightW, W)
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// viewStrip renders the numbered view names — "1 player  2 equalizer …" — with
+// the view on show in the accent, into at most room columns: the full names
+// when they fit, bare numerals when only those do, nothing below that. The
+// help page is not in the strip (it is behind ?), so while it shows no number
+// lights up.
+func (m *model) viewStrip(room int) (string, int) {
+	ps := m.sty.pens()
+	render := func(names bool) (string, int) {
+		var b strings.Builder
+		w := 0
+		for v := range view(numberedViews) {
+			if v > 0 {
+				b.WriteString("  ")
+				w += 2
+			}
+			num := string(rune('1' + v))
+			label := num
+			if names {
+				label = num + " " + viewNames[v]
+			}
+			switch {
+			case v == m.view:
+				b.WriteString(ps.accB.render(label))
+			case names:
+				b.WriteString(ps.dim.render(num) + ps.dmr.render(" "+viewNames[v]))
+			default:
+				b.WriteString(ps.dmr.render(label))
+			}
+			w += DispW(label)
+		}
+		return b.String(), w
+	}
+	if s, w := render(true); w <= room {
+		return s, w
+	}
+	if s, w := render(false); w <= room {
+		return s, w
+	}
+	return "", 0
 }
 
 // Now-playing marquee tuning: a line wider than its column scrolls horizontally,
@@ -623,7 +688,7 @@ func (m *model) transportSegments(s protocol.Snapshot, now time.Time, w int) str
 			cluster += gap
 		}
 		st := ps.segOff
-		if (m.pane == paneNow && sg.action == actions[m.focus]) || m.flash[sg.action].After(now) {
+		if (m.view == viewPlayer && sg.action == actions[m.focus]) || m.flash[sg.action].After(now) {
 			st = ps.segOn
 		}
 		cw := widths[i]
@@ -659,7 +724,7 @@ const transportGap = 2
 const (
 	volColW   = 7  // width of the volume rail column
 	artGap    = 2  // blank columns between the three player columns (art | mid | vol)
-	coverHCap = 16 // max album-cover height (rows): a record sleeve, not a billboard
+	coverHCap = 22 // max album-cover height (rows): a record sleeve, not a billboard — the equalizer's rows went to it
 )
 
 // fullMeta is the now-playing metadata for the full dashboard: title, artist, and
@@ -847,7 +912,7 @@ func (m *model) controlsRow(s protocol.Snapshot, now time.Time, W int, withVol b
 	ps := m.sty.pens()
 	btn := func(action, label string) (string, int) {
 		st := ps.btnOff
-		if (m.pane == paneNow && action == actions[m.focus]) || m.flash[action].After(now) {
+		if (m.view == viewPlayer && action == actions[m.focus]) || m.flash[action].After(now) {
 			st = ps.btnOn
 		}
 		return st.render(label), DispW(label) + 2
@@ -889,34 +954,27 @@ func (m *model) dividerRow(label string, W int) string {
 	return bar(left) + " " + ps.dim.render(label) + " " + bar(rule-left)
 }
 
-// playerHints are the player-pane footer hints, longest first; footerRow
-// shows the first that fits W whole, so a narrow frame drops the rarer keys
-// instead of clipping the line mid-word. The shortest still fits the
-// full-dashboard minimum (64 cols).
+// playerHints are the player's footer, widest first; the first that fits the
+// width is shown, so a narrow frame drops the rarer keys instead of clipping
+// the line mid-word. Every view is reachable from the strip, so the footer
+// names the player's own keys and how to get help, not every other view.
 var playerHints = []string{
-	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · c services · l logs · ? diag · q quit",
-	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · c services · ? diag · q quit",
-	"space play · ↑↓ vol · m mute · s sleep · d night · b bedtime · e/tab EQ · ? diag · q quit",
-	"space play · ↑↓ vol · m mute · s sleep · d night · e/tab EQ · ? diag · q quit",
-	"space play · ↑↓ vol · m mute · s sleep · d night · e EQ · ? diag · q quit",
-	"space play · ↑↓ vol · m mute · s sleep · e EQ · ? diag · q quit",
+	"space play/pause · ↑↓ volume · m mute · s sleep · b bedtime · d night · t remaining · 1-5 views · ? help · q quit",
+	"space play/pause · ↑↓ volume · m mute · s sleep · b bedtime · d night · 1-5 views · ? help · q quit",
+	"space play/pause · ↑↓ volume · m mute · s sleep · d night · 1-5 views · ? help · q quit",
+	"space play · ↑↓ volume · m mute · s sleep · d night · ? help · q quit",
+	"space play · ↑↓ vol · m mute · s sleep · ? help · q quit",
+	"space play · ↑↓ vol · ? help · q quit",
 }
 
+// eqHint is the equalizer view's footer; the focused control's own note sits
+// in the view body.
+const eqHint = "↑↓ select · ←→ adjust · enter toggle · esc player · ? help"
+
+// footerRow right-aligns the current view's key hint.
 func (m *model) footerRow(W int) string {
-	var hint string
-	switch {
-	case m.pane == paneEQ && m.eqSpec().Code == "MXV":
-		// The one band with a device-wide gotcha (teardown §6.3): a low output cap
-		// is why the remote / Spotify volume feels stuck near the top.
-		hint = "Max Vol caps remote & Spotify volume · ←→ adjust · q quit"
-	case m.pane == paneEQ && m.eqSpec().Code == "EQE":
-		// EQE gates only the preset: the tone sliders are always live.
-		hint = "EQ on applies the preset · tone sliders are always live · q quit"
-	case m.pane == paneEQ && m.eqSpec().Code == "EQS":
-		hint = "←→ pick a preset · enter next · heard only while EQ is on · q quit"
-	case m.pane == paneEQ:
-		hint = "↑↓ pick · ←→ adjust · enter toggle · tab player · q quit"
-	default:
+	hint := eqHint
+	if m.view != viewEQ {
 		hint = playerHints[len(playerHints)-1]
 		for _, h := range playerHints {
 			if DispW(h) <= W {

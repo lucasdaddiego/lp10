@@ -101,9 +101,9 @@ func TestLatencyRowClipsLongTargetNames(t *testing.T) {
 	_ = time.Now
 }
 
-// At 9–13 rows the compact frame cannot hold everything: the EQ summary and
-// its divider, then the blank separators, yield before the player's own seek
-// and transport rows. With room for all of it, all of it shows.
+// At 9–10 rows the compact frame cannot hold everything: the tone strip, then
+// the blank separators, yield before the player's own seek and transport rows.
+// From 11 rows up there is room for all of it, and all of it shows.
 func TestCompactShortFrameKeepsTransportOverEQSummary(t *testing.T) {
 	for _, rows := range []int{9, 10, 11, 12, 13} {
 		m, _, _ := makeModel(t)
@@ -112,8 +112,8 @@ func TestCompactShortFrameKeepsTransportOverEQSummary(t *testing.T) {
 		if !strings.Contains(out, GL["rew"]) || !strings.Contains(out, GL["ff"]) {
 			t.Errorf("%d rows: transport row missing:\n%s", rows, out)
 		}
-		if strings.Contains(out, "equalizer") {
-			t.Errorf("%d rows: the EQ summary stayed while the player was trimmed:\n%s", rows, out)
+		if hasTone := strings.Contains(out, "tone"); hasTone != (rows >= 11) {
+			t.Errorf("%d rows: tone strip shown=%v, want %v:\n%s", rows, hasTone, rows >= 11, out)
 		}
 		if n := len(strings.Split(m.viewContent(), "\n")); n != rows {
 			t.Errorf("%d rows: rendered %d lines", rows, n)

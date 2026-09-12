@@ -101,7 +101,7 @@ func (m *model) logVisible() ([]string, time.Time) {
 // minus the heading, its blank, and the two-line tail — the same figure the
 // keys page by, so ←/→ move exactly one screenful.
 func (m *model) logPage() int {
-	return max(m.rows-6, 1)
+	return max(m.rows-7, 1)
 }
 
 // logScrollBy moves the viewport. The offset counts lines UP from the bottom,
@@ -256,7 +256,7 @@ func (m *model) renderLogs(now time.Time, W int) []string {
 			age += " · scrolled " + strconv.Itoa(m.logScroll)
 		}
 	}
-	left := "↑↓ scroll · ←→ page · s source · f filter · r refresh · esc back"
+	left := "↑↓ scroll · ←→ page · s source · f filter · r refresh · esc player"
 	tail := []string{"", between(t.dmr.render(left), DispW(left), t.dmr.render(age), DispW(age), W)}
-	return frameBody(content, tail, m.rows-2, false)
+	return frameBody(content, tail, m.bodyRows(), false)
 }

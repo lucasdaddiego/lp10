@@ -138,16 +138,20 @@ func TestEQSummaryWrapsToTwoLines(t *testing.T) {
 	}
 }
 
+// The equalizer view explains the focused control under the sliders: the EQ
+// switch's note says the tone sliders stay live, the preset's that it is heard
+// only while EQ is on.
 func TestEQFooterHintsForEnableAndPreset(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	m.sty = newTheme()
-	m.pane = paneEQ
+	m.rows, m.cols = 30, 106
+	m.view = viewEQ
 	m.eqFocus = 0
-	if got := stripANSI(m.footerRow(100)); !strings.Contains(got, "always live") {
-		t.Errorf("EQE hint = %q", got)
+	if got := stripANSI(strings.Join(m.renderEQ(100), "\n")); !strings.Contains(got, "live either way") {
+		t.Errorf("EQE note missing:\n%s", got)
 	}
 	m.eqFocus = 1
-	if got := stripANSI(m.footerRow(100)); !strings.Contains(got, "preset") {
-		t.Errorf("EQS hint = %q", got)
+	if got := stripANSI(strings.Join(m.renderEQ(100), "\n")); !strings.Contains(got, "heard only while EQ is on") {
+		t.Errorf("EQS note missing:\n%s", got)
 	}
 }

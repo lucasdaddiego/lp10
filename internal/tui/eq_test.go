@@ -27,8 +27,8 @@ func TestEQPaneFocusAdjustToggle(t *testing.T) {
 
 	// 'e' focuses the EQ pane; first display slot is the EQ enable (EQE, a toggle).
 	m.key(kr('e'))
-	if m.pane != paneEQ || m.eqFocus != 0 {
-		t.Fatalf("after e: pane=%d focus=%d", m.pane, m.eqFocus)
+	if m.view != viewEQ || m.eqFocus != 0 {
+		t.Fatalf("after e: pane=%d focus=%d", m.view, m.eqFocus)
 	}
 	if m.eqSpec().Code != "EQE" {
 		t.Fatalf("display slot 0 is %s, want EQE", m.eqSpec().Code)
@@ -60,20 +60,33 @@ func TestEQPaneFocusAdjustToggle(t *testing.T) {
 	if m.key(ke(kEsc)) {
 		t.Error("esc in EQ pane should not drain/quit")
 	}
-	if m.pane != paneNow {
+	if m.view != viewPlayer {
 		t.Error("esc should return focus to the now-playing pane")
 	}
 }
 
+// tab walks the numbered views in order and wraps; esc goes straight home.
 func TestTabSwitchesPane(t *testing.T) {
 	m, _, _ := eqModel(t)
-	m.key(ke(kTab))
-	if m.pane != paneEQ {
-		t.Fatalf("tab should switch to EQ pane, got %d", m.pane)
+	for _, want := range []view{viewEQ, viewServices, viewLogs, viewDiag, viewPlayer} {
+		m.key(ke(kTab))
+		if m.view != want {
+			t.Fatalf("tab reached view %d, want %d", m.view, want)
+		}
 	}
 	m.key(ke(kTab))
-	if m.pane != paneNow {
-		t.Fatalf("tab should switch back, got %d", m.pane)
+	m.key(ke(kEsc))
+	if m.view != viewPlayer {
+		t.Fatalf("esc should return to the player, got %d", m.view)
+	}
+	// help is behind ? alone, and ? closes it again
+	m.key(kr('?'))
+	if m.view != viewHelp {
+		t.Fatal("? should open the help page")
+	}
+	m.key(kr('?'))
+	if m.view != viewPlayer {
+		t.Fatal("? again should close it")
 	}
 }
 
@@ -111,16 +124,16 @@ func TestEQAdjustOverflowSaturates(t *testing.T) {
 	}
 }
 
-// Closing the diag overlay consumes the rest of the same event batch: pasting
-// "nq" with the overlay open must only dismiss it — the 'n' would otherwise
-// skip the track and the 'q' would quit the app.
+// Leaving a view consumes the rest of the same event batch: a paste that
+// begins with esc while the diagnostics are up must only return to the player
+// — the 'n' would otherwise skip the track and the 'q' would quit the app.
 func TestDiagCloseSwallowsRestOfBatch(t *testing.T) {
 	m, _, collect := makeModel(t)
-	m.diag = true
-	if m.dispatchKeys(runeEvents("nq")) {
+	m.view = viewDiag
+	if m.dispatchKeys(append([]keyEvent{ke(kEsc)}, runeEvents("nq")...)) {
 		t.Fatal("a swallowed batch must not quit")
 	}
-	if m.diag {
+	if m.view == viewDiag {
 		t.Error("the first event should close the overlay")
 	}
 	if cmds := collect(); len(cmds) != 0 {
@@ -149,7 +162,7 @@ func TestDashboardRenders(t *testing.T) {
 	m, _, _ := eqModel(t)
 	protocol.ApplyRecord(m.st, playingRecord())
 	out := m.viewContent()
-	for _, want := range []string{"equalizer", "Max", "Treble", "Mid", "Bass"} {
+	for _, want := range []string{"tone", "EQ off", "max 40"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dashboard render missing %q", want)
 		}
@@ -202,16 +215,16 @@ func TestEQPaneInertAtMiniSize(t *testing.T) {
 	// arrows act on the player (never nudging the invisible Max Vol cap).
 	m, st, eqcmds := eqModel(t)
 	st.ApplyTunnel("MXV", 40) // known, so a leaked nudge WOULD send
-	m.pane = paneEQ           // as if focused before the shrink
+	m.view = viewEQ           // as if focused before the shrink
 	m.rows, m.cols = 8, 40    // below MiniRows/MiniCols
 
 	m.key(ke(kTab)) // must not toggle into (or within) the EQ pane
-	if m.pane != paneNow {
-		t.Fatalf("tab at mini size: pane=%d want paneNow", m.pane)
+	if m.view != viewPlayer {
+		t.Fatalf("tab at mini size: pane=%d want viewPlayer", m.view)
 	}
 	m.key(kr('e')) // must not focus EQ
-	if m.pane != paneNow {
-		t.Fatalf("e at mini size: pane=%d want paneNow", m.pane)
+	if m.view != viewPlayer {
+		t.Fatalf("e at mini size: pane=%d want viewPlayer", m.view)
 	}
 	m.eqFocus = len(eqOrder) - 1 // Max Vol, were the pane active
 	m.key(ke(kLeft))             // must be a player action, not an EQ nudge
@@ -226,7 +239,7 @@ func TestEQPaneInertAtMiniSize(t *testing.T) {
 	// Back at full size the EQ pane works again.
 	m.rows, m.cols = 24, 80
 	m.key(kr('e'))
-	if m.pane != paneEQ {
+	if m.view != viewEQ {
 		t.Fatal("e at full size should focus the EQ pane")
 	}
 }

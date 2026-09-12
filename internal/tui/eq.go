@@ -40,17 +40,42 @@ var eqOrder = func() []int {
 }()
 
 // eqShort is the compact band label per wire code (≤ sliderLabelW-1 cells).
+// eqLabel is each control's name in the equalizer view.
+var eqLabel = map[string]string{
+	"MXV": "Max volume", "EQE": "EQ", "EQS": "Preset", "TRE": "Treble", "MID": "Mid",
+	"BAS": "Bass", "VBS": "Sub bass", "VBI": "Sub level", "BAL": "Balance",
+}
+
+// eqShort is the abbreviated vocabulary of the one-line summary (eqSummary),
+// which the tone strip falls back to when the full words do not fit.
 var eqShort = map[string]string{
 	"MXV": "Max Vol", "EQE": "EQ", "EQS": "Preset", "TRE": "Treble", "MID": "Mid",
 	"BAS": "Bass", "VBS": "Sub", "VBI": "Lvl", "BAL": "Balance",
+}
+
+// eqAbout is the short note the equalizer view shows for the focused control
+// — what it does on this box, and the gotcha that goes with it.
+var eqAbout = map[string][]string{
+	"EQE": {"EQ on applies the selected preset to the sound; off, the preset is silent.",
+		"The tone sliders below are live either way — they sit on the device's own DSP, not on the preset."},
+	"EQS": {"The preset the EQ switch applies, from the device's own list.",
+		"←→ picks one, enter steps to the next. It is heard only while EQ is on."},
+	"TRE": {"Treble in dB, −10 to +10. Live whatever the EQ switch says."},
+	"MID": {"Mid in dB, −10 to +10. Live whatever the EQ switch says."},
+	"BAS": {"Bass in dB, −10 to +10. Live whatever the EQ switch says."},
+	"VBS": {"The deep-bass enhancer, a switch on the device; its strength is the next row."},
+	"VBI": {"How strong the deep-bass effect is, 0 to 100. Heard only while Sub bass is on."},
+	"BAL": {"Left / right balance, −100 to +100; plus favours the right channel."},
+	"MXV": {"The output ceiling, 30 to 100: the remote, the phone and Spotify all stop here.",
+		"A low cap is what makes the volume feel stuck near the top — 100 gives the full range."},
 }
 
 // sliderLabelW / sliderValW are the fixed-width columns of the eqSliders rows:
 // the band label on the left, the right-aligned value on the right, the track
 // filling the width between them.
 const (
-	sliderLabelW = 8 // "Max Vol " — label column: longest name "Max Vol" (7) + 1 space
-	sliderValW   = 4 // right-aligned value column: " +10", " 100", "  -1", …
+	sliderLabelW = 12 // "Max volume  " — label column: the longest name (10) + 2 spaces
+	sliderValW   = 4  // right-aligned value column: " +10", " 100", "  -1", …
 )
 
 // eqSpec returns the tunnel.Spec for the focused EQ-strip position.
@@ -165,7 +190,7 @@ func (m *model) eqSliders(W int) []string {
 	_, vals := m.st.EQView()
 	rows := make([]string, len(eqOrder))
 	for d, idx := range eqOrder {
-		rows[d] = m.eqSliderRow(idx, vals, m.pane == paneEQ && m.eqFocus == d, W)
+		rows[d] = m.eqSliderRow(idx, vals, m.view == viewEQ && m.eqFocus == d, W)
 	}
 	return rows
 }
@@ -188,7 +213,7 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	if focused {
 		labelPen = ps.accB
 	}
-	raw := Clip(eqShort[spec.Code], sliderLabelW-1)
+	raw := Clip(eqLabel[spec.Code], sliderLabelW-1)
 	labelCell := labelPen.render(raw) + spaces(sliderLabelW-DispW(raw))
 
 	if spec.Kind == tunnel.Toggle {
@@ -349,7 +374,7 @@ func (m *model) eqSummary(W int) []string {
 		if used > 0 {
 			b.WriteString(sep)
 		}
-		if m.pane == paneEQ && m.eqFocus == d {
+		if m.view == viewEQ && m.eqFocus == d {
 			// accent+bold+underline focus cue: a real Style.Render — underline
 			// styles are not pen-safe (see sFocusBU) — on one short segment.
 			b.WriteString(m.sty.sFocusBU.Render(txt))
@@ -362,6 +387,133 @@ func (m *model) eqSummary(W int) []string {
 		lines = append(lines, b.String())
 	}
 	return lines
+}
+
+// renderEQ is the equalizer view: the nine controls as wide slider rows, then
+// a note about the focused one. The equalizer rides the :2018 tunnel, apart
+// from the ssh player stream, so a dead tunnel greys this view out alone.
+func (m *model) renderEQ(W int) []string {
+	t := m.sty.pens()
+	content := []string{m.sectionHead("equalizer", W), ""}
+	content = append(content, m.eqSliders(W)...)
+	if conn, _ := m.st.EQView(); !conn {
+		content = append(content, "", t.warn.render(Clip(GL["warn"]+" the :2018 control tunnel is down — values are the last known until it returns", W)))
+	}
+	sp := m.eqSpec()
+	content = append(content, "", m.sectionHead(eqLabel[sp.Code], W), "")
+	for _, ln := range eqAbout[sp.Code] {
+		content = append(content, t.dmr.render(Clip(ln, W)))
+	}
+	return frameBody(content, []string{"", m.footerRow(W)}, m.bodyRows(), false)
+}
+
+// toneStrip is the player's one-line equalizer read-out — "tone   EQ off ·
+// Flat · bass +3 · mid 0 · treble +3 · sub on 15 · balance 0 · max 100" — the
+// full words when they fit, the abbreviated summary otherwise. The equalizer
+// itself is view 2.
+func (m *model) toneStrip(W int) string {
+	t := m.sty.pens()
+	label := t.dim.render("tone") + "   "
+	labelW := 7
+	_, vals := m.st.EQView()
+	names := m.st.EQPresets()
+	long := func(code string) string {
+		v, known := vals[code]
+		if !known {
+			return ""
+		}
+		switch code {
+		case "EQE":
+			if v != 0 {
+				return "EQ on"
+			}
+			return "EQ off"
+		case "EQS":
+			return presetName(names, v)
+		case "TRE":
+			return "treble " + toneStr(v)
+		case "MID":
+			return "mid " + toneStr(v)
+		case "BAS":
+			return "bass " + toneStr(v)
+		case "VBS":
+			if v != 0 {
+				return "sub on"
+			}
+			return "sub off"
+		case "VBI":
+			return strconv.Itoa(v)
+		case "BAL":
+			return "balance " + balStr(v)
+		case "MXV":
+			return "max " + strconv.Itoa(v)
+		}
+		return ""
+	}
+	var parts []string
+	for _, idx := range eqOrder {
+		code := tunnel.Specs[idx].Code
+		p := long(code)
+		if p == "" {
+			continue
+		}
+		if code == "VBI" && len(parts) > 0 && strings.HasPrefix(parts[len(parts)-1], "sub") {
+			parts[len(parts)-1] += " " + p // "sub on 15"
+			continue
+		}
+		parts = append(parts, p)
+	}
+	if len(parts) == 0 {
+		return label + t.dmr.render(Clip("equalizer not read yet · 2 opens it", max(W-labelW, 1)))
+	}
+	line := strings.Join(parts, " · ")
+	if DispW(line) > W-labelW {
+		// the compact form: the tone trio as one group, short words elsewhere
+		line = m.toneCompact(vals, names)
+	}
+	return label + t.dim.render(Clip(line, max(W-labelW, 1)))
+}
+
+// toneCompact is the tone strip's short form — "EQ off · Flat · T+3 M0 B+3 ·
+// sub on 15 · bal 0 · max 100" — for widths the full words overflow.
+func (m *model) toneCompact(vals map[string]int, names []string) string {
+	var parts []string
+	if v, ok := vals["EQE"]; ok {
+		if v != 0 {
+			parts = append(parts, "EQ on")
+		} else {
+			parts = append(parts, "EQ off")
+		}
+	}
+	if v, ok := vals["EQS"]; ok {
+		parts = append(parts, presetName(names, v))
+	}
+	var tone []string
+	for _, c := range []struct{ code, letter string }{{"TRE", "T"}, {"MID", "M"}, {"BAS", "B"}} {
+		if v, ok := vals[c.code]; ok {
+			tone = append(tone, c.letter+toneStr(v))
+		}
+	}
+	if len(tone) > 0 {
+		parts = append(parts, strings.Join(tone, " "))
+	}
+	if v, ok := vals["VBS"]; ok {
+		s := "sub off"
+		if v != 0 {
+			s = "sub on"
+			if lvl, ok := vals["VBI"]; ok {
+				s += " " + strconv.Itoa(lvl)
+			}
+		}
+		parts = append(parts, s)
+	}
+	if v, ok := vals["BAL"]; ok {
+		parts = append(parts, "bal "+balStr(v))
+	}
+	if v, ok := vals["MXV"]; ok {
+		parts = append(parts, "max "+strconv.Itoa(v))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // toneStr formats a signed tone value: "+3", "0", "-6" (avoids an odd "+0").

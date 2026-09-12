@@ -30,7 +30,7 @@ func TestNightKeyTogglesAndSends(t *testing.T) {
 	// press sends off
 	m2, st2, collect2 := makeModel(t)
 	protocol.ApplyRecord(st2, protocol.Record{"n": {"  : values=on"}})
-	m2.pane = paneEQ // global key: works from the EQ pane too
+	m2.view = viewEQ // global key: works from the EQ pane too
 	m2.key(kr('d'))
 	if got := collect2(); len(got) != 1 || got[0].Data != "0" {
 		t.Errorf("sent = %+v, want [91 0]", got)
@@ -83,7 +83,7 @@ func TestNightFooterHintAdaptsToWidth(t *testing.T) {
 	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "d night") || strings.Contains(got, GL["ell"]) {
 		t.Errorf("W=80 footer = %q, want the night hint, unclipped", got)
 	}
-	if got := stripANSI(m.footerRow(120)); !strings.Contains(got, "e/tab EQ") {
+	if got := stripANSI(m.footerRow(120)); !strings.Contains(got, "1-5 views") {
 		t.Errorf("W=120 footer = %q, want the full hint", got)
 	}
 	for _, W := range []int{52, 64, 70, 80, 120} {
@@ -97,7 +97,7 @@ func TestNightDiagRow(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
 	m.rows, m.cols = 40, 120
-	m.diag = true
+	m.view = viewDiag
 	if out := stripANSI(m.viewContent()); strings.Contains(out, "night") {
 		t.Fatal("diag must not show a night row before the device reports one")
 	}

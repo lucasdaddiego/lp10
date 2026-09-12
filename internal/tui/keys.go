@@ -94,221 +94,229 @@ func runeEvents(s string) []keyEvent {
 	return evs
 }
 
-// key dispatches one keypress, reporting whether it asked to quit.
+// key dispatches one key event. The view strip is global — 1-5 and tab
+// switch views, esc (and q, off the player) return to the player, ? toggles
+// the help page, and the letters e / c / l / i still open (and close) their
+// view — then the current view takes what is left. Playback keys work from
+// every view that does not claim the letter, so a track can be paused from
+// the diagnostics without leaving them.
 func (m *model) key(ev keyEvent) (quit bool) {
-	// The services and logs panes are navigated, not merely dismissed, so they
-	// take the key first and nothing leaks through to the dashboard beneath.
-	if m.ov != ovNone {
-		return m.overlayKey(ev)
-	}
-	if m.diag {
-		// u asks the vendor's manifest directly — the one request that leaves
-		// the LAN, so it is a deliberate keystroke, never a side effect of
-		// opening the overlay (which shows the box's own 4-hourly verdict).
-		if ev.kind == kRune && (ev.r == 'u' || ev.r == 'U') {
-			m.st.RequestOTA()
-			return false
-		}
-		m.diag = false // any other key closes the overlay
-		return false
-	}
-
-	// The EQ pane isn't drawn at mini size, so keep focus on the player there:
-	// otherwise a pane focus held from before a shrink (or a tab press) would let
-	// the arrow keys silently drive an invisible equalizer — including nudging
-	// the Max Vol hardware cap down with no on-screen feedback.
 	if m.miniMode() {
-		m.pane = paneNow
+		m.view = viewPlayer // only the player is drawn at mini size
 	}
-
-	// tab toggles which pane has focus (no-op at mini size — no second pane).
-	if ev.kind == kTab {
-		if !m.miniMode() {
-			m.pane = (m.pane + 1) % 2
-		}
-		return false
-	}
-	if ev.kind == kEsc {
-		// Esc steps back out of the EQ pane; on the player it does nothing (quit
-		// is q, deliberately — Esc is too easy to hit by accident).
-		if m.pane == paneEQ {
-			m.pane = paneNow
-		}
+	if m.viewKey(ev) {
 		return false
 	}
 	if ev.kind == kRune && (ev.r == 'q' || ev.r == 'Q') {
+		if m.view != viewPlayer {
+			m.view = viewPlayer // q backs out first; a second q quits
+			return false
+		}
 		return true
 	}
-
-	// directional keys are pane-specific.
-	switch ev.kind {
-	case kUp:
-		if m.pane == paneEQ {
-			m.eqFocus = (m.eqFocus - 1 + len(eqOrder)) % len(eqOrder) // select band above
-		} else {
-			m.do("volup")
+	switch m.view {
+	case viewEQ:
+		if m.eqKey(ev) {
+			return false
 		}
-		return false
-	case kDown:
-		if m.pane == paneEQ {
-			m.eqFocus = (m.eqFocus + 1) % len(eqOrder) // select band below
-		} else {
-			m.do("voldn")
+	case viewServices:
+		if m.servicesKey(ev) {
+			return false
 		}
-		return false
-	case kLeft:
-		if m.pane == paneEQ {
-			m.eqAdjust(-1) // nudge the focused slider left (decrease value)
-		} else {
-			m.focus = (m.focus - 1 + len(actions)) % len(actions)
+	case viewLogs:
+		if m.logsKey(ev) {
+			return false
 		}
-		return false
-	case kRight:
-		if m.pane == paneEQ {
-			m.eqAdjust(+1) // nudge the focused slider right (increase value)
-		} else {
-			m.focus = (m.focus + 1) % len(actions)
+	case viewDiag:
+		if ev.kind == kRune && (ev.r == 'u' || ev.r == 'U') {
+			// u asks the vendor's manifest directly — the one request that
+			// leaves the LAN, so it is a deliberate keystroke, never a side
+			// effect of opening the view (which shows the box's own 4-hourly
+			// verdict).
+			m.st.RequestOTA()
+			return false
 		}
-		return false
-	case kEnter:
-		if m.pane == paneEQ {
-			m.eqToggleFocused()
-		} else {
-			m.do(actions[m.focus])
+	case viewHelp:
+		return false // a reference page: esc, q or ? leave it
+	default:
+		if m.playerKey(ev) {
+			return false
 		}
-		return false
 	}
+	m.playbackKey(ev)
+	return false
+}
 
-	// playback / global rune keys work regardless of pane.
-	if ev.kind == kRune {
+// viewKey handles the keys that move between views. It reports whether the
+// event was one of them.
+func (m *model) viewKey(ev keyEvent) bool {
+	switch ev.kind {
+	case kTab:
+		// tab cycles the numbered views; help is not in the loop
+		if !m.miniMode() {
+			m.setView((m.view + 1) % numberedViews)
+		}
+		return true
+	case kEsc:
+		m.view = viewPlayer
+		return true
+	case kRune:
 		switch ev.r {
-		case ' ':
-			m.do("toggle")
-		case 'n':
-			m.do("next")
-		case 'p':
-			m.do("prev")
-		case '+', '=':
-			m.do("volup")
-		case '-', '_':
-			m.do("voldn")
-		case 'm':
-			m.do("mute")
-		case 't':
-			m.showRemaining = !m.showRemaining
-		case 's':
-			m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
-		case 'S':
-			m.sleepCancel()
-		case 'b':
-			m.bedtimeCycle(time.Now()) // sleep step + night mode on, restored when the timer ends
-		case 'd':
-			m.nightToggle() // night mode: the device's multi-band DRC
-		case 'e':
-			if !m.miniMode() { // no EQ pane to focus at mini size
-				m.pane = paneEQ
-			}
+		case '1', '2', '3', '4', '5':
+			m.setView(view(ev.r - '1'))
+			return true
 		case '?':
-			m.openDiag()
-		case 'c':
-			m.openOverlay(ovServices)
-		case 'l':
-			m.openOverlay(ovLogs)
+			m.toggleView(viewHelp)
+			return true
+		case 'i', 'I':
+			m.toggleView(viewDiag)
+			return true
+		case 'e', 'E':
+			m.toggleView(viewEQ)
+			return true
+		case 'c', 'C':
+			m.toggleView(viewServices)
+			return true
+		case 'l', 'L':
+			m.toggleView(viewLogs)
+			return true
 		}
 	}
 	return false
 }
 
-// openDiag engages the diagnostics overlay. Nothing leaves the LAN for it:
-// the firmware line shows the verdict the box itself fetched from the vendor
-// (it asks every 4 h on its own timer and logs the answer — the loop ships that
-// line), and a fresh vendor query is a separate keystroke, u, inside the
-// overlay. Opening also makes the loop re-read that syslog digest (the 90 1
-// toggle carries it).
-func (m *model) openDiag() {
+// setView shows a view. Nothing but the player is drawn at mini size, so the
+// switch is refused there. Opening the logs costs a device round trip, so it
+// is asked for once per run unless the user refreshes: reopening shows the
+// tail already in hand instead of stalling on a fresh fetch.
+func (m *model) setView(v view) {
 	if m.miniMode() {
-		return // no room to draw it (View drops it on the next paint)
+		return
 	}
-	m.diag, m.ov = true, ovNone
-}
-
-// openOverlay engages one interactive pane, closing whatever else was open —
-// the three overlays are mutually exclusive by construction rather than by
-// convention. Opening the logs pane costs a device round trip, so it is only
-// asked for once per run unless the user refreshes: reopening the pane shows
-// the tail already in hand instead of stalling on a fresh fetch.
-func (m *model) openOverlay(which int) {
-	if m.miniMode() {
-		return // no room to draw it; the dashboard keeps the keys
-	}
-	m.diag, m.ov = false, which
-	if which == ovLogs && !m.logAsked[m.logSrc] {
+	m.view = v
+	if v == viewLogs && !m.logAsked[m.logSrc] {
 		m.logRequest()
 	}
 }
 
-// toggleOverlay opens a pane, or closes it if it is the one already open.
-func (m *model) toggleOverlay(which int) {
-	if m.ov == which {
-		m.ov = ovNone
+// toggleView shows a view, or returns to the player when it is the one on
+// show — so the key that opened a view also closes it.
+func (m *model) toggleView(v view) {
+	if m.view == v {
+		m.view = viewPlayer
 		return
 	}
-	m.openOverlay(which)
+	m.setView(v)
 }
 
-// overlayKey drives the interactive panes. Esc and q both back out to the
-// dashboard (q quits only from there), and each pane's own letter closes it so
-// the key that opened it also dismisses it.
-func (m *model) overlayKey(ev keyEvent) (quit bool) {
-	if ev.kind == kEsc || (ev.kind == kRune && (ev.r == 'q' || ev.r == 'Q')) {
-		m.ov = ovNone
+// openOverlay is the older name for setView, kept for its callers.
+func (m *model) openOverlay(which view) { m.setView(which) }
+
+// playerKey is the player's own keys: arrows move the volume and the
+// transport focus, enter presses the focused button.
+func (m *model) playerKey(ev keyEvent) bool {
+	switch ev.kind {
+	case kUp:
+		m.do("volup")
+	case kDown:
+		m.do("voldn")
+	case kLeft:
+		m.focus = (m.focus - 1 + len(actions)) % len(actions)
+	case kRight:
+		m.focus = (m.focus + 1) % len(actions)
+	case kEnter:
+		m.do(actions[m.focus])
+	default:
 		return false
 	}
-	// The overlay letters work from inside an overlay too: pressing the pane's own
-	// letter closes it, another pane's letter switches straight to it. Toggling a
-	// service and then reading the log for why it did nothing is the whole
-	// workflow, and making that a two-step (esc, then l) would be needless.
-	if ev.kind == kRune {
-		switch ev.r {
-		case 'c':
-			m.toggleOverlay(ovServices)
-			return false
-		case 'l':
-			m.toggleOverlay(ovLogs)
-			return false
-		case '?':
-			m.openDiag()
-			return false
-		}
+	return true
+}
+
+// eqKey drives the equalizer: ↑↓ select a control, ←→ adjust it, enter
+// toggles a switch or steps a preset.
+func (m *model) eqKey(ev keyEvent) bool {
+	switch ev.kind {
+	case kUp:
+		m.eqFocus = (m.eqFocus - 1 + len(eqOrder)) % len(eqOrder)
+	case kDown:
+		m.eqFocus = (m.eqFocus + 1) % len(eqOrder)
+	case kLeft:
+		m.eqAdjust(-1)
+	case kRight:
+		m.eqAdjust(+1)
+	case kEnter:
+		m.eqToggleFocused()
+	default:
+		return false
 	}
-	switch m.ov {
-	case ovServices:
-		switch {
-		case ev.kind == kUp:
-			m.svcMove(-1)
-		case ev.kind == kDown:
-			m.svcMove(+1)
-		case ev.kind == kEnter:
-			m.svcToggle(time.Now())
-		}
-	case ovLogs:
-		page := m.logPage()
-		switch {
-		case ev.kind == kUp:
-			m.logScrollBy(+1, page)
-		case ev.kind == kDown:
-			m.logScrollBy(-1, page)
-		case ev.kind == kLeft:
-			m.logScrollBy(+page, page)
-		case ev.kind == kRight:
-			m.logScrollBy(-page, page)
-		case ev.kind == kRune && ev.r == 'f':
-			m.logCycleFilter()
-		case ev.kind == kRune && ev.r == 's':
-			m.logCycleSource()
-		case ev.kind == kRune && ev.r == 'r':
-			m.logRequest()
-		}
+	return true
+}
+
+func (m *model) servicesKey(ev keyEvent) bool {
+	switch ev.kind {
+	case kUp:
+		m.svcMove(-1)
+	case kDown:
+		m.svcMove(+1)
+	case kEnter:
+		m.svcToggle(time.Now())
+	default:
+		return false
 	}
-	return false
+	return true
+}
+
+func (m *model) logsKey(ev keyEvent) bool {
+	page := m.logPage()
+	switch {
+	case ev.kind == kUp:
+		m.logScrollBy(+1, page)
+	case ev.kind == kDown:
+		m.logScrollBy(-1, page)
+	case ev.kind == kLeft:
+		m.logScrollBy(+page, page)
+	case ev.kind == kRight:
+		m.logScrollBy(-page, page)
+	case ev.kind == kRune && ev.r == 'f':
+		m.logCycleFilter()
+	case ev.kind == kRune && ev.r == 's':
+		m.logCycleSource() // the logs' s wins over the sleep timer here
+	case ev.kind == kRune && ev.r == 'r':
+		m.logRequest()
+	default:
+		return false
+	}
+	return true
+}
+
+// playbackKey is the transport and the timers — available from every view
+// that has not claimed the letter.
+func (m *model) playbackKey(ev keyEvent) {
+	if ev.kind != kRune {
+		return
+	}
+	switch ev.r {
+	case ' ':
+		m.do("toggle")
+	case 'n':
+		m.do("next")
+	case 'p':
+		m.do("prev")
+	case '+', '=':
+		m.do("volup")
+	case '-', '_':
+		m.do("voldn")
+	case 'm':
+		m.do("mute")
+	case 't':
+		m.showRemaining = !m.showRemaining
+	case 's':
+		m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
+	case 'S':
+		m.sleepCancel()
+	case 'b':
+		m.bedtimeCycle(time.Now()) // sleep step + night mode on, restored when the timer ends
+	case 'd':
+		m.nightToggle() // night mode: the device's multi-band DRC
+	}
 }
