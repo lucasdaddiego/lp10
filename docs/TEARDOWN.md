@@ -48,6 +48,13 @@ host can drive **only the now-playing line** of the OLED — push MsgBox 42 (`Re
 reversing the MCU firmware (§6.4, §10.3). Three baked-in identities: a
 LibreWireless device cert (LWT Root CA), a Google Cast cert (RAKOIT), and a Spotify OEM identity.
 
+**What leaves the house** (audited 2026-09-13, §10.4): live, only the Spotify session; on timers, a 4-hourly OTA
+check that carries the unit's MAC and serial and a 10-hourly app-index fetch that carries nothing; NTP and one
+`Date:` header from google.com at boot. No cloud relay, no remote syslog, no cron. A LibreWireless **log-report
+uploader is installed and armed** (crash / button / LUCI 651) and would ship the whole env store, encrypted, to the
+vendor — it has never fired here. The real exposure is LAN-side: **network ADB hands out a root shell with no
+authentication**.
+
 > **State** below = verified on **this unit** (env flag **and** running daemon); first read 2026-06-28/29, last re-read **2026-09-12**.
 > Everything is installed in firmware; most services are env-gated and togglable via the app/web.
 
@@ -243,7 +250,7 @@ across daemons. Live daemons and their roles:
 | `mdnsd` | Apple mDNSResponder (Bonjour) |
 | `librewebserver` | **Web UI + HTTP API** (GoAhead/Embedthis) — TCP 80 |
 | `ota` | **OTA updater** (drives SWUpdate) — §10 |
-| `tcptunnelling` | **Control tunnel + remote relay** — TCP 2018: a plain-text tone/EQ/max-vol control protocol on the LAN (what `lp10`'s equalizer drives — §6.3) **and** the cloud remote-relay path |
+| `tcptunnelling` | **Control tunnel + LAN alert relay** — TCP 2018: a plain-text tone/EQ/max-vol control protocol on the LAN (what `lp10`'s equalizer drives — §6.3) **and** a fan-out of LUCI alerts to whoever is connected. A boost.asio TCP **server**: it opens no outbound connection and knows no relay host (§10.4) |
 | `system_monitor` · `usb_monitor` + `automount` | health/watchdog · USB hotplug + mount |
 | `dropbear` · `inetd`→`telnetd` · `adbd` | **SSH 22** · **telnet 23 (root)** · **ADB 5555/5037** |
 | `dhcpcd` · `ntpd` · `wpa_supplicant` · `netmonitor` | DHCP · NTP · Wi-Fi · link-event monitor |
@@ -667,7 +674,7 @@ DNS via DHCP (`fibertel.com.ar`; 1.1.1.1 / 8.8.8.8 + ISP). IPv6 active on the LA
 |---|---|---|
 | tcp 22 / 23 | dropbear / inetd | **SSH** / **telnet (root)** |
 | tcp 80 | librewebserver | Web UI / API (a v6 socket; reachable over v4) |
-| tcp 2018 | tcptunnelling | **control tunnel + remote relay** (§6.3); one established loopback client — `rakoit_app` |
+| tcp 2018 | tcptunnelling | **control tunnel + LAN alert relay** (§6.3, §10.4); one established loopback client — `rakoit_app` |
 | tcp 2345 · 33719 | rakoit_app | PlaylistServer (`playlist_addr`, bound 0.0.0.0) · a second, dynamic-port listener (43761 the boot before; HTTP 404) |
 | tcp 5037 (lo) / 5555 | adbd | ADB (local / **network**) |
 | tcp 7000 | airplaydemo | AirPlay (RTSP/control) |
@@ -828,7 +835,10 @@ store + `unifykey`, HW crypto DMA + RNG. `S59provision_key_inject` injects keys 
 
 **Security posture (LAN management surface is wide):**
 - **Telnet (root) :23**, **SSH (root) :22**, **network ADB :5555** — all reachable on the LAN;
-  root login enabled (`/etc/passwd`: `root:…:/bin/sh`).
+  root login enabled (`/etc/passwd`: `root:…:/bin/sh`). Telnet and SSH ask for the root password. **ADB does
+  not**: `adbd` (android-tools 4.2.2, no `adb_keys`) answers a bare `CNXN` with `CNXN` and the build-template
+  banner `ro.product.model=Nexus 4` (verified 2026-09-13 with a 24-byte handshake) — `adb connect
+  <device-ip>:5555; adb shell` is a **root shell for anyone on the LAN**, Wi-Fi PSK and Spotify blob included.
 - Web UI creds in env (`Defaultwebuserpassword`, `Newweb*`).
 - `androidboot.selinux=enforcing` is in the cmdline but **SELinux is not active** (no
   `selinuxfs`) — inherited Android boilerplate.
@@ -836,7 +846,8 @@ store + `unifykey`, HW crypto DMA + RNG. `S59provision_key_inject` injects keys 
   `AlexaRefreshToken`, `Airable{Auth,Secret}`, `*AppSecret`, `*Password`, Wi-Fi PSK.
 
 > Fine as a trusted-LAN appliance; the open root telnet/ADB/SSH would be a real exposure if
-> ever bridged or port-forwarded.
+> ever bridged or port-forwarded — and ADB already is one to every guest and gadget on the same Wi-Fi.
+> Client isolation / an IoT VLAN is the router-side fix; closing the ports is a device write, which this doc never does (§15).
 
 ---
 
@@ -960,20 +971,83 @@ and **`PlayView` is still the only host view** — no `Message`/`Text`/`Popup` s
   (was `http://127.0.0.1/SpeakerTest.wav`). None of these are new *tunnel commands* — the code
   table did not change — they are MCU→host notifications.
 
-### 10.4 Telemetry & remote relay
+### 10.4 Telemetry, phone-home & the "remote relay" — audited 2026-09-13
 
-**Telemetry / phone-home (destinations only — no payloads read):**
-- `logs.librewireless.com` — diagnostic log upload (`crash_uploader`/`stdlogctl`).
-- `clients2.google.com` — crash dumps via Google **Breakpad** (`crash_uploader`).
-- `ota.rakoit.com` / `lp10-ota.rakoit.com` / `lp10.arylic.rakoit-ota.com` (8530) — update checks; `cdn.rakoit-ota.com/download` — the app loader's index (8530).
-- Per-service: Spotify eSDK stats, TuneIn `report.core-api`, Cast usage report (off).
-- `www.digicert.com` (TLS OCSP/CRL) · `www.arylic.com` (vendor links).
+**Method (read-only).** One snapshot of `/proc/net/{tcp,tcp6,udp,udp6}` with every socket inode mapped to its process;
+a **25-minute sampler** listing every non-loopback, non-LAN endpoint every 2 s; `strings` over every running binary,
+every `/etc/init.d` script and config for URLs and hostnames; the rsyslog configs, cron, the env flags (names and
+boolean values only); the retained syslog (2026-08-27 → 09-13); reverse DNS / whois of each endpoint from the Mac.
+Nothing was written; the vendor's hard-coded upload credentials found along the way were **not** copied anywhere.
 
-**Remote relay:** `tcptunnelling` (local :2018, live loopback client) is the path that lets
-the Arylic/4STREAM app reach the device from outside the LAN; no hardcoded relay host surfaced
-in strings. The **same :2018**, addressed locally, is also the plain-text **tone/EQ/max-volume
-control protocol** (§6.3) — one port, two roles. **Vendor daemon:** `/factory/custom/csys/bin/daemon` (signed) is the app loader of §10.2
-(on 9243 it was a simpler glue that read a `daemon.ini` URL, "PROTOCOL v1.0", and reported fw/version).
+**What actually leaves the LAN:**
+
+| When | Process | Destination (host / owner) | What goes out |
+|---|---|---|---|
+| **Always** (one held socket) | `spotifymusicpro` → `libspotifypro.so` | `apresolve.spotify.com` → `ap.spotify.com` — an access point on **Google Cloud**, tcp **4070** (104.154.0.0/15) | The Spotify Connect session: your account, the device name (the FriendlyName, i.e. the room), brand/model, what plays, the eSDK's `EsdkPlaybackStats`. Inherent to Connect. Art and audio come from `i.scdn.co`, `audio-ak.spotifycdn.com`, `tts.spotifycdn.com`, `proxy-url.spotify.com` (syslog) |
+| **Every 4 h** | `ota` (libcurl, mTLS with the device cert) | `lp10.arylic.rakoit-ota.com` — **Vultr, US** (45.32.73.238; same box as `ota.rakoit.com`) | `POST {"device":{"brand":"Arylic","buildInfo":"AR241CE","castVersion":"0.0.0","custVersion":"2","deviceId":"<eth MAC>","deviceType":"LS8_C4A","fwVersion":"8530","googleCast":false,"mcuVersion":"23","model":"LP10","serialNumber":"<serial>"}}` — the unit's identity and firmware; no name, SSID, IP or usage |
+| **Every 10 h** | `rak-loader` (`/factory/custom/csys/bin/daemon`) | `cdn.rakoit-ota.com/download` — **Cloudflare** (fallback `ota.rakoit.com`) | `curl -Lsk` GET of the app index: nothing but your public IP and curl's User-Agent. `-k` = no TLS verification; the fetched app is checked against a baked-in key before install (§10.2) |
+| Continuous | `ntpd` | `{0,1,2,3}.pool.ntp.org` | time |
+| At net-up | `timesync` | `www.google.com` (HEAD; reads the `Date:` header) | nothing but the IP |
+| Per lookup | libc resolver | **whatever DHCP hands out** — here 1.1.1.1 / 8.8.8.8 / 1.0.0.1 + the ISP's | the hostnames above. Router policy, not the box's |
+
+Over the 25-minute sample the **only** non-LAN socket was the Spotify access point (held the whole time); across 17
+days of retained syslog the only other non-LAN traffic is the OTA check and the loader fetch on their timers.
+
+**What does *not* happen (checked, not assumed):** no `cron`/`at`; `rsyslog` writes files only — no `@host`, no
+`omfwd`, `/data/rsyslogdconf/` empty, the runtime conf is rotation (`/etc/log_rotation_script.sh`, local); **the
+":2018 remote relay" is a myth** — `tcptunnelling` is a boost.asio TCP *server* that fans LUCI alerts out to whoever
+connects, with no outbound connect and no relay host in its strings, so **the Arylic app reaches the box on the LAN
+only** (earlier revisions of this doc said otherwise); `IoTEnabled=false` and the generic
+`openotaengine.libreiotcloud.com` OTA URL in `factoryEnv.conf` is overridden by `fwdownload_xml`; `AVSEnabled=0` with
+`AlexaClientID` empty (never linked, the `avs-alexa-na.amazon.com` endpoints are dormant); `GoogleCast=false`, so
+`CastUsageReport=true` and the Breakpad `crash_uploader` (`//third_party/castlite`, `clients2.google.com/cr/report`)
+never run and `S84librecast_lite`'s `ping 8.8.8.8` / `curl -I google.com` loop never starts; `TuneInLoginStatus=Logout`
+(the `report.core-api.tunein.com/report/{listen,stream}` calls in `UIframework` fire only while a TuneIn station plays);
+Airable, Qobuz, Roon, Matter off; `libre_lft` is a factory-test tool nothing launches. `rakoit_app`'s hosts are its
+providers (TuneIn, radio-browser, Qobuz, `api.sound-machine.com`) — none contacted with those services unused; the 398
+`rsproxy.cn` strings are the Rust crate mirror it was built through, not an endpoint.
+
+**LAN-only broadcasts** (anyone on the network, no auth): mDNS (`Living._spotify-connect`, `_airplay`, `_raop`),
+LSSDP/SSDP (name, wlan MAC, firmware), the DHCP hostname (`dhcpcd -h Living`), the BLE GATT setup service — the room
+name, the MACs and the firmware version are public to the household and its guests.
+
+**The one thing to know about: the LibreWireless log report.** `system_monitor` (running since boot) is a Breakpad
+crash collector and log-report agent. It listens on `/tmp/crash_socket` and on LUCI MsgBox **651**
+(`LUCI_MESSAGEBOX_LOG_DUMP`). When triggered it runs **`GetAllENV`** — the *whole* env store: Wi-Fi PSK, Spotify
+blob, web password, everything — plus `ifconfig`, `ps`, `logctrl -l`, `date`; tars `/var/log/syslog/` and
+`/data/log/syslog/` (which carry the Spotify username and login blob in clear, §15) and `/tmp/cast/cast.log`;
+writes `info.json` (serial, MAC, UUID, customer id, MCU version); AES-256-CBC-encrypts the bundle with a key the
+strings suggest is SHA-256 of a **passphrase hard-coded in the binary**; and SFTPs it (libcurl + libssh2, **user and
+password also hard-coded** — deliberately not reproduced here) to **`logs.librewireless.com`** (`sftp://…:53792`,
+`/logs/LS8/`; AWS us-east-1, 3.232.244.152), retrying for a minute ("Terminating upload after 1 minute"). Triggers:
+(1) a crash in any daemon linked with `libcrash_handler.so` — `airplaydemo`, `audionexus`, `system_monitor`, and
+**everything that loads `libenvitems.so`**, the Spotify engine included; a crash may also `reboot`; (2) "User triggered
+the log report using button" — a front-panel combo; (3) the web page's log download (`USBLOGS`); (4) MsgBox 651 from
+any LUCI client — the LAN (:7777), the :2018 tunnel, the vendor app. **Status on this unit: never fired.** The retained
+logs show only its start-up lines (`Server listening..` on 2026-09-04 14:56); `/tmp/libre/logdump/`,
+`/tmp/libre/system_monitor/`, `/data/libre/system_monitor/` are empty; `logpolicystate=false`. Armed, not active. As
+the bundle is encrypted for the vendor, the concern is LibreWireless holding your Wi-Fi password and Spotify login
+after a crash — not an eavesdropper.
+
+**Who ends up knowing what (normal operation):**
+- **Spotify** — your account, that a device called *Living* (Arylic LP10) is online, and what it plays. Like any Connect speaker.
+- **Arylic / RAKOIT** — that the unit with this MAC and serial is on firmware 8530 at your public IP, every 4 h; a bare index fetch every 10 h.
+- **LibreWireless** — nothing, unless the log report fires; then potentially everything in the env store.
+- **Google** — hosts Spotify's access point; sees one `HEAD` at boot. **Cloudflare / Google / the ISP** see the DNS names, because the router hands out their resolvers.
+- **Nobody** — the SSID/PSK, the LAN layout, the logs, who is home.
+- **Your own LAN** — a root shell over ADB (§9), the room name, the firmware.
+
+**Hardening without writing to the box** (router-side; device-side env edits are writes and out of scope here):
+block `logs.librewireless.com` by name if the log report must never succeed (it gives up after a minute); block
+`*.rakoit-ota.com` / `*.rakoit.com` to stop the 4-hourly identifier beacon and the loader — you lose OTAs, though
+`lp10 sweep` still asks the manifest from the Mac; put the LP10 on an IoT/guest network **with client isolation** so
+phones and gadgets cannot reach adb :5555 / telnet :23; never port-forward to it. `lp10` itself only ever reads from
+the box (Appendix B).
+
+**Vendor daemon:** `/factory/custom/csys/bin/daemon` (signed, verified at boot by `S99zcustomapp` against
+`/etc/swupdate-public.pem`) is the app loader of §10.2 — started as `daemon 127.0.0.1`, it talks LUCI locally and
+fetches the index above (on 9243 it was a simpler glue that read a `daemon.ini` URL, "PROTOCOL v1.0", and reported
+fw/version).
 
 ---
 
@@ -1236,6 +1310,14 @@ sshx 'tr "\0" "\n" < /proc/$(pidof spotifymusicpro)/environ | grep ^SSH_'   # em
 sshx 'cat /proc/stat | grep btime; cat /proc/cmdline'          # last boot + reboot_mode
 sshx 'grep -h "Periodic OTA trigger\|error string" /tmp/syslog/messages.log | tail'   # the box's own 4-hourly check (§10.1)
 sshx 'openssl x509 -in /factory/libre/luci/deviceCert.pem -noout -subject -issuer'
+# what talks to the internet right now (§10.4): sockets whose peer is neither loopback nor 192.168.x — hex, little-endian
+sshx 'cat /proc/net/tcp /proc/net/tcp6 /proc/net/udp' | awk '$3 !~ /^(0+|0100007F|0100A8C0|0+A8C0):/ && $3 !~ /A8C0:/'   # F77F9A68:0FE6 = 104.154.127.247:4070
+sshx 'for p in /proc/[0-9]*; do for f in $p/fd/*; do l=$(readlink $f); case $l in socket:*) echo "${p#/proc/} ${l#socket:} $(tr "\0" " " < $p/cmdline | cut -c1-40)";; esac; done; done 2>/dev/null' | grep -v username   # inode → process
+sshx 'grep -v "^\s*#" /etc/rsyslog.conf /tmp/rsyslogdconf/*.conf | grep -E "@|omfwd|omrelp"; ls /etc/cron* /var/spool/cron 2>&1'   # no remote syslog, no cron
+sshx 'grep -a "payload =" /var/log/syslog/messages.log | tail -1'          # exactly what the 4-hourly OTA check sends
+sshx 'strings -n 6 /usr/bin/system_monitor | grep -nE "sftp://|librewireless|GetAllENV|crash_socket"'   # the log-report pipeline — do NOT copy the credential strings beside these
+# from the Mac: adb needs no key (brew install --cask android-platform-tools) — a root shell, so look, do not touch
+adb connect <device-ip>:5555 && adb shell id && adb disconnect
 # env KEY NAMES only — never dump values (SP_BLOB / *Secret / *Password / PSK):
 sshx "sqlite3 /data/libre/env/env.db 'select key from ENV_systemENV order by key'"
 ```
@@ -1370,3 +1452,10 @@ all unchanged. Seven short read-only ssh passes plus ssh-free LSSDP / ZeroConf /
 the env store was read through sqlite (key names and the two Spotify rows only). What had changed was a
 power-cycle on 2026-09-04 and, eleven minutes after it, a switch to the Spotify Pro engine made from `lp10`.
 Nothing was written to the device.*
+
+*Phone-home audit **2026-09-13** (§10.4, §9): five short read-only ssh passes — socket tables with inode→process
+mapping, a 25-minute 2-second sampler of non-LAN endpoints, `strings` over every running binary and every init
+script/config for URLs and hostnames, rsyslog/cron/env flags, the retained syslog 2026-08-27 → 09-13 — plus reverse
+DNS / whois of each endpoint and a 24-byte ADB handshake from the Mac. Live traffic was Spotify alone; the tunnel
+daemon's "cloud relay" role was retracted; the LibreWireless log-report uploader was found armed but never fired.
+Nothing was written to the device; the hard-coded upload credentials in `system_monitor` were not copied anywhere.*

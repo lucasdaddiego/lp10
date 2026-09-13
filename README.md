@@ -393,12 +393,16 @@ The **services** matrix is read live from the device (a one-shot read at connect
 `pidof` for the running daemons (Spotify / AirPlay / DLNA / Bluetooth), a `getenv`
 for the marketed-but-disabled features (Cast / Tidal / Qobuz / USB), and a scan of
 `/proc/net/tcp` for the **lan** group — the unauthenticated listeners anyone on the
-LAN can reach: **telnet :23** and **adb :5555** (a root shell, shown in the warn
-colour) and the vendor's own web page :80 and control tunnel :2018 (by design, dim).
-lp10 only reports them; closing telnet/adb is a device-side change. Capabilities the
+LAN can reach: **telnet :23** (root login, asks the password) and **adb :5555** (a
+root shell with **no authentication at all**, shown in the warn colour) and the
+vendor's own web page :80 and control tunnel :2018 (by design, dim). lp10 only
+reports them; closing telnet/adb is a device-side change. Capabilities the
 LP10 doesn't actually offer — Roon / Alexa / Matter, LibreWireless firmware baggage
 that's never on the spec sheet — are not shown; toggle the rest in the device's own
-setup (the Arylic / 4STREAM app), not here.
+setup (the Arylic / 4STREAM app), not here. What the box sends off the LAN on its own
+— the Spotify session, a 4-hourly OTA check carrying its MAC and serial, and a vendor
+log uploader that is installed but has never fired — is audited in
+[docs/TEARDOWN.md §10.4](docs/TEARDOWN.md).
 
 The resource gauges and the network stats (throughput, Wi-Fi signal, and the three
 ping round-trips) are collected on the device **only while this overlay is open** —
