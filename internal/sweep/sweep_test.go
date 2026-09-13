@@ -229,7 +229,8 @@ func TestRunAssemblesTheReport(t *testing.T) {
 	Write(&out, r, nil, time.Now())
 	for _, want := range []string{
 		"firmware       AR241CE_8530 · mcu 23",
-		"boot           Sep 4 14:55 · power-on · up 8d 0h",
+		// btime renders in the reader's zone, so the expectation must too (CI runs in UTC)
+		"boot           " + time.Unix(1788544542, 0).Format("Jan 2 15:04") + " · power-on · up 8d 0h",
 		"vendor app     v32 · md5 9aa7f360179d…",
 		"manifest       no update for AR241CE_8530",
 		"newest bundle  AR241CE_8530 · " + cdn.URL,
