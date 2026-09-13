@@ -624,7 +624,8 @@ func fmtDur(d time.Duration) string {
 }
 
 // Main is the `lp10 sweep` entry point: parses the flags, runs the sweep,
-// prints the report (or the JSON), and saves the baseline. Returns the exit
+// prints the report (or the JSON), and saves the baseline — unless the run was
+// interrupted, which leaves the previous baseline in place. Returns the exit
 // code: 0, 1 when the ssh inventory failed (the report still prints), 2 for a
 // bad flag.
 func Main(ctx context.Context, cfg config.Config, args []string, stdout, stderr io.Writer) int {
@@ -649,7 +650,14 @@ func Main(ctx context.Context, cfg config.Config, args []string, stdout, stderr 
 		Write(stdout, r, prev, time.Now())
 	}
 	if !*noSave {
-		if err := Save(path, r); err != nil {
+		if ctx.Err() != nil {
+			// Ctrl-C mid-run degrades every probe at once (ssh, the LAN
+			// answers, the vendor all report the cancellation), and Diff
+			// skips empty pairs — saved as the baseline, that hollow report
+			// would make the next sweep say "nothing changed" after a real
+			// OTA. Keep the last complete one.
+			fmt.Fprintln(stderr, "lp10 sweep: interrupted — baseline left in place")
+		} else if err := Save(path, r); err != nil {
 			fmt.Fprintf(stderr, "lp10 sweep: baseline not saved: %v\n", err)
 		}
 	}

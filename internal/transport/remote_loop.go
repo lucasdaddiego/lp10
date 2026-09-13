@@ -49,7 +49,7 @@ import (
 //   - per tick the only forks are the LUCI_local device-API reads, and even
 //     those are trimmed: play-state (-r 51) and volume (-r 64) stay per-tick
 //     (they're data-bearing for the watchdog and must reflect external changes
-//     promptly), but position (-r 49) is polled only every 3rd tick (pc49 gate)
+//     promptly), but position (-r 49) is polled only every 5th tick (pc49 gate)
 //     since the TUI extrapolates position locally and only needs a periodic
 //     resync — any command, play-state flip, or detected track skip forces an
 //     immediate re-read. The per-tick position/play values use echo (a builtin)

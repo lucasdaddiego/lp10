@@ -357,7 +357,7 @@ while :; do
     i=15;
   fi;
 
-  # @@p position (reg 49) — polled every 3rd tick (pc49) unless idle; rd flags a read
+  # @@p position (reg 49) — polled every 5th tick (pc49) unless idle; rd flags a read
   echo @@p; pn=; rd=0; pc49=$((pc49-1));
   if [ $pv = 1 ] && [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then
     pq=$(LUCI_local -r 49 2>/dev/null); echo "$pq"; pn=${pq#*Data:}; pn=${pn%% *}; rd=1; pc49=5;

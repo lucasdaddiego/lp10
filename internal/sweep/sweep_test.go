@@ -361,3 +361,45 @@ func TestMainFlagsAndExitCodes(t *testing.T) {
 		t.Error("baseline not saved")
 	}
 }
+
+// An interrupted sweep (Ctrl-C during the run) degrades every probe at once;
+// saved as the baseline, that hollow report would make the next sweep diff
+// against nothing and print "nothing changed" after a real OTA. The previous
+// baseline must survive it.
+func TestMainInterruptedKeepsBaseline(t *testing.T) {
+	t.Setenv("LP10_STATE_DIR", t.TempDir())
+	probesFor = func() Probes {
+		return Probes{
+			SSH: func(ctx context.Context, _ config.Config, _ string) (string, error) {
+				return "", ctx.Err()
+			},
+			LSSDP: func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
+				return discovery.LSSDPInfo{}, false
+			},
+			FindZC: func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
+				return discovery.SpotifyEndpoint{}, false
+			},
+			ProbeZC: func(context.Context, string, time.Duration) (discovery.SpotifyZCInfo, bool) {
+				return discovery.SpotifyZCInfo{}, false
+			},
+		}
+	}
+	t.Cleanup(func() { probesFor = DefaultProbes })
+	cfg := config.Config{Host: "192.0.2.13", User: "root"}
+	path := config.SweepPath(cfg)
+	seed := Report{At: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Host: cfg.Host, Build: "AR241CE_8530", MCU: "23"}
+	if err := Save(path, seed); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr bytes.Buffer
+	Main(ctx, cfg, nil, &stdout, &stderr)
+	got := Load(path)
+	if got == nil || got.Build != seed.Build || got.MCU != seed.MCU || !got.At.Equal(seed.At) {
+		t.Fatalf("interrupted sweep replaced the baseline: %+v\nstderr:\n%s", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "interrupted") {
+		t.Errorf("stderr should say the baseline was left in place, got:\n%s", stderr.String())
+	}
+}

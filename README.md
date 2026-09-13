@@ -356,7 +356,7 @@ stacked column when narrow):
 ┃    line out  3.5 mm · 1 Vrms (no power amp)                   on  ● AirPlay 2 ● Bluetooth ● DLNA / UPnP ● Spotify    ┃
 ┃    optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz                  off ○ Google Cast ○ Qobuz ○ Tidal ○ USB playback       ┃
 ┃    radio     dual-band 802.11ac · BT 5.0                      lan ● telnet :23 ● adb :5555 ● web :80 ● control :2018 ┃
-┃    soc       Amlogic A113L · 2× Cortex-A35                    env-gated · toggle in the Arylic app                   ┃
+┃    soc       Amlogic A113L · 2× Cortex-A35                    env-gated · c to switch them here                      ┃
 ┃                                                                                                                      ┃
 ┃  live · u asks the vendor about updates · esc player · ? help                             ● good   ● warn   ● fault  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -398,8 +398,8 @@ root shell with **no authentication at all**, shown in the warn colour) and the
 vendor's own web page :80 and control tunnel :2018 (by design, dim). lp10 only
 reports them; closing telnet/adb is a device-side change. Capabilities the
 LP10 doesn't actually offer — Roon / Alexa / Matter, LibreWireless firmware baggage
-that's never on the spec sheet — are not shown; toggle the rest in the device's own
-setup (the Arylic / 4STREAM app), not here. What the box sends off the LAN on its own
+that's never on the spec sheet — are not shown; the services view (`3` / `c`) is
+where the env-gated ones are switched. What the box sends off the LAN on its own
 — the Spotify session, a 4-hourly OTA check carrying its MAC and serial, and a vendor
 log uploader that is installed but has never fired — is audited in
 [docs/TEARDOWN.md §10.4](docs/TEARDOWN.md).
@@ -412,7 +412,8 @@ lands, so an intermittent glitch (a powerline link dropping out, say) is visible
 after the fact. The internet-ping target is the
 `ping_host` config key (default `spotify.com`); after the first successful ping the
 loop pins the name to its resolved IP, so a dying DNS resolver can't stall the
-on-device loop mid-session. Any key returns to the dashboard.
+on-device loop mid-session. `esc`, `q`, `5` or `i` return to the player; the
+playback keys work from here too.
 
 ## How it works
 
@@ -443,9 +444,10 @@ BusyBox-ash loop on the device streams framed snapshots:
   overlay is open**. The per-tick work is kept to the minimum of device-API
   reads — every other stat comes from `/proc` and `/sys` via shell builtins.
 - **Whitelisted commands** — input to the device is a whitelist of
-  `<mid> <data>` lines (transport, volume, and a stats-on/off toggle), never
-  `eval`. Failed sends are held and delivered in order on reconnect; stale ones
-  are dropped visibly.
+  `<mid> <data>` lines (transport, volume, the stats / player-visible / night-mode
+  switches, the service toggle and the log-tail request — each payload checked
+  against its own whitelist), never `eval`. Failed sends are held and delivered
+  in order on reconnect; stale ones are dropped visibly.
 - **Secret-store auth** — password-only via `SSH_ASKPASS`: the binary re-execs
   itself and answers ssh's prompt from the OS secret store (the macOS login
   Keychain, or the Secret Service via `secret-tool` on Linux).
