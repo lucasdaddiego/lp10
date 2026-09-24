@@ -246,6 +246,28 @@ func TestStateTwoLogSources(t *testing.T) {
 	}
 }
 
+// The Spotify engine logs its reusable login blob and the account name in
+// clear. Whatever the box-side filter lets through, no such line reaches
+// either log view — matched case-blind, on the stripped text, so a zero-width
+// space inside the word cannot hide it — while the lines around it still do.
+func TestParseLogsDropsSpotifyCredentials(t *testing.T) {
+	tail := []string{
+		" Sep 23 10:00:01:000001 I/spotifymusicpro[5673]: SPOTIFY: SAME USERNAME IS THERE STORE THE BLOB AQDxSECRETBLOBx== IN ENV !!",
+		" Sep 23 10:00:01:000002 I/spotifymusicpro[5673]: SPOTIFY: DIFF USER LOGGED IN STORE USERNAME someuser AND THE BLOB AQDxSECRETBLOBx== IN ENV !!",
+		" Sep 23 10:00:01:000003 I/newspotifyhifi[811]: spotify: same username is there store the blob AQDxSECRET== in env",
+		" [2026-09-23 10:00:01.000] [DEBUG] [luci-rx] BL\u200bOB AQDxSECRET==",
+		" Sep 23 10:00:02:000001 E/sddp: SDDP_Service: SDDP is not enabled",
+	}
+	st := NewState()
+	ApplyRecord(st, Record{"l": tail, "L": tail})
+	for _, src := range []LogSource{LogSyslog, LogVendor} {
+		lines, _ := st.LogView(src)
+		if want := []string{"Sep 23 10:00:02:000001 E/sddp: SDDP_Service: SDDP is not enabled"}; !reflect.DeepEqual(lines, want) {
+			t.Errorf("log source %d = %q, want only %q", src, lines, want)
+		}
+	}
+}
+
 // The firmware-check request is a one-shot flag the overlay raises and the
 // worker takes, carrying the build to ask about: the ssh stream's reg-5 build
 // first, the LSSDP answer's as the fallback, "" before either has arrived.
@@ -339,5 +361,40 @@ func TestValidatePayloadPlayerVisible(t *testing.T) {
 	st.SetProbeQuiet(true)
 	if st.ProbeWanted() {
 		t.Error("quiet should stop connected-cadence probes")
+	}
+}
+
+// The capability block is stamped with its arrival, so the engine age in it
+// can keep counting from its read (the block is re-read only at connect and
+// after a toggle).
+func TestApplyRecordStampsTheCapabilityRead(t *testing.T) {
+	st := NewState()
+	before := time.Now()
+	ApplyRecord(st, Record{"c": {"spotify.eng=spotifymusicpro", "spotify.proc=120 0"}})
+	if at := st.DiagnosticView(time.Now()).ConfAt; at.Before(before) || at.After(time.Now()) {
+		t.Errorf("ConfAt = %v, want the arrival (after %v)", at, before)
+	}
+}
+
+// VolLive turns true with the first volume read of the run and stays so: until
+// it, Vol is the level the previous run cached; after it, a blip keeps the
+// level in hand (it is this run's own).
+func TestSnapshotVolLive(t *testing.T) {
+	st := NewState()
+	st.Preload(nil, 0, 40)
+	if st.Snap().VolLive {
+		t.Fatal("a cached level read as live")
+	}
+	ApplyRecord(st, Record{"t": {"MID-Read:51 Data:0 Length:1"}})
+	if st.Snap().VolLive {
+		t.Error("a record without @@v made the volume live")
+	}
+	ApplyRecord(st, Record{"v": {"MID-Read:64 Data:70 Length:2"}})
+	if s := st.Snap(); !s.VolLive || s.Vol != 70 {
+		t.Errorf("after the live read: %+v", s)
+	}
+	st.Disconnect()
+	if !st.Snap().VolLive {
+		t.Error("an outage forgot this run's live read")
 	}
 }

@@ -573,7 +573,7 @@ func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 		out := []string{ps.dim.render(Clip(msg, w))}
 		switch {
 		case s.Connected:
-			out = append(out, ps.dmr.render(Clip("start something on "+sourcesOn(m.st.ConfView()), w)))
+			out = append(out, ps.dmr.render(Clip(wakeHint(m.st.ConfView()), w)))
 		case s.Error != "":
 			// disconnected: a calm reason under "connecting…", not a red bottom line
 			out = append(out, ps.dmr.render(Clip(friendlyError(s.Error), w)))
@@ -977,8 +977,8 @@ const eqHint = "↑↓ select · ←→ adjust · enter toggle · esc player · 
 // page has no room for — shown for four seconds in every sixteen, so the help
 // page is not the only place they appear.
 var playerHintsRare = []string{
-	"n · p next · previous · +/- volume · S cancel sleep · t remaining ⇄ elapsed · e c l i views by letter · tab cycles",
-	"n · p next · previous · S cancel sleep · t remaining ⇄ elapsed · tab cycles the views",
+	"n · p next · previous · +/- volume · S cancel sleep · t remaining ⇄ total · e c l i views by letter · tab cycles",
+	"n · p next · previous · S cancel sleep · t remaining ⇄ total · tab cycles the views",
 	"n · p next · previous · S cancel sleep · t remaining",
 }
 

@@ -97,7 +97,7 @@ func StartRuntime(st *protocol.State, cfg config.Config) *Runtime {
 		control:    newRunControl(),
 		cancel:     cancel,
 	}
-	r.wg.Go(func() { streamWorker(st, cfg, r.snapshot, r.procs, r.control) })
+	r.wg.Go(func() { streamWorker(ctx, st, cfg, r.snapshot, r.procs, r.control) })
 	r.wg.Go(func() { commandWorker(st, r.procs, r.control, r.Commands, CommandDeadline) })
 	r.wg.Go(func() { watchdog(st, r.procs, r.control, SilentAfter, ConnectWindow, DatalessAfter) })
 	r.wg.Go(func() { tunnelWorker(ctx, r.control, st, cfg, r.EQCommands) })

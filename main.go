@@ -11,7 +11,7 @@
 // Host keys are deliberately not verified (LAN device, ramfs host keys).
 //
 // Config: ~/.config/lp10/config.toml (optional) — host, user, name, vol_step,
-// ping_host, discover, art, art_mode. Unless discover=false or LP10_HOST is
+// ping_host, discover, art, art_mode, theme. Unless discover=false or LP10_HOST is
 // set, a startup mDNS query finds the LP10 on the LAN (am=LP10) — the device's
 // own LSSDP responder (UDP:1800) gets a window when mDNS is quiet — and uses
 // its current address, with host as the fallback. State: ~/.local/state/lp10/.

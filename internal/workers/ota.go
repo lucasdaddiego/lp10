@@ -1,9 +1,9 @@
 // The firmware-check worker: asks the vendor's OTA manifest whether the
 // device's build is current. This is the one thing lp10 does that leaves the
-// LAN on the device's behalf, so it is strictly on demand — the diagnostics
-// overlay raises a request when it opens, and nothing else does — and it
-// answers a repeat request from its last verdict for a while rather than
-// asking the vendor again.
+// LAN on the device's behalf, so it is strictly on demand — the `u` key in the
+// diagnostics raises a request, and nothing else does (opening the overlay
+// only shows the box's own 4-hourly verdict) — and it answers a repeat request
+// from its last verdict for a while rather than asking the vendor again.
 //
 // The endpoint is the same public, unauthenticated POST the box itself uses
 // (found in the teardown; firmware 8530 moved it to lp10.arylic.rakoit-ota.com
@@ -34,8 +34,8 @@ const (
 	otaTimeout     = 6 * time.Second
 	otaPoll        = 500 * time.Millisecond
 	// otaFresh is how long a verdict answers repeat requests without another
-	// round trip to the vendor: reopening the overlay a few times in a session
-	// should not mean a few POSTs.
+	// round trip to the vendor: pressing `u` a few times in a session should
+	// not mean a few POSTs.
 	otaFresh   = 30 * time.Minute
 	otaMaxBody = 16 << 10
 )

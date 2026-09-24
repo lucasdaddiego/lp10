@@ -9,9 +9,10 @@ import (
 )
 
 // streamOnce is one ssh connection lifecycle with a throwaway process slot and
-// no snapshot persistence — the shape the focused stream tests drive.
+// stall streak, no snapshot persistence and no internet-ping target — the shape
+// the focused stream tests drive.
 func streamOnce(st *protocol.State, cfg config.Config, backoff time.Duration, control *runControl) time.Duration {
-	return streamOnceWithSnapshot(st, cfg, backoff, "", newProcessSlot(), control)
+	return streamOnceWithSnapshot(st, cfg, "", backoff, &stallStreak{}, "", newProcessSlot(), control)
 }
 
 // tunnelOnce is one tunnel connection lifecycle with no carried command.

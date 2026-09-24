@@ -109,7 +109,7 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 			wait = probeQuietPoll // see lssdpWorker: nobody is looking
 			continue
 		}
-		probe()
+		fence(st, control, "zeroconf worker", probe) // it parses what the LAN answers
 		if st.Snap().Connected {
 			wait = zcConnected
 		} else {

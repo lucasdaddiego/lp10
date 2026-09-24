@@ -6,6 +6,7 @@ package workers
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -60,6 +61,72 @@ var classify = transport.ClassifyStderr
 // shorten it.
 var backoffResetAfter = 8 * time.Second
 
+// Lockout insurance. The box's sshd refuses password auth for minutes once
+// logins come too fast (roughly the fifth within a few minutes), and the
+// reconnect backoff cannot see a stall that recurs every session: a session
+// that delivered for backoffResetAfter resets it, and the watchdog ends the
+// stall SilentAfter later, so a stall like the DNS-dead loop's paced a fresh
+// login every ~15 s. stallStreak holds the next spawn off instead. Vars so
+// tests can shorten them.
+var (
+	// stallHold is the least wait before the next spawn once two stalls come
+	// in a row; each further stall doubles it, up to stallHoldMax.
+	stallHold    = 30 * time.Second
+	stallHoldMax = 2 * time.Minute
+	// stallResetAfter is how long a session must deliver to end a streak: one
+	// stall in a long healthy session is not a pattern, and reconnects at once.
+	stallResetAfter = 2 * time.Minute
+)
+
+// stallStreak counts the logins in a row that ended before they had delivered
+// player data for stallResetAfter — however they ended: the watchdog killing a
+// stalled or wedged session, or the loop exiting on its own right after the
+// login, as a loop that dies at startup does every session. A record of any
+// kind proves the login, not only player data (a loop whose LUCI reads wedge
+// sends empty frames until the watchdog's dataless kill), and so does a
+// watchdog kill before the first record: ssh's own ConnectTimeout and a refused
+// password end a session long before the connect window, so a session still
+// there to be killed had connected, and its loop printed nothing. The first
+// short login reconnects on the normal backoff — the user is watching the
+// player — and each one after it holds the next spawn for at least stallHold,
+// doubling up to stallHoldMax. A session that delivers for stallResetAfter ends
+// the streak however it ends, so a long session lost once is not a streak. A
+// refused login or a spawn failure leaves the streak as it is: no login
+// happened, and only a long session proves the stall gone.
+type stallStreak struct {
+	n    int           // short stalls in a row
+	hold time.Duration // the hold the latest of them earned
+}
+
+// after records how a session ended — whether it had logged in, and how long
+// it delivered player data — and returns the least wait before the next spawn,
+// or 0 when the backoff alone applies.
+func (s *stallStreak) after(loggedIn bool, delivered time.Duration) time.Duration {
+	switch {
+	case delivered >= stallResetAfter:
+		*s = stallStreak{}
+		return 0
+	case !loggedIn:
+		return 0
+	}
+	s.n++
+	switch s.n {
+	case 1:
+		return 0
+	case 2:
+		s.hold = stallHold
+	default:
+		s.hold = min(2*s.hold, stallHoldMax)
+	}
+	return s.hold
+}
+
+// stallNote says why the next spawn holds: the stalls in a row, and the wait.
+func stallNote(n int, wait time.Duration) string {
+	secs := int((wait + time.Second - 1) / time.Second) // whole seconds, rounded up
+	return fmt.Sprintf("%d short sessions in a row · waiting %d s — the box's sshd locks out rapid logins", n, secs)
+}
+
 // boundedLines yields lines from r, each at most maxLine bytes: a line ends at
 // '\n' or once the cap is hit. Returns ("", false) at EOF with nothing
 // buffered. ReadSlice serves a whole line from bufio's buffer in one call (vs
@@ -93,26 +160,44 @@ func boundedLines(r io.Reader) func() (string, bool) {
 	}
 }
 
-// streamWorker is the reconnect loop; it never dies.
-func streamWorker(st *protocol.State, cfg config.Config, snapshotPath string, procs *processSlot, control *runControl) {
+// fence runs fn under a recover that notes the panic and holds the worker a
+// second, so a deterministic failure cannot spin. The stream worker runs every
+// connection under it, and so does each worker that parses what the LAN sends
+// (the ZeroConf and LSSDP probes, the cover art): one parser bug there must
+// cost a noted error, not the program — a panic that escapes a worker
+// goroutine kills the process with the terminal still in raw mode.
+func fence(st *protocol.State, control *runControl, name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			st.Note(fmt.Sprintf("%s: %v", name, r))
+			control.stop.Wait(time.Second)
+		}
+	}()
+	fn()
+}
+
+// streamWorker is the reconnect loop; it never dies. Each spawn first resolves
+// the diagnostics ping target on the laptop (transport.PingTarget): the loop
+// only ever pings an address, and a failed lookup keeps the last good one. The
+// backoff and the stall streak carry from one session to the next.
+func streamWorker(ctx context.Context, st *protocol.State, cfg config.Config, snapshotPath string, procs *processSlot, control *runControl) {
 	backoff := InitialBackoff
+	var stalls stallStreak
+	pingIP := ""
 	for !control.stop.IsSet() {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					st.Note(fmt.Sprintf("stream worker: %v", r))
-					control.stop.Wait(time.Second)
-				}
-			}()
-			backoff = streamOnceWithSnapshot(st, cfg, backoff, snapshotPath, procs, control)
-		}()
+		fence(st, control, "stream worker", func() {
+			pingIP = transport.PingTarget(ctx, cfg.PingHost, pingIP)
+			backoff = streamOnceWithSnapshot(st, cfg, pingIP, backoff, &stalls, snapshotPath, procs, control)
+		})
 	}
 }
 
 // streamOnceWithSnapshot is one connection lifecycle, returning the next
-// reconnect backoff. stderr goes to a temp file, not a pipe, so ssh can never
-// block on a full stderr buffer; the residual is read post-mortem.
-func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.Duration, snapshotPath string, procs *processSlot, control *runControl) time.Duration {
+// reconnect backoff; it records the session's end in stalls. pingIP is the
+// loop's internet-ping target (an IPv4, or "" for none). stderr goes to a temp
+// file, not a pipe, so ssh can never block on a full stderr buffer; the
+// residual is read post-mortem.
+func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, pingIP string, backoff time.Duration, stalls *stallStreak, snapshotPath string, procs *processSlot, control *runControl) time.Duration {
 	// failStart notes a spawn failure, releases whatever pipes exist so far,
 	// and holds the retry cadence — the shared tail of every pre-launch error.
 	failStart := func(err error, closers ...io.Closer) time.Duration {
@@ -133,7 +218,7 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 		os.Remove(errf.Name())
 	}()
 
-	argv := append(transport.SSHArgv(cfg), transport.RemoteLoop(cfg.PingHost))
+	argv := append(transport.SSHArgv(cfg), transport.RemoteLoop(pingIP))
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = transport.SpawnEnv()
 	cmd.Stderr = errf
@@ -177,18 +262,22 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	// unfenced panic here with a plain post-loop reap would orphan the live ssh
 	// child (holding one of the device's scarce sshd slots) for the rest of the
 	// process. The defer keeps the reap-before-stderr-read ordering: the child
-	// must be dead before the residual is read as complete.
+	// must be dead before the residual is read as complete. What the session
+	// delivered outlives it: the stall streak below reads it.
+	loggedIn := false                 // a record arrived: ssh logged in and the loop ran
+	var firstData, lastData time.Time // the session's first and latest player data
 	func() {
 		defer reap(st, procs, proc)
 		if control.stop.IsSet() {
 			return
 		}
-		var firstData, lastPersist time.Time
+		var lastPersist time.Time
 		nextLine := boundedLines(outR)
 		for rec := range protocol.IterRecords(nextLine) {
 			if control.stop.IsSet() {
 				break
 			}
+			loggedIn = true
 			hadData, ok := applyRecordSafe(st, rec)
 			if !ok || !hadData {
 				continue
@@ -197,6 +286,7 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 			if firstData.IsZero() {
 				firstData = now
 			}
+			lastData = now
 			if now.Sub(firstData) >= backoffResetAfter {
 				backoff = InitialBackoff
 			}
@@ -211,6 +301,9 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 	if control.stop.IsSet() {
 		return backoff
 	}
+	// Recorded before the stderr verdict, so a long session ends the streak
+	// whatever ended it.
+	hold := stalls.after(loggedIn || proc.killed.Load(), lastData.Sub(firstData))
 	errf.Seek(0, io.SeekStart)
 	rb, _ := io.ReadAll(errf)
 	residual := string(rb)
@@ -220,12 +313,21 @@ func streamOnceWithSnapshot(st *protocol.State, cfg config.Config, backoff time.
 		if st.SetFatal(terr.Error()) >= fatalEscalateAfter {
 			wait = min(wait*6, time.Minute)
 		}
-		control.stop.Wait(wait)
+		control.stop.Wait(max(wait, hold)) // a fatal cadence never undercuts a stall's hold
 		return backoff
 	}
 	if trimmed := strings.TrimSpace(residual); trimmed != "" {
 		lines := strings.Split(trimmed, "\n")
 		st.Note(clip160(lines[len(lines)-1]))
+	}
+	if hold > 0 {
+		// The hold only lengthens the wait: it tops it up to hold, and the
+		// backoff still runs (and doubles) inside it.
+		hold = max(hold, backoff)
+		st.Note(stallNote(stalls.n, hold))
+		if control.stop.Wait(hold - backoff) {
+			return backoff
+		}
 	}
 	return waitBackoff(control, backoff)
 }
@@ -359,22 +461,27 @@ drain:
 
 	now := time.Now()
 	var fresh []protocol.Command
+	lost := false
 	for _, c := range batch {
-		if now.Sub(c.TS) <= deadline {
+		switch {
+		case now.Sub(c.TS) <= deadline:
 			fresh = append(fresh, c)
+		case userCommand(c.Mid):
+			lost = true
 		}
 	}
-	if len(fresh) < len(batch) {
+	if lost {
 		st.Note("command not delivered")
 	}
 
-	sent := true
+	sent, volume := true, false
 	if len(fresh) > 0 {
 		reduced := protocol.ReduceCommands(fresh)
 		var sb strings.Builder
 		for _, c := range reduced {
 			if protocol.ValidatePayload(c.Mid, c.Data) {
 				fmt.Fprintf(&sb, "%d %s\n", c.Mid, c.Data)
+				volume = volume || c.Mid == 64
 			}
 		}
 		lines := sb.String()
@@ -393,14 +500,43 @@ drain:
 		control.drained.Set()
 		return true
 	}
-	if !sent && control.stop.Wait(200*time.Millisecond) {
+	switch {
+	case !sent:
+		return control.stop.Wait(200 * time.Millisecond)
+	case volume:
+		// A volume set just went out: pause before the next batch, so a held
+		// volume key's repeats pile up in the queue and the next drain writes
+		// only the newest level (ReduceCommands keeps the last 64 — the levels
+		// are absolute, so the ones between are superseded). Written one per
+		// repeat, a 30 ms key repeat queued sets on the box faster than
+		// LUCI_local runs them, and the loop's burst drain never ended.
+		return control.stop.Wait(volumePace)
+	}
+	return false
+}
+
+// volumePace is the least time between two volume writes (see commandOnce):
+// a held key reaches the device as a few sets a second, each the newest
+// level, and a single press still goes out at once.
+const volumePace = 150 * time.Millisecond
+
+// userCommand reports whether mid is something the user asked for — transport,
+// volume, night mode, a service toggle, a log fetch — as opposed to the view
+// flags (90 diagnostics, 94 player-visible) the TUI re-asserts on its own every
+// few seconds. Only lost user intent earns the "command not delivered" note: an
+// expired view flag, noted, would overwrite the real reason the session is
+// down with a message about a command nobody typed.
+func userCommand(mid int) bool {
+	switch mid {
+	case 40, 64, 91, 92, 93:
 		return true
 	}
 	return false
 }
 
 // Watchdog kills a connection that never proved itself, went silent, or wedged
-// data-silent mid-stream.
+// data-silent mid-stream. It marks the process before the kill, so the stream
+// worker can tell a stall from a session that ended on its own (stallStreak).
 func watchdog(st *protocol.State, procs *processSlot, control *runControl, silentAfter, connectWindow, datalessAfter time.Duration) {
 	for !control.stop.Wait(500 * time.Millisecond) {
 		func() {
@@ -421,6 +557,7 @@ func watchdog(st *protocol.State, procs *processSlot, control *runControl, silen
 			wedged := now.Sub(laterTime(spawned, lastData)) > datalessAfter
 			if now.Sub(base) > limit || wedged {
 				if proc.Cmd != nil && proc.Cmd.Process != nil {
+					proc.killed.Store(true)
 					proc.Cmd.Process.Kill()
 				}
 			}

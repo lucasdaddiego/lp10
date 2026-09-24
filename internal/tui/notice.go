@@ -78,7 +78,9 @@ func (m *model) trackConnection(s protocol.Snapshot, now time.Time) {
 }
 
 // startupSummary is the connect greeting: "connected · firmware AR241CE_8530.23.2
-// · Pro engine · 88 reconnects in the log" — whatever of it is known.
+// · Pro engine · 3 reconnects since Sep 23 17:18" — whatever of it is known. The
+// reconnect count names the time the live syslog begins: the file rotates at
+// 1 MiB, so a bare count would not say whether it covers minutes or days.
 func startupSummary(d protocol.DiagnosticSnapshot) string {
 	parts := []string{"connected"}
 	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
@@ -96,7 +98,11 @@ func startupSummary(d protocol.DiagnosticSnapshot) string {
 		}
 	}
 	if d.Ops != nil && d.Ops.ReconnectsOK {
-		parts = append(parts, fmt.Sprintf("%d reconnect%s in the log", d.Ops.Reconnects, plural(d.Ops.Reconnects)))
+		where := "in the log"
+		if d.Ops.LogSinceOK {
+			where = "since " + d.Ops.LogSince.Format("Jan 2 15:04")
+		}
+		parts = append(parts, fmt.Sprintf("%d reconnect%s %s", d.Ops.Reconnects, plural(d.Ops.Reconnects), where))
 	}
 	if d.DevInfo != nil && d.DevInfo.Reboot == "cold_boot" && d.DevInfo.Net != "" {
 		parts = append(parts, "last boot was a power-on")

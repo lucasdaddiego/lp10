@@ -460,7 +460,10 @@ func TestCov_StreamWorkerRecoversPanic(t *testing.T) {
 	st := protocol.NewState()
 	control := newRunControl()
 	done := make(chan struct{})
-	go func() { streamWorker(st, config.Config{}, "", newProcessSlot(), control); close(done) }()
+	go func() {
+		streamWorker(context.Background(), st, config.Config{PingHost: testPingHost}, "", newProcessSlot(), control)
+		close(done)
+	}()
 	defer func() {
 		control.stop.Set()
 		select {

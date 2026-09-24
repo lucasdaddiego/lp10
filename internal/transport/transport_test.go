@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,8 +82,13 @@ func TestAskpassFailureRoundtripsToFatalClass(t *testing.T) {
 
 func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 	body := RemoteLoop("spotify.com")
-	if r := exec.Command("sh", "-n", "-c", body).Run(); r != nil {
-		t.Fatalf("remote loop is not valid shell: %v", r)
+	// The script goes to sh -n on stdin, not as a -c string: BusyBox ash (the
+	// box's shell, which `make busybox` runs this under) ignores -n for a -c
+	// string and runs the whole loop.
+	syntax := exec.Command("sh", "-n")
+	syntax.Stdin = strings.NewReader(body)
+	if out, err := syntax.CombinedOutput(); err != nil {
+		t.Fatalf("remote loop is not valid shell: %v\n%s", err, out)
 	}
 	if !strings.Contains(body, `case "$mid" in 40|64)`) {
 		t.Error("missing command whitelist")
@@ -97,8 +104,8 @@ func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 			t.Errorf("missing wire tag %q", tag)
 		}
 	}
-	// the @@c capability block reads services read-only (pidof / getenv); pr/gv
-	// print "key=value" directly (one exec per service, no capturing subshell), so
+	// the @@c capability block reads services read-only (the /proc comm scan /
+	// getenv); pr/gv print "key=value" directly (no capturing subshell), so
 	// the keys are emitted at runtime rather than literal in the source. The table
 	// is id:envkey:daemon — a service with a daemon reports what is RUNNING next to
 	// what is CONFIGURED, because on this box those two disagree (the device's own
@@ -134,7 +141,7 @@ func TestRemoteLoopIsValidShellAndWhitelistsMids(t *testing.T) {
 		t.Error("gv must strip getenv's \" [ KEY ]: \" prefix before comparing")
 	}
 	// The two config-writing commands and the log fetch.
-	for _, want := range []string{`92) tg "$data"`, `93) case "$data" in 2) echo @@L; tl 2>/dev/null < /lsync/app.log`, "*) echo @@l; lg;;", "@@l"} {
+	for _, want := range []string{`92) tg "$data"`, `al=/lsync/app.log;`, `93) case "$data" in 2) echo @@L; tl 2>/dev/null < $al`, "*) echo @@l; lg;;", "@@l"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing service/log command %q", want)
 		}
@@ -159,18 +166,53 @@ func TestRemoteLoopSplicesMidWhitelist(t *testing.T) {
 	}
 }
 
-func TestRemoteLoopInjectsSanitizedPingHost(t *testing.T) {
-	if !strings.Contains(RemoteLoop("open.spotify.com"), `ph='open.spotify.com';`) {
-		t.Error("ping host should be injected as ph")
+// The loop's internet ping never resolves a name on the box — with the box's
+// resolvers dead one lookup blocked 10–28 s, past the laptop's watchdog — so
+// RemoteLoop substitutes an IPv4 or nothing, whatever it is handed, and the
+// loop never re-targets the ping itself.
+func TestRemoteLoopPingTargetIsIPv4OrNothing(t *testing.T) {
+	cases := map[string]string{
+		"192.0.2.7":        "192.0.2.7",
+		"::ffff:192.0.2.7": "192.0.2.7", // v4-mapped: the IPv4 it carries, dotted
+		"spotify.com":      "",
+		"localhost":        "",
+		"2606:4700::1111":  "",
+		"1.2.3":            "",
+		"":                 "",
+		"evil';reboot;'":   "", // metacharacters never reach the single-quoted ph
+		"__MIDS__":         "",
 	}
-	// metacharacters must not escape the single-quoted assignment — a value
-	// that needed stripping is replaced by the default whole
-	if got := RemoteLoop("evil';reboot;'"); !strings.Contains(got, `ph='spotify.com';`) {
-		t.Errorf("ping host not sanitized: missing default ph in %q", got[:40])
+	for in, want := range cases {
+		got := RemoteLoop(in)
+		if !strings.Contains(got, `ph='`+want+`';`) {
+			i := strings.Index(got, "ph=")
+			t.Errorf("RemoteLoop(%q) substitutes %q, want ph='%s'", in, got[i:i+min(40, len(got)-i)], want)
+		}
+		if strings.Contains(got, "ph=$") {
+			t.Errorf("RemoteLoop(%q): the loop re-targets its ping on the box", in)
+		}
 	}
-	// an empty / fully-stripped host falls back to the default target
-	if !strings.Contains(RemoteLoop(""), `ph='spotify.com';`) {
-		t.Error("empty ping host should fall back to spotify.com")
+}
+
+// PingTarget resolves ping_host on the laptop: an address is its own answer, a
+// name becomes its first IPv4, and a lookup that fails keeps the last good
+// answer — or gives no target at all when there is none.
+func TestPingTargetResolvesOnTheLaptop(t *testing.T) {
+	ctx := context.Background()
+	if got := PingTarget(ctx, "192.0.2.7", ""); got != "192.0.2.7" {
+		t.Errorf("an IPv4 ping_host = %q, want itself", got)
+	}
+	// localhost comes from the hosts file: no query leaves the machine
+	if got := PingTarget(ctx, "localhost", ""); net.ParseIP(got).To4() == nil || !net.ParseIP(got).IsLoopback() {
+		t.Errorf("localhost = %q, want its loopback IPv4", got)
+	}
+	dead, cancel := context.WithCancel(ctx)
+	cancel() // the lookup fails at once
+	if got := PingTarget(dead, "definitely-not-a-host.invalid", "192.0.2.9"); got != "192.0.2.9" {
+		t.Errorf("a failed lookup = %q, want the last good answer", got)
+	}
+	if got := PingTarget(dead, "definitely-not-a-host.invalid", ""); got != "" {
+		t.Errorf("a failed lookup with no earlier answer = %q, want no target", got)
 	}
 }
 
@@ -278,20 +320,23 @@ func TestRemoteLoopStructuralContract(t *testing.T) {
 		// ssh command-length budget, and the loop sits at dropbear's ceiling.
 		`printf 'net=%s\nip=%s\nmac=%s\n`,
 		`\nname=%s\ndata=%s %s\ndns=%s\nvapp=%s\nrboot=%s\n' "$net"`,
-		// the @@o syslog digest rides the overlay-open toggle (and connect)
+		// the @@o digest rides the overlay opening (and connect), not the TUI's
+		// "90 1" keep-alives; the box's own OTA verdict is the vendor app log's
+		// last MsgBox-223 report, which outlives the syslog's rotation
 		`ot() { echo @@o;`,
+		`echo "u=$(tail -c 262144 $al | grep -aF 'command=223 ' | tail -1)";`,
 		`if [ "$dg" = 1 ]; then`,
-		`90) case "$data" in 1) dg=1; ot;; *) dg=0;; esac;;`,
+		`90) case "$data" in 1) [ $dg = 1 ] || ot; dg=1;; *) dg=0;; esac;;`,
 		// the player-visible toggle: off the player the loop stretches to the 3 s
-		// tick and skips the position read
-		`94) case "$data" in 1) pv=1;; *) pv=0;; esac;;`,
+		// tick and skips the position read; back on it the metadata is re-read
+		`94) case "$data" in 1) pv=1; i=0;; *) pv=0;; esac;;`,
 		`[ $pv = 0 ] && w=3;`,
 		`[ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; tk=2; }`,
 		// one LUCI read per tick, alternating state and volume (tk), both after a burst
 		`if [ $tk != 0 ]; then echo @@t;`,
 		`if [ $tk != 1 ]; then echo @@v;`,
 		`MemAvailable:) ma=$v; break;;`,
-		// position poll gated to every 3rd tick, with the read-flag that keeps the
+		// position poll gated to every 5th tick, with the read-flag that keeps the
 		// track-skip detector working across skip ticks
 		`pc49=$((pc49-1));if [ $pv = 1 ] && [ $idl -lt 5 ] && [ $pc49 -le 0 ]; then`,
 		`if [ $rd -eq 1 ]; then case "$pn" in`,
@@ -368,10 +413,10 @@ func TestRemoteLoopAudioChainParses(t *testing.T) {
 }
 
 // TestRemoteLoopCapabilityProbeParses runs the @@c gather (the verbatim snippet
-// from the loop) under sh with pidof/getenv stubbed as shell functions, so a future
-// edit to that hand-written POSIX-sh fails here rather than silently on the device.
-// pr() keys off a running daemon (pidof), gv() off an env flag (getenv); both print
-// "key=value" directly — one exec per service, no capturing subshell.
+// from the loop) under sh with getenv stubbed as a shell function and /proc faked,
+// so a future edit to that hand-written POSIX-sh fails here rather than silently on
+// the device. pr() keys off a running daemon (the /proc comm scan), gv() off an env
+// flag (getenv); both print "key=value" directly — no capturing subshell.
 //
 // The getenv stub answers in the device's REAL format (" [ KEY ]: value"). An
 // earlier stub echoed a bare value, which let a gv() that never matched anything

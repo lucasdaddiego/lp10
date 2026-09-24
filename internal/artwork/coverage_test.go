@@ -122,26 +122,27 @@ func TestCov_SaveCacheTempWriteFails(t *testing.T) {
 
 // --- PruneCache -------------------------------------------------------------
 
-// An unreadable / nonexistent directory and a directory with fewer entries than
-// `keep` are both no-ops (the early return after ReadDir).
+// An unreadable / nonexistent directory is a no-op (the early return after
+// ReadDir), and a directory within both limits loses nothing.
 func TestCov_PruneCacheEarlyReturns(t *testing.T) {
 	// ReadDir error: a path that doesn't exist
-	PruneCache(filepath.Join(t.TempDir(), "no-such-dir"), 5)
+	PruneCache(filepath.Join(t.TempDir(), "no-such-dir"), 5, 1<<20)
 
-	// fewer entries than keep: nothing is removed
+	// fewer entries than keep, and fewer bytes than the budget: nothing is removed
 	dir := t.TempDir()
 	p := filepath.Join(dir, "only")
 	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	PruneCache(dir, 5)
+	PruneCache(dir, 5, 1<<20)
 	if _, err := os.Stat(p); err != nil {
-		t.Errorf("prune with fewer files than keep removed %q: %v", p, err)
+		t.Errorf("prune within both limits removed %q: %v", p, err)
 	}
 }
 
-// Subdirectories are skipped, and when the regular-file count is within `keep`
-// (even though the raw entry count exceeds it) nothing is pruned.
+// Subdirectories are skipped — neither counted nor removed — so when the
+// regular-file count is within `keep` (even though the raw entry count exceeds
+// it) nothing is pruned.
 func TestCov_PruneCacheSkipsDirsAndKeepsWhenFilesUnderKeep(t *testing.T) {
 	dir := t.TempDir()
 	files := []string{"a", "b"}
@@ -155,9 +156,9 @@ func TestCov_PruneCacheSkipsDirsAndKeepsWhenFilesUnderKeep(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 4 entries > keep(2) passes the first gate; after skipping the 2 dirs only
-	// 2 files remain (<= keep) so nothing is removed.
-	PruneCache(dir, 2)
+	// 4 entries > keep(2), but the 2 dirs are skipped: the 2 files fit keep,
+	// so nothing is removed.
+	PruneCache(dir, 2, 1<<20)
 	ents, _ := os.ReadDir(dir)
 	if len(ents) != 4 {
 		t.Errorf("entries after prune = %d, want 4 (no removal)", len(ents))

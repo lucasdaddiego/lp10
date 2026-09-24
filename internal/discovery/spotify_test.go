@@ -87,6 +87,76 @@ func TestSpotifyEndpointsAndPick(t *testing.T) {
 	}
 }
 
+// One hostile answer must not panic the endpoint assembly: the ZeroConf worker
+// has no recover, so a panic takes lp10 down and leaves the terminal raw.
+// Lower-casing turns each invalid byte into a 3-byte U+FFFD, and the label was
+// once cut at an index found in a lower-cased copy, past the original's end.
+func TestSpotifyEndpointsInvalidUTF8LabelDoesNotPanic(t *testing.T) {
+	label := strings.Repeat("\xff", 15)
+	recs, ok := parsePacket(spotifyPkt(label, "x.local", "192.168.0.13", 9095))
+	if !ok {
+		t.Fatal("parsePacket rejected the packet")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("spotifyEndpoints panicked on one advertised instance: %v", r)
+		}
+	}()
+	if eps := spotifyEndpoints(recs); len(eps) != 1 || eps[0].Name != label {
+		t.Errorf("endpoints = %+v, want the one instance with its label intact", eps)
+	}
+}
+
+// The same mismatch with valid text: U+212A KELVIN SIGN (3 bytes) lower-cases
+// to ASCII 'k' (1 byte), so that index cut "KITCHEN" two bytes short. The
+// service is still matched whatever its case.
+func TestSpotifyEndpointsKeepALabelThatLowercasingShrinks(t *testing.T) {
+	const name = "\u212aITCHEN"
+	inst := name + "." + strings.ToUpper(spotifyService)
+	b := newPkt(2)
+	b.addPTR(spotifyService, inst)
+	b.addSRV(inst, 9095, "k.local")
+	recs, ok := parsePacket(b.buf)
+	if !ok {
+		t.Fatal("parsePacket rejected the packet")
+	}
+	if eps := spotifyEndpoints(recs); len(eps) != 1 || eps[0].Name != name {
+		t.Errorf("endpoints = %+v, want the one named %q", eps, name)
+	}
+}
+
+// A spoofed advertiser must not choose what lp10 GETs. Its SRV target is the
+// request's host when no A record placed it, and the sole-advertiser fallback
+// takes it, so a target that is not a plain host name never becomes an
+// endpoint. ProbeSpotifyZC puts addr only in the URL's host, so an addr that
+// carries a path fails the request instead of fetching that path.
+func TestSpotifyZCTargetCannotChooseTheURL(t *testing.T) {
+	// With an A record the address is the IP: the target never reaches the
+	// URL, and a host name that is merely not ASCII keeps its endpoint.
+	for _, target := range []string{"attacker.example/x?", "user@attacker.example", "Baño.local"} {
+		p := newPkt(3)
+		p.addPTR(spotifyService, "Solo."+spotifyService)
+		p.addSRV("Solo."+spotifyService, 9095, target)
+		p.addA(target, "192.168.0.13")
+		recs, _ := parsePacket(p.buf)
+		eps := spotifyEndpoints(recs)
+		if len(eps) != 1 || eps[0].Addr() != "192.168.0.13:9095" {
+			t.Errorf("SRV target %q with an A record: %+v, want the IP as the address", target, eps)
+		}
+	}
+	// Without one, the target is the host — and only ever the host (below).
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		_, _ = w.Write([]byte(`{"status":101,"statusString":"OK"}`))
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	if _, ok := ProbeSpotifyZC(context.Background(), addr+"/x?", 2*time.Second); ok || hits != 0 {
+		t.Errorf("an addr that carries a path was fetched: ok=%v hits=%d", ok, hits)
+	}
+}
+
 func TestParseSpotifyZC(t *testing.T) {
 	const live = `{"version":"2.9.0","libraryVersion":"3.203.239-g1d6bd565","deviceType":"SPEAKER","modelDisplayName":"LP10","brandDisplayName":"Arylic","productID":1,"status":101,"statusString":"OK","spotifyError":0,"activeUser":"","remoteName":"Living","deviceID":"5efc","groupStatus":"NONE"}`
 	info, ok := parseSpotifyZC([]byte(live))

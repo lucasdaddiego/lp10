@@ -21,7 +21,7 @@ var helpGroups = []struct {
 		{"↑↓ · + −", "volume"},
 		{"m", "mute (the level comes back on unmute)"},
 		{"←→ enter", "pick a transport button and press it"},
-		{"t", "remaining ⇄ elapsed time"},
+		{"t", "right-hand time: remaining ⇄ total"},
 		{"s · S", "sleep timer: 15 → 30 → 45 → 60 → 90 min, then off · S cancels"},
 		{"b", "bedtime: one sleep step plus night mode, both restored when it ends"},
 		{"d", "night mode (the device's multi-band compressor)"},
@@ -33,6 +33,7 @@ var helpGroups = []struct {
 	}},
 	{"services", [][2]string{
 		{"↑↓ enter", "select a service · switch it (Spotify cycles off → HiFi → Pro)"},
+		{"←→", "page the read-out under the rows, when it is taller than the terminal"},
 	}},
 	{"logs", [][2]string{
 		{"↑↓ · ←→", "scroll · page"},
@@ -49,7 +50,10 @@ var helpGroups = []struct {
 	}},
 }
 
-// renderHelp draws the help page into the body.
+// renderHelp draws the help page into the body. The page is taller than a
+// standard 80×24 terminal, so it scrolls the way the diagnostics do — ↑↓ by a
+// row, ←→ by a page, through the same diagWindow — and the footer says how
+// much is off-screen.
 func (m *model) renderHelp(W int) []string {
 	t := m.sty.pens()
 	var content []string
@@ -64,5 +68,14 @@ func (m *model) renderHelp(W int) []string {
 		}
 	}
 	foot := "esc · q · ? back to the player"
-	return frameBody(content, []string{"", spaces(W-DispW(foot)) + t.dmr.render(foot)}, m.bodyRows(), false)
+	tail := []string{"", spaces(W-DispW(foot)) + t.dmr.render(foot)}
+	content, hint := m.diagWindow(content, m.bodyRows()-len(tail), "↑↓ scroll")
+	switch {
+	case hint == "":
+	case DispW(hint)+2+DispW(foot) <= W:
+		tail[len(tail)-1] = between(t.dim.render(hint), DispW(hint), t.dmr.render(foot), DispW(foot), W)
+	default: // too narrow for both: how much is off-screen outranks the way out
+		tail[len(tail)-1] = t.dim.render(hint)
+	}
+	return frameBody(content, tail, m.bodyRows(), false)
 }

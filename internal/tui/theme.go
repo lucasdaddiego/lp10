@@ -47,8 +47,6 @@ type theme struct {
 	penCache *penSet // per-profile flattened styles; see pens()
 }
 
-func newTheme() *theme { return newThemeFor(true) }
-
 // newThemeFor builds the palette for a dark or a light terminal background.
 // The two share the accent family and the warning colours; the light one
 // swaps the greys so text stays legible on white and deepens the accent so a
@@ -115,7 +113,13 @@ func (m *model) ensureTheme() {
 	}
 	if m.sty == nil || m.themeDark != dark {
 		m.sty, m.themeDark = newThemeFor(dark), dark
-		m.amb = nil // the ambient tint derives from the palette; rebuilt lazily
+		// What was painted in the old palette goes with it. The volume rail
+		// is cached by volume, mute and height alone, so it is dropped here;
+		// the ambient tint derives from the palette and is resolved again for
+		// the cover on show, which needs ambKey cleared too — refreshAmbient
+		// skips a cover it has already resolved.
+		m.volBlk = nil
+		m.amb, m.ambKey = nil, ""
 	}
 }
 
@@ -150,11 +154,11 @@ func detectKittyGraphics() bool {
 //
 // The block-drawing primitives below (the plasma motif, the searching arcs,
 // the meters and the EQ bars) paint one styled glyph per character cell, and the
-// animated ones repaint every frame at ~30fps. Calling lipgloss.Style.Render per
-// cell costs roughly 25 allocations — a Style copy, a hex parse via go-colorful
-// (which uses fmt.Sscanf), a colour-profile conversion and an ANSI parse — which
-// made the motif alone 65% of the whole process's allocations and put the GC
-// (runtime.madvise) at ~68% of CPU.
+// animated ones repaint every frame, up to 15 a second. Calling
+// lipgloss.Style.Render per cell costs roughly 25 allocations — a Style copy, a
+// hex parse via go-colorful (which uses fmt.Sscanf), a colour-profile conversion
+// and an ANSI parse — which made the motif alone 65% of the whole process's
+// allocations and put the GC (runtime.madvise) at ~68% of CPU.
 //
 // Where a cell's style comes from a small fixed set (the meters, the EQ bars) the
 // fix is just to render each distinct glyph ONCE and index the results. Only the
@@ -205,8 +209,8 @@ func writeDec(b *strings.Builder, v uint8) {
 // A lipgloss.Style.Render costs ~15 heap allocations even for a plain foreground
 // style: the style is copied, its hex colour is re-PARSED (go-colorful.Hex uses
 // fmt.Sscanf) and converted for the profile, and the output re-tokenised. The
-// dashboard makes ~200 such calls per frame at up to 30fps, which made this
-// chain the top allocation source once the per-cell loops were fixed.
+// dashboard makes ~200 such calls per frame, up to 15 frames a second, which
+// made this chain the top allocation source once the per-cell loops were fixed.
 //
 // A pen is a style flattened to the escape pair it wraps a SINGLE-LINE string
 // in, derived by rendering a sentinel once. pen.render(s) is then two concats
@@ -443,7 +447,7 @@ func (t *theme) motifBlock(w, h, frame int) []string {
 // Max error ≈ 2.9e-7 — three orders of magnitude below the 1/255 channel
 // quantization in hslRGB/to8, so the painted bytes are (near-)identical to the
 // math.Sin ones; TestMotifMatchesMathSin holds the line at ≤1/255 per channel.
-// Used only by the plasma motif, where 5 sines/cell × ~500 cells × 30fps made
+// Used only by the plasma motif, where 5 sines/cell × ~500 cells made
 // trig the dominant cost of an animated frame.
 func fastSin(x float64) float64 {
 	t := x * (1 / (2 * math.Pi))

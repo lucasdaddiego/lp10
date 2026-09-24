@@ -21,6 +21,7 @@ type process struct {
 
 	spawned    time.Time   // set by processSlot.start
 	graceWrite atomic.Bool // a command went into stdin on the young-spawn grace alone
+	killed     atomic.Bool // the watchdog killed it, rather than it ending on its own (see stallStreak)
 }
 
 func (p *process) waitTimeout(d time.Duration) bool {

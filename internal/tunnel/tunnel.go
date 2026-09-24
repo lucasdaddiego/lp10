@@ -21,6 +21,8 @@ package tunnel
 import (
 	"strconv"
 	"strings"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // Port is the device's control-tunnel TCP port.
@@ -213,16 +215,18 @@ func parsePresets(list string) []string {
 	return names
 }
 
-// cleanName keeps printable, non-space-run runes of a preset label, clipped to
-// maxPresetName runes.
+// cleanName reduces a preset label to printable runes, clipped to
+// maxPresetName runes. The strip is protocol.Printable, the rule every other
+// device string gets: a C0/C1-only filter let a bidi override, a line
+// separator or a zero-width space through to the equalizer row.
 func cleanName(s string) string {
 	var b strings.Builder
 	n := 0
-	for _, r := range s {
+	for _, r := range protocol.Printable(s) {
 		if n >= maxPresetName {
 			break
 		}
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == ';' || r == ',' || r == '@' {
+		if r == ';' || r == ',' || r == '@' {
 			continue
 		}
 		b.WriteRune(r)

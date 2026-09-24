@@ -113,6 +113,36 @@ func TestZCResolveAndAtoi(t *testing.T) {
 	}
 }
 
+// A panic in the probe — here the mDNS lookup, which parses whatever the LAN
+// answers — must cost a noted error, not the program: a panic escaping the
+// worker's goroutine would kill lp10 with the terminal still in raw mode.
+func TestZCWorkerSurvivesAProbePanic(t *testing.T) {
+	orig := zcFind
+	zcFind = func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
+		panic("mdns parse boom")
+	}
+	t.Setenv("LP10_ZC_ADDR", "x") // register the cleanup, then really unset it
+	os.Unsetenv("LP10_ZC_ADDR")
+
+	st := protocol.NewState()
+	control := newRunControl()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { zcWorker(ctx, control, st, config.Config{Host: "192.0.2.13"}); close(done) }()
+	noted := waitFor(func() bool { return st.Snap().Error == "zeroconf worker: mdns parse boom" }, 5*time.Second)
+	control.stop.Set()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the worker did not stop after the panic")
+	}
+	zcFind = orig // only after the worker has exited (no race)
+	if !noted {
+		t.Errorf("error = %q, want the probe's panic noted", st.Snap().Error)
+	}
+}
+
 // Without the override the endpoint comes from mDNS: found → probed on the
 // advertised port; not found → a port-0 miss; a probe miss → re-found next
 // time (the engine may have restarted on another port).

@@ -21,9 +21,9 @@ import (
 // stats keep-alive, and the window title — its constants (marqueeColTicks,
 // StatsReassertTicks) are counted in these 100ms units. The frame tick is the
 // animation clock, decoupled so the plasma motif and the extrapolated seek bar
-// glide at ~30fps on a GPU terminal without speeding up the logic above. It
-// idles to a gentle rate while paused/idle, when the motif is frozen and the
-// motif cache makes those wake-ups nearly free.
+// glide at the renderer's 15 fps (renderFPS) without speeding up the logic
+// above. It idles to a gentle rate while paused/idle, when the motif is frozen
+// and the motif cache makes those wake-ups nearly free.
 type logicMsg struct{}
 type frameMsg struct{}
 
@@ -100,7 +100,18 @@ func (m *model) send(mid int, data string) {
 // connection assuming the player is visible, so "hidden" is re-asserted every
 // StatsReassertTicks the way the stats flag is; "visible" is the default and
 // is sent once when the player comes back.
-func (m *model) syncViews() {
+//
+// Nothing is sent while the link is down: the flag would wait in the command
+// queue until the worker dropped it as stale, and its "command not delivered"
+// would take the error line from the connection's own reason. The flag falls
+// back to the loop's default instead, so the first connected tick tells the
+// new loop once.
+func (m *model) syncViews(connected bool) {
+	m.st.SetProbeQuiet(m.view != viewServices && m.view != viewDiag)
+	if !connected {
+		m.playerShown = true // what the next connection's loop starts with
+		return
+	}
 	shown := m.view == viewPlayer || m.miniMode()
 	switch {
 	case shown && !m.playerShown:
@@ -114,15 +125,20 @@ func (m *model) syncViews() {
 			m.hiddenTicks = StatsReassertTicks
 		}
 	}
-	m.st.SetProbeQuiet(m.view != viewServices && m.view != viewDiag)
 }
 
 // syncStats keeps the device's resource-stat (@@s) emission aligned with the
 // diagnostics overlay: send "on" (90 1) when it opens and re-assert every
 // StatsReassertTicks so a reconnect resumes it; send "off" (90 0) once when it
 // closes (by any path, including a resize to the mini view). Off the overlay the
-// box does no /proc gathering at all.
-func (m *model) syncStats() {
+// box does no /proc gathering at all. Like syncViews it sends nothing while the
+// link is down, falling back to the loop's default (off); the periodic
+// re-assert stays for a reconnect too quick for a tick to see.
+func (m *model) syncStats(connected bool) {
+	if !connected {
+		m.statsOn, m.statsTicks = false, 0 // what the next connection's loop starts with
+		return
+	}
 	switch {
 	case m.view == viewDiag && (!m.statsOn || m.statsTicks <= 0):
 		m.send(90, "1")
@@ -134,6 +150,21 @@ func (m *model) syncStats() {
 		m.send(90, "0")
 		m.statsOn = false
 		m.statsTicks = 0
+	}
+}
+
+// reaskLogs runs on the connect's tick: it asks again for every log tail that
+// was asked for and never answered. The logs are asked for once per run (see
+// setView), and a request made while the link was down expires unheard in the
+// command worker, which would leave the pane on "asking the device…" for good.
+func (m *model) reaskLogs() {
+	for i, src := range logSources {
+		if !m.logAsked[i] {
+			continue
+		}
+		if _, at := m.st.LogView(src.src); at.IsZero() {
+			m.send(93, strconv.Itoa(int(src.src)))
+		}
 	}
 }
 
@@ -166,7 +197,24 @@ func (m *model) volumeNotice(value int) {
 	m.notify(fmt.Sprintf("volume %d%%", value), noticeFor)
 }
 
+// volumeLive reports whether the volume in State is the device's own, read
+// this run. Until then it is the snapshot cached by the last run, and a step
+// computed from it lands on the device as an absolute level: cached 40, the
+// phone set 70 meanwhile, ↑ during "connecting…" sends 64 42 and the room
+// drops to 42 on connect. A later outage keeps the keys: the level in hand is
+// this run's own, and a key pressed during a blip is delivered when it ends.
+func (m *model) volumeLive() bool {
+	return m.st.Snap().VolLive
+}
+
 func (m *model) do(action string) {
+	switch action {
+	case "volup", "voldn", "mute":
+		if !m.volumeLive() {
+			m.notify("volume not read yet · waiting for the device", noticeFor)
+			return
+		}
+	}
 	m.flash[action] = time.Now().Add(FlashDuration)
 	switch action {
 	case "toggle":
@@ -229,15 +277,19 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureTheme() // rebuilds the palette when the answer differs from the one drawn
 		return m, nil
 	case logicMsg:
-		m.scroll++       // advance the now-playing marquee (independent of play state)
-		s := m.st.Snap() // one snapshot per tick, reused below
-		m.syncStats()    // device emits @@s only while the diag overlay is open
-		m.syncViews()    // the loop's poll cadence and the LAN probes follow the view on screen
+		m.scroll++               // advance the now-playing marquee (independent of play state)
+		s := m.st.Snap()         // one snapshot per tick, reused below
+		m.syncStats(s.Connected) // device emits @@s only while the diag overlay is open
+		m.syncViews(s.Connected) // the loop's poll cadence and the LAN probes follow the view on screen
 		now := time.Now()
-		m.sleepFire(now, s)
+		if s.Connected && !m.wasConnected {
+			m.reaskLogs() // the connect's tick: trackConnection below moves wasConnected
+		}
 		m.trackConnection(s, now)
-		// follow mode: refetch the open log every 10 s (100 ticks) while it shows
-		if m.logFollow && m.view == viewLogs && m.scroll%100 == 0 {
+		m.sleepFire(now, s) // after the connect summary, so a timer it cancels keeps the notice line
+		// follow mode: refetch the open log every 10 s (100 ticks) while it
+		// shows and the link is up (a request into a dead link expires unheard)
+		if m.logFollow && m.view == viewLogs && m.scroll%100 == 0 && s.Connected {
 			m.logRequest()
 		}
 		// The window title rides View (tea.View.WindowTitle under bubbletea v2),

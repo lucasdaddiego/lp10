@@ -66,7 +66,8 @@ get one screen.
   level, mute says so, the sleep timer, bedtime and night mode report their
   state, a service switch says what was asked, and a lost connection warns.
   On connect it greets with a summary: firmware, the Spotify engine, the
-  engine's reconnect count, and whether the last boot was a power-on. Each
+  engine's reconnect count since the box's live syslog begins, and whether the
+  last boot was a power-on. Each
   notice fades after a couple of seconds; the row is always there, so nothing
   shifts.
 - **An idle clock** — connected with nothing playing, the player shows the
@@ -127,7 +128,10 @@ get one screen.
   entirely in lp10 — at the deadline it sends the same pause the space bar does —
   so it needs nothing from the device (whose own sleep timer is hidden on this
   firmware) and can't leave anything behind. It ends with the process: quitting
-  lp10 cancels it.
+  lp10 cancels it. A deadline that passes while the link is down fires when the
+  link comes back — unless that is more than ten minutes late (an outage through
+  the night), when lp10 cancels the timer with a notice and still puts night
+  mode back.
 - **Night mode** — `d` switches on the device's own multi-band **dynamic range
   compressor** (the Amlogic AED block's DRC, with the firmware's stock 3-band
   table): peaks reined in, quiet passages lifted, for late-night listening at low
@@ -151,7 +155,11 @@ get one screen.
   case was hiding. A flag its init script never reads is marked inert rather than
   as a fault (AirPlay and DLNA are both in that position, whether or not the flag
   happens to agree); the warning is reserved for a flag that *is* consulted and
-  still contradicts what is running. The focused row spells out what `enter` will
+  still contradicts what is running — the Spotify pair naming an engine that is
+  not the one running, held back for 40 s after a switch while the engine
+  starts. Until the device has reported its services, `enter` sends nothing: a
+  switch computed from a guessed state would write the box's config blind. The
+  focused row spells out what `enter` will
   do to it — `enter` on Spotify cycles off → legacy (hifi) → new, and presses stack
   faster than the device can answer. It is also honest
   about leverage: AirPlay and DLNA have no env gate at all, so stopping them lasts
@@ -164,16 +172,27 @@ get one screen.
   scale; since vendor app v32 its volume works like the legacy one's.) The pane
   always writes the Spotify flags as a coherent pair so the vendor's both-set
   trap is unreachable from here.
-- **`lp10 sweep`** — the "did it update?" command: one read-only pass over
-  the box (firmware, MCU, kernel, the vendor app and its md5, sha256 of the
+- **`lp10 sweep`** — the "did it update?" command: one read-only pass over the
+  box (firmware, MCU, kernel, the vendor app and its md5, sha256 of the
   binaries an OTA or the app loader would replace, the boot reason and time,
   every listener, the Spotify flag pair and running daemons, how many env keys
-  were set at runtime, the engine's reconnect count), the LAN's ssh-free
-  answers (LSSDP, the engine's ZeroConf), and the vendor's view (the
+  were set at runtime, the engine's reconnects over the syslog history the box
+  keeps on flash — weeks of it, counted per hour on the box — with the hourly
+  rate, the last 24 hours and the last seven days (the JSON keeps every day,
+  `reconnectsByDay`), and the box's own last firmware verdict), the LAN's
+  ssh-free answers (LSSDP, the engine's ZeroConf), and the vendor's view (the
   manifest's verdict for the running build, and the newest bundle it serves —
-  size, date, etag). It prints a report and diffs it against the previous
-  sweep, kept as a baseline in `~/.local/state/lp10/`; `--json` prints the
-  baseline's shape, `--no-save` leaves the old one in place. This is the one
+  size, date, etag — or that it offers none, even to an old build). It prints
+  a report and diffs it against the previous sweep, kept as a baseline in
+  `~/.local/state/lp10/`; `--json` prints the baseline's shape, `--no-save`
+  leaves the old one in place — as does an interrupted run. The baseline is
+  merged fact by fact: what a sweep cannot read (a stalled ssh, no getenv,
+  sqlite3 or syslog, a silent probe) keeps its last known value and the date
+  it was read, so a hollow report never becomes the thing the next sweep
+  compares with; the report names those older facts (`ssh facts as of Sep 22
+  10:00`), and a binary an update removed reads `gone`. The diff skips
+  listeners on the Linux ephemeral ports (32768–60999), where the vendor app's
+  second port moves on every restart, but keeps dmr's 49494. This is the one
   lp10 command that asks the vendor on its own — by design, since that is the
   question it answers.
 - **Device log** (`4` or `l`) — the tail of one of the box's own logs, fetched on demand
@@ -186,7 +205,10 @@ get one screen.
   the Arylic app narrates every `:2018` tunnel frame and the MCU's reply, every
   preset action and every OLED publish, so it is where "the equalizer did nothing"
   gets answered. `f` filters to errors and warnings, `r` refetches; the
-  luci_service chatter that is most of the syslog is dropped at the source.
+  luci_service chatter that is most of the syslog is dropped at the source. Any
+  line that can carry the Spotify login is dropped from both logs, on the box
+  and again in lp10: the engine logs its reusable login blob and the account
+  name in clear.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -250,7 +272,7 @@ everything below.
 |-----|--------|
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
-| `↑` / `↓` · `+` / `-` | volume ± step (`=` / `_` also work) |
+| `↑` / `↓` · `+` / `-` | volume ± step (`=` / `_` also work); like `m`, waits — with a notice — until the device has reported its volume this run, so a step is never taken from the last run's cached level |
 | `←` / `→` · `enter` | move the transport focus · press the focused button |
 | `m` | mute (volume 0 ↔ restored level, persisted) |
 | `t` | right-hand time: remaining ↔ total |
@@ -260,10 +282,12 @@ everything below.
 
 **Equalizer** — `↑` / `↓` select a control, `←` / `→` adjust it, `enter` flips
 a switch or steps the preset. **Services** — `↑` / `↓` select, `enter` switches
-(Spotify cycles off → HiFi → Pro). **Logs** — `↑` / `↓` scroll, `←` / `→` page,
+(Spotify cycles off → HiFi → Pro), `←` / `→` page the read-out under the rows
+when it is taller than the terminal. **Logs** — `↑` / `↓` scroll, `←` / `→` page,
 `s` source (device syslog / vendor app), `f` filter, `r` refresh, `F` follow.
 **Diagnostics** — `↑` / `↓` scroll and `←` / `→` page when the read-out is
-taller than the terminal (the footer says how much is off-screen); `u` asks
+taller than the terminal (the footer says how much is off-screen; the help page
+scrolls the same way); `u` asks
 the vendor's manifest whether the firmware is current (the box asks by itself
 every four hours; the update line shows that).
 When a `lp10 sweep` baseline exists, the device card also says what moved since
@@ -300,7 +324,8 @@ Classical · Pop · Jazz · Rock · Vocal, named by the device), the **Treble / 
 **Balance**, and **Max volume**, the output cap, kept last as it's rarely
 touched. `↑` / `↓` select a row; `←` / `→` adjust it; `enter` flips a switch or
 steps to the next preset. Under the rows, a short note explains the selected
-control.
+control. On a short terminal the rows scroll, so the selected one is always on
+screen.
 
 > **How the two EQ rows relate:** the **tone sliders are always live**, EQ on or
 > off. **EQ** only decides whether the selected **Preset** curve is applied on
@@ -310,8 +335,9 @@ control.
 
 These ride a separate plain-text control connection to the device on TCP
 **2018** (the same channel the vendor app uses), independent of the SSH player
-stream — so a dead tunnel only marks the equalizer read-only, it never disturbs
-playback, and the last-known values are restored instantly from cache on launch.
+stream — so a dead tunnel only marks the equalizer read-only (`←` / `→` /
+`enter` are refused with a notice), it never disturbs playback, and the
+last-known values are restored instantly from cache on launch.
 
 > **Heads-up:** a low **Max Volume** is what makes the Bluetooth remote and
 > Spotify seem unable to turn the volume up (they hit the cap). Set it to 100
@@ -342,7 +368,7 @@ stacked column when narrow):
 ┃                                                               link      ethernet · 100 Mbit/s · full duplex          ┃
 ┃  ─ device ──────────────────────────────────────────────      mac       aa:bb:cc:dd:ee:ff                            ┃
 ┃    bt        aa:bb:cc:dd:ee:fe                                multiroom solo                                         ┃
-┃    build     2026-01-12 · app 318 · vendor app v32            traffic   rx 58 KB/s · tx 2 KB/s                       ┃
+┃    build     2026-01-12 · app 318 · vendor app v42            traffic   rx 58 KB/s · tx 2 KB/s                       ┃
 ┃    firmware  AR241CE_8530.23.2                                                                                       ┃
 ┃    mcu       v23                                            ─ resources ───────────────────────────────────────────  ┃
 ┃    model     Arylic AR241CE · LS8                             cpu       ━━━─────────  22% 1m 0.44 · 1200 MHz         ┃
@@ -385,12 +411,15 @@ balance stage; the WM8904 the firmware declares isn't on the bus), **latency**, 
 (address, DNS, link, MAC, interface **error/drop counters** shown as session deltas —
 so a degrading powerline link turns amber without boot-lifetime noise false-alarming —
 and the **multiroom** group state), **resources** (cpu · memory · storage · tasks ·
-temp · uptime), and the **services** it offers. The rows inside each section are
-alphabetical by label too, so any reading is a lookup, never a hunt. A section with
-nothing to report is skipped, and the column split re-balances around what's left.
+temp · uptime), and the **services** it offers. Inside a section, related rows sit
+together (the connection runs host, LSSDP, Spotify, engine, ssh, tunnel). A section with
+nothing to report is skipped, and the column split re-balances around what's left. On
+a terminal narrower than the two columns, the read-out stacks into one and keeps the
+same verdict line.
 
-The **services** matrix is read live from the device (a one-shot read at connect): a
-`pidof` for the running daemons (Spotify / AirPlay / DLNA / Bluetooth), a `getenv`
+The **services** matrix is read live from the device (at connect, and again after a
+switch from the services view): a
+scan of `/proc/*/comm` for the running daemons (Spotify / AirPlay / DLNA / Bluetooth), a `getenv`
 for the marketed-but-disabled features (Cast / Tidal / Qobuz / USB), and a scan of
 `/proc/net/tcp` for the **lan** group — the unauthenticated listeners anyone on the
 LAN can reach: **telnet :23** (root login, asks the password) and **adb :5555** (a
@@ -407,13 +436,15 @@ log uploader that is installed but has never fired — is audited in
 The resource gauges and the network stats (throughput, Wi-Fi signal, and the three
 ping round-trips) are collected on the device **only while this overlay is open** —
 close it and the on-device loop drops back to the bare minimum. Each latency row
-holds its **peak** over a rolling ~30s window, flagged amber once a genuine spike
+holds its **peak** over its last 30 samples — one every third stats tick, so about
+four to five minutes of open diagnostics — flagged amber once a genuine spike
 lands, so an intermittent glitch (a powerline link dropping out, say) is visible
 after the fact. The internet-ping target is the
-`ping_host` config key (default `spotify.com`); after the first successful ping the
-loop pins the name to its resolved IP, so a dying DNS resolver can't stall the
-on-device loop mid-session. `esc`, `q`, `5` or `i` return to the player; the
-playback keys work from here too.
+`ping_host` config key (default `spotify.com`); lp10 resolves it on the laptop at each
+connect and hands the loop only the IPv4 (the last good one when a lookup fails, none
+when nothing ever resolved), so the box never waits on its own resolver — with its
+DNS dead, one lookup used to block the loop past the 8 s watchdog. `esc`, `q` or
+`i` return to the player; the playback keys work from here too.
 
 ## How it works
 
@@ -430,8 +461,10 @@ BusyBox-ash loop on the device streams framed snapshots:
   position reads when any other view is up. The LSSDP and ZeroConf probes run
   while connected only while the services or the diagnostics show their
   answers; disconnected they always run, since the connecting screen is built
-  on them. The one-shot facts (capabilities, device details, the syslog
-  digest) are read at connect and after a toggle, the logs only on request.
+  on them. The one-shot facts are read once: the device details at connect,
+  the capabilities at connect and after a toggle, the log digest (reconnects,
+  the box's own firmware verdict) at connect and each time the diagnostics
+  open, and the logs only on request.
 - **Light on the laptop too** — the renderer is capped at 15 frames a second
   (bubbletea re-parses the whole frame on every flush, changed or not), and
   the album motif animates at the same rate. On a 200×50 terminal against a
@@ -447,13 +480,20 @@ BusyBox-ash loop on the device streams framed snapshots:
   `<mid> <data>` lines (transport, volume, the stats / player-visible / night-mode
   switches, the service toggle and the log-tail request — each payload checked
   against its own whitelist), never `eval`. Failed sends are held and delivered
-  in order on reconnect; stale ones are dropped visibly.
+  in order on reconnect; a stale one you typed is dropped visibly, a view flag
+  nobody typed silently. A held volume key sends the newest level at most every
+  150 ms, and the loop drains at most eight queued commands per tick.
 - **Secret-store auth** — password-only via `SSH_ASKPASS`: the binary re-execs
   itself and answers ssh's prompt from the OS secret store (the macOS login
   Keychain, or the Secret Service via `secret-tool` on Linux).
 - **Self-reaping** — the loop detects a dead session by read-timing and exits,
   so both ends are reaped no matter how the TUI died; the client reconnects with
-  backoff.
+  backoff. The box's sshd locks out rapid logins, so a login that ends short —
+  the watchdog killing a stalled session, or a loop that exits right after it
+  started — counts, and from the second in a row the next login waits at least
+  30 s, doubling to 2 minutes, with a note that says why. A session that
+  delivers for 2 minutes ends the streak, so one stall in a long session still
+  reconnects at once.
 - **Typed state boundary** — device JSON is coerced once into a whitelisted
   `Track` schema. The worker runtime owns child handles, shutdown coordination,
   and snapshot persistence; the shared protocol state contains only the
@@ -465,10 +505,14 @@ BusyBox-ash loop on the device streams framed snapshots:
   preset list are identical across both. What did move: Spotify's ZeroConf
   endpoint (`:9095` → `:9096`), the Pro engine's SDK (3.205 → 3.211), the
   factory default for the two Spotify flags (HiFi → Pro, the services-pane
-  story above), and the OTA manifest host. Re-swept 2026-09-12: the vendor
-  manifest still has nothing newer than 8530, so the box is current; a
-  services-pane pin is a dirty row in the device's sqlite env store and
-  survives reboots (the factory config is only merged in, never rebuilt).
+  story above), and the OTA manifest host. Re-swept 2026-09-23: the vendor
+  still has nothing newer than 8530 (and its manifest now offers 8530 to no
+  older build either), so the box is current; the vendor app moved to v42 on
+  its own; a services-pane pin is a dirty row in the device's sqlite env store
+  and survives reboots (the factory config is only merged in, never rebuilt).
+  The box's syslog is capped at 1 MiB and rotated onto flash, so while a track
+  plays the live file covers well under an hour — which is why lp10 reads the
+  box's own firmware verdict from the vendor app's log instead.
 
 ### Security & threat model
 
@@ -513,7 +557,9 @@ theme     = "auto"          # auto | light | dark  (auto follows the terminal's 
 
 The art panel renders the track's `CoverArtUrl`, fetched once and cached under
 `~/.local/state/lp10/art/` (so a re-seen cover needs no network and the last
-cover paints instantly on the next launch). `art_mode` picks the renderer:
+cover paints instantly on the next launch). The cache keeps the most recently
+used covers — at most 256 files and 64 MB — and prunes the rest at startup and
+every 64 covers loaded. `art_mode` picks the renderer:
 
 - `auto` *(default)* — **Kitty** true-pixel graphics on a terminal that
   advertises support (Ghostty, kitty), a **half-block** raster on any other
@@ -551,14 +597,18 @@ startup never blocks on a missing device. Set `discover = false` to pin `host`
 (an IP, or a `.local` name your OS resolves).
 
 `LP10_HOST` overrides `host` for a single run and skips discovery. Persistent state (the pre-mute
-level and the now-playing/EQ snapshot used for instant first paint) lives under
+level, the now-playing/EQ snapshot used for instant first paint, and the `lp10
+sweep` baseline `sweep-<host>.json`, whose `carried` map dates each fact kept
+from an earlier sweep) lives under
 `~/.local/state/lp10/`, in files keyed on the configured `host` (so a new DHCP
 lease found by discovery keeps them).
 
 ### Environment overrides
 
-Beyond `LP10_HOST`, everything else is a test / development hook — set-but-empty
-disables the probe it names:
+Beyond `LP10_HOST`, everything else is a test / development hook. Set-but-empty
+switches off the probe it names for `LP10_LSSDP_HOST`, `LP10_ZC_ADDR` and
+`LP10_OTA_URL`; for the others an empty value is the same as unset
+(`LP10_TUNNEL_ADDR` empty still means the configured host's `:2018`):
 
 | Variable | Effect |
 |----------|--------|
@@ -568,7 +618,7 @@ disables the probe it names:
 | `LP10_TUNNEL_ADDR` | the `:2018` tone/EQ tunnel's `host:port` |
 | `LP10_LSSDP_HOST` | the UDP:1800 liveness probe's target (`host` or `host:port`) |
 | `LP10_ZC_ADDR` | a fixed Spotify ZeroConf `host:port`, skipping mDNS |
-| `LP10_OTA_URL` | the vendor's firmware manifest URL — set it empty to switch the on-demand check off |
+| `LP10_OTA_URL` | the vendor's firmware manifest URL — set it empty to switch the on-demand check off (`u` then says the check is off) |
 | `LP10_ASKPASS` | internal: marks the `SSH_ASKPASS` self-exec |
 | `LP10_COVERDIR` · `LP10_DUMP_DIR` | `make cover` instrumentation · dump every layout the invariants test renders |
 
@@ -580,7 +630,8 @@ the ASCII glyph set under a CJK locale.
 
 ```sh
 make test     # go vet + the full suite, fully off-device
-make ci       # exactly what CI runs (gofmt, vet, go fix -diff, staticcheck, govulncheck, -race), under go.mod's toolchain
+make busybox  # the transport tests again under BusyBox 1.32.0 ash, the device's shell (needs docker)
+make ci       # exactly what CI runs (gofmt, vet, go fix -diff, staticcheck, govulncheck, -race, then busybox when docker is on PATH), under go.mod's toolchain
 make cover    # merged unit + integration coverage of the shipped packages -> coverage.out
 make build    # ./lp10
 make run      # launch the live TUI
@@ -592,7 +643,10 @@ The suite never touches a real device: `LP10_SSH` swaps in a fake ssh transport
 `eof`, `garbage`, `authfail`, `keychain-locked`, `heal`), and `LP10_STATE_DIR`
 isolates persistent state. The on-device shell loop is checked for validity
 (`sh -n`) and its parsers are exercised against captured device output, so edits
-to it fail in CI rather than silently on the device. The loop is authored as
+to it fail in CI rather than silently on the device. The fragment tests run under
+the host's `sh` (bash on macOS, dash on Linux) and again inside the official
+BusyBox 1.32.0 image, where `sh` is the ash the device runs — `make busybox`
+locally, and a step on CI's Linux leg. The loop is authored as
 readable shell in `internal/transport/remote_loop.src.sh` and minified into the
 embedded `remote_loop.sh` by `go generate` (`make generate`); a stale embed fails
 the suite.

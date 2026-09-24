@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -57,6 +58,11 @@ func spotifyEndpoints(recs []rr) []SpotifyEndpoint {
 				}
 			}
 		case typeSRV:
+			// The target becomes the host of the getInfo GET when no A
+			// record placed it (Addr). ProbeSpotifyZC assembles that URL, so
+			// URL syntax in a spoofed target ('/', '?', '#', '@') fails the
+			// request rather than choosing what is fetched — and a target
+			// that is merely not ASCII (a room renamed "Baño") still works.
 			if r.target != "" && r.port != 0 {
 				srv[dnsKey(r.name)] = r
 			}
@@ -74,11 +80,7 @@ func spotifyEndpoints(recs []rr) []SpotifyEndpoint {
 		if !ok {
 			continue
 		}
-		label := strings.TrimSuffix(inst, ".")
-		if i := strings.Index(strings.ToLower(label), "."+spotifyService); i >= 0 {
-			label = label[:i]
-		}
-		out = append(out, SpotifyEndpoint{Name: label, Host: s.target, Port: int(s.port), IP: a[dnsKey(s.target)]})
+		out = append(out, SpotifyEndpoint{Name: instanceLabel(inst, spotifyService), Host: s.target, Port: int(s.port), IP: a[dnsKey(s.target)]})
 	}
 	slices.SortFunc(out, func(x, y SpotifyEndpoint) int {
 		return cmp.Or(strings.Compare(x.Name, y.Name), strings.Compare(x.Host, y.Host))
@@ -245,7 +247,11 @@ var zcClient = &http.Client{
 func ProbeSpotifyZC(ctx context.Context, addr string, timeout time.Duration) (SpotifyZCInfo, bool) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/zc?action=getInfo", nil)
+	// The URL is assembled, not concatenated: addr only ever lands in its
+	// host, so nothing in addr can choose the path or the query (URL syntax
+	// in it, such as a '/', '?', '#' or '@', fails the request instead).
+	u := url.URL{Scheme: "http", Host: addr, Path: "/zc", RawQuery: "action=getInfo"}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return SpotifyZCInfo{}, false
 	}

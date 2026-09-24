@@ -161,6 +161,42 @@ func TestCollectorJoinsDNSNamesCaseInsensitively(t *testing.T) {
 	}
 }
 
+// The RAOP instance is "<MAC>@<name>": the MAC is hex and never holds an '@',
+// but the user-chosen name can, so the split is at the first one. At the last
+// one, "Kids@Home" came out as MAC "AABBCCDDEEFF@Kids", name "Home".
+func TestCollectorKeepsAnAtSignInTheName(t *testing.T) {
+	const inst = "AABBCCDDEEFF@Kids@Home." + service
+	b := newPkt(4)
+	b.addPTR(service, inst)
+	b.addSRV(inst, 7000, "Kids.local")
+	b.addTXT(inst, "am=LP10")
+	b.addA("Kids.local", "192.168.1.13")
+	recs, ok := parsePacket(b.buf)
+	if !ok {
+		t.Fatal("parsePacket rejected the packet")
+	}
+	c := newCollector()
+	c.add(recs)
+	if ds := c.devices(); len(ds) != 1 || ds[0].Name != "Kids@Home" || ds[0].MAC != "AABBCCDDEEFF" {
+		t.Errorf("devices = %+v, want Name %q MAC %q", ds, "Kids@Home", "AABBCCDDEEFF")
+	}
+}
+
+// instanceLabel cuts the service off by length, whatever case the responder
+// spelled it in, and hands back whole a target that does not end in it.
+func TestInstanceLabel(t *testing.T) {
+	for _, c := range []struct{ inst, svc, want string }{
+		{"AABBCCDDEEFF@Living._raop._tcp.local", service, "AABBCCDDEEFF@Living"},
+		{"Living._SPOTIFY-CONNECT._TCP.LOCAL.", spotifyService, "Living"},
+		{"Living.example", spotifyService, "Living.example"},
+		{"_raop._tcp.local", service, "_raop._tcp.local"}, // no label in front of the service
+	} {
+		if got := instanceLabel(c.inst, c.svc); got != c.want {
+			t.Errorf("instanceLabel(%q, %q) = %q, want %q", c.inst, c.svc, got, c.want)
+		}
+	}
+}
+
 func TestCollectorIgnoresMalformedABeforeValidAddress(t *testing.T) {
 	const inst = "AABB@Living._raop._tcp.local"
 	c := newCollector()

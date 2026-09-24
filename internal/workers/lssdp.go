@@ -67,7 +67,7 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 			wait = probeQuietPoll
 			continue
 		}
-		probe()
+		fence(st, control, "lssdp worker", probe) // it parses what the LAN answers
 		if st.Snap().Connected {
 			wait = lssdpConnected
 		} else {

@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 func TestClamp(t *testing.T) {
@@ -139,5 +141,27 @@ func TestParsePresetsList(t *testing.T) {
 	// an empty / all-junk list is dropped, not an empty update
 	if out, _ := ParseFrames("PEQ:;PEQ:junk;"); len(out) != 0 {
 		t.Errorf("junk PEQ produced %v", out)
+	}
+}
+
+// A preset label gets the strip every other device string gets
+// (protocol.Printable, all of C* and Z* but the space): a bidi override, a line
+// separator, a zero-width space or a soft hyphen never reaches the equalizer row.
+func TestParsePresetsUseTheSharedStrip(t *testing.T) {
+	for _, raw := range []string{"Fl\u202eat", "Po\u2028p", "Ja\u200bzz", "Ro\u00adck"} {
+		names := parsePresets("0@" + raw)
+		if len(names) != 1 {
+			t.Fatalf("parsePresets(%q) = %q", raw, names)
+		}
+		if want := protocol.Printable(raw); names[0] != want {
+			t.Errorf("preset %q kept %q, the shared strip gives %q", raw, names[0], want)
+		}
+		if strings.ContainsAny(names[0], "\u202e\u2028\u200b\u00ad") {
+			t.Errorf("format/separator rune survived: %q", names[0])
+		}
+	}
+	// the list's own "@" separator is dropped from inside a label
+	if names := parsePresets("0@Fl@at"); len(names) != 1 || names[0] != "Flat" {
+		t.Errorf(`parsePresets("0@Fl@at") = %q, want [Flat]`, names)
 	}
 }

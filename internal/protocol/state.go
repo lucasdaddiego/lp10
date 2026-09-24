@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"maps"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,21 +29,25 @@ type State struct {
 	garbageBs int // consecutive content-free, non-idle @@B sections (see ApplyRecord)
 	sysinfo   *SysInfo
 	devinfo   *DevInfo    // static device/network info (@@i, once per connection)
-	confinfo  *ConfInfo   // streaming-capability state (@@c, once per connection)
+	confinfo  *ConfInfo   // streaming-capability state (@@c: at connect and after each services toggle)
+	confAt    time.Time   // when that block arrived: the engine age in it is as of then
 	details   *DevDetails // device-details JSON readout (@@d, once per connection)
 	mroom     *Multiroom  // multiroom-group readout (@@g, once per connection)
 	logs      []string    // device syslog tail (@@l, only in answer to MID 93 "1")
 	logsAt    time.Time   // when that tail arrived (zero == none yet this run)
 	vlogs     []string    // vendor app log tail (@@L, only in answer to MID 93 "2")
 	vlogsAt   time.Time
-	ops       *DevOps   // syslog digest (@@o: at connect and on each overlay open)
-	opsAt     time.Time // when that digest arrived
+	ops       *DevOps   // syslog digest (@@o: at connect and each time the diagnostics open)
+	opsAt     time.Time // when that digest arrived: the end of the window its count covers
 
-	posMs    int
-	posAt    time.Time
-	playing  int // MID 51: 0=playing, anything else not
-	vol      int
-	volHold  time.Time
+	posMs   int
+	posAt   time.Time
+	playing int // MID 51: 0=playing, anything else not
+	vol     int
+	volHold time.Time
+	// volLive: a volume read has arrived this run, so vol is the device's
+	// level and not the snapshot the previous run cached.
+	volLive  bool
 	playHold time.Time
 	premute  int // 0 == none
 
@@ -107,10 +112,12 @@ type State struct {
 	zcProbeAt time.Time
 	zcOKAt    time.Time
 
-	// firmware update check: the TUI raises otaWant when the diagnostics
-	// overlay opens, the OTA worker takes it and answers with ota (the vendor
-	// manifest's verdict) — see RequestOTA / TakeOTARequest / SetOTA.
+	// firmware update check: the TUI raises otaWant when u is pressed in the
+	// diagnostics, the OTA worker takes it — otaBusy from then until its
+	// answer lands — and answers with ota (the vendor manifest's verdict) —
+	// see RequestOTA / TakeOTARequest / SetOTA.
 	otaWant bool
+	otaBusy bool
 	ota     *OTAInfo
 
 	// probeQuiet is raised by the TUI while no view shows what the LSSDP and
@@ -183,10 +190,14 @@ type Snapshot struct {
 	Playing   int
 	Vol       int
 	Muted     bool
-	Error     string
-	ErrorAt   time.Time
-	Fatal     bool
-	Attempts  int
+	// VolLive is true once the device has reported its volume this run.
+	// Until then Vol is the level the previous run cached, and a volume step
+	// computed from it would land on the device as a wrong absolute level.
+	VolLive  bool
+	Error    string
+	ErrorAt  time.Time
+	Fatal    bool
+	Attempts int
 
 	CoverURL string      // current track's cover art URL ("" if none)
 	Art      image.Image // decoded cover for CoverURL, or nil if not yet loaded
@@ -260,6 +271,7 @@ func (st *State) snapLocked(now time.Time) Snapshot {
 		Pos:          pos,
 		Playing:      st.playing,
 		Vol:          st.vol,
+		VolLive:      st.volLive,
 		Muted:        st.connected && st.vol == 0,
 		Error:        st.errMsg,
 		ErrorAt:      st.errAt,
@@ -315,9 +327,6 @@ func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
 	st.zcOKAt = now
 }
 
-// RequestOTA asks for a firmware update check. Raised by the TUI when the
-// diagnostics overlay opens — the check contacts the vendor, so it only ever
-// runs on that explicit gesture, never on a timer.
 // SetProbeQuiet tells the probe workers whether their answers are on screen
 // (quiet = nobody is looking). See probeQuiet.
 func (st *State) SetProbeQuiet(quiet bool) {
@@ -334,18 +343,30 @@ func (st *State) ProbeWanted() bool {
 	return !st.probeQuiet
 }
 
+// RequestOTA asks for a firmware update check. Raised by the TUI's u key in
+// the diagnostics — the check contacts the vendor, so it only ever runs on
+// that explicit keystroke, never on a timer or on opening a view.
 func (st *State) RequestOTA() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.otaWant = true
 }
 
-// TakeOTARequest hands a pending request to the worker (clearing it), with the
-// firmware build to ask about: the reg-5 build from the ssh stream, else the
-// LSSDP answer's. Before either has arrived the request is NOT handed over —
-// the worker polls again, and the overlay keeps saying "checking…" until a
-// build lands (an overlay opened in the first seconds of a run used to get a
-// "check failed · firmware not read yet" verdict that nothing ever retried).
+// reBuild is the shape of a firmware build the vendor manifest is asked about
+// ("AR241CE_8530") — the same shape the OTA worker insists on before the
+// string goes into a request body.
+var reBuild = regexp.MustCompile(`^[A-Z0-9]{2,12}_[0-9]{1,8}$`)
+
+// TakeOTARequest hands a pending request to the worker (clearing it, and
+// marking the check in flight until SetOTA), with the firmware build to ask
+// about: the reg-5 build from the ssh stream when it has the shape of one,
+// else the LSSDP answer's. A reg-5 read that failed at connect leaves the
+// stream's firmware "." or ".23" for the whole connection; handing that over
+// only bought an "unrecognised firmware string" verdict while LSSDP held the
+// real build. Before a build has arrived the request is NOT handed over — the
+// worker polls again, and the diagnostics keep saying "checking…" until one
+// lands (a check asked for in the first seconds of a run used to get a "check
+// failed · firmware not read yet" verdict that nothing ever retried).
 func (st *State) TakeOTARequest() (build string, pending bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -353,24 +374,25 @@ func (st *State) TakeOTARequest() (build string, pending bool) {
 		return "", false
 	}
 	switch {
-	case st.sysinfo != nil && st.sysinfo.FW != "":
+	case st.sysinfo != nil && reBuild.MatchString(firmwareBuild(st.sysinfo.FW)):
 		build = firmwareBuild(st.sysinfo.FW)
 	case st.lssdp != nil && st.lssdp.FW != "":
 		build = firmwareBuild(st.lssdp.FW)
 	default:
 		return "", false
 	}
-	st.otaWant = false
+	st.otaWant, st.otaBusy = false, true
 	return build, true
 }
 
-// SetOTA records the worker's verdict (strings control-stripped).
+// SetOTA records the worker's verdict (strings control-stripped), which ends
+// the check in flight.
 func (st *State) SetOTA(info OTAInfo) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	info.Asked, info.Offered, info.Err = printable(info.Asked), printable(info.Offered), printable(info.Err)
 	info.PackageURL = printable(info.PackageURL)
-	st.ota = &info
+	st.ota, st.otaBusy = &info, false
 }
 
 // firmwareBuild is the manifest's fwVersion: the build before the first dot
@@ -420,6 +442,11 @@ type DiagnosticSnapshot struct {
 	Net              NetStat
 	EQConnected      bool
 
+	// ConfAt is when ConfInfo arrived (zero: not stamped). The block is read
+	// only at connect and after a services toggle, so the engine age in it is
+	// as of then, not as of this frame.
+	ConfAt time.Time
+
 	// Softvol is the last sampled output level (SoftvolOK false until one
 	// arrives); LevelDesync is true once it has disagreed with the reported
 	// volume on two consecutive samples — the app normally holds it at vol−1.
@@ -439,13 +466,15 @@ type DiagnosticSnapshot struct {
 	ZCProbeAt, ZCOKAt time.Time
 
 	// OTA is the last firmware-check verdict (nil: never asked this run);
-	// OTAPending is a check the overlay asked for that has not answered yet.
+	// OTAPending is a check u asked for that has not answered yet — still
+	// waiting for the worker, or in flight to the vendor.
 	OTA        *OTAInfo
 	OTAPending bool
 
 	// Ops is the device's own syslog digest — the Spotify engine's reconnect
 	// count over the log's window and the box's own last manifest answer (nil:
-	// none received this connection); OpsAt is when it arrived.
+	// none received yet); OpsAt is when it arrived, which is where the window
+	// its count covers ends.
 	Ops   *DevOps
 	OpsAt time.Time
 }
@@ -713,6 +742,7 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		SysInfo:         st.sysinfo,
 		DevInfo:         st.devinfo,
 		ConfInfo:        st.confinfo,
+		ConfAt:          st.confAt,
 		Details:         st.details,
 		Multiroom:       st.mroom,
 		Net:             st.netViewLocked(),
@@ -728,7 +758,7 @@ func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
 		ZCProbeAt:       st.zcProbeAt,
 		ZCOKAt:          st.zcOKAt,
 		OTA:             st.ota,
-		OTAPending:      st.otaWant,
+		OTAPending:      st.otaWant || st.otaBusy,
 		Ops:             st.ops,
 		OpsAt:           st.opsAt,
 	}

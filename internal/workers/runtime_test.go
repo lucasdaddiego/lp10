@@ -18,7 +18,7 @@ func TestRuntimeCloseStopsAndJoinsWorkers(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
 
 	st := protocol.NewState()
-	r := StartRuntime(st, config.Config{Host: "127.0.0.1", Art: false})
+	r := StartRuntime(st, config.Config{Host: "127.0.0.1", PingHost: testPingHost, Art: false})
 
 	done := make(chan struct{})
 	go func() {
@@ -41,7 +41,7 @@ func TestRuntimePreloadsPersistedSnapshotBeforeStarting(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", stateDir)
 	t.Setenv("LP10_SSH", filepath.Join(t.TempDir(), "missing-ssh"))
 	t.Setenv("LP10_TUNNEL_ADDR", "127.0.0.1:0")
-	cfg := config.Config{Host: "cached.local", Art: false}
+	cfg := config.Config{Host: "cached.local", PingHost: testPingHost, Art: false}
 	config.SaveSnapshot(config.SnapshotPath(cfg), config.CachedSnapshot{
 		Track: &protocol.Track{TrackName: "Cached"}, Pos: 4200, Vol: 37,
 		EQ: map[string]int{"BAS": 4},

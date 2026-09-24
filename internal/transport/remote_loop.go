@@ -1,8 +1,11 @@
 package transport
 
 import (
+	"context"
 	_ "embed"
+	"net"
 	"strings"
+	"time"
 )
 
 // remoteLoopScript is the on-device BusyBox-ash streaming loop. It is authored as
@@ -11,18 +14,20 @@ import (
 // generated one-liner (TestEmbeddedLoopMatchesSource guards against a stale embed).
 // Collapsing to a single comment-free line keeps the on-wire footprint minimal (it
 // shares the device with playback). RemoteLoop substitutes two placeholders at spawn:
-// the ph='__PING_HOST__' diagnostics ping target, and the __MIDS__ command-id
-// whitelist spliced at `case "$mid" in`. The contract doc lives here.
+// the ph='__PING_HOST__' diagnostics ping target (an IPv4 PingTarget resolved on
+// the laptop, or empty), and the __MIDS__ command-id whitelist spliced at
+// `case "$mid" in`. The contract doc lives here.
 //
 // The loop does timing-based EOF detection, adaptive idle cadence and a
-// two-step burst drain (rationale inline in the source), and emits five
+// two-step burst drain (rationale inline in the source), and emits six
 // one-shot prologue records before the loop: an @@i static device/network block (the active
 // interface, its link details, the FriendlyName from reg 90, the data-partition
 // usage, and the resolver), an @@c capability block (which streaming services
-// are enabled — running daemons via pidof, env-gated features via getenv — for
-// the config view), and the raw @@d device-details (reg 92: serial / MACs / MCU
-// + full firmware version) and @@g multiroom-group (reg 39) register reads,
-// parsed laptop-side. It appends
+// are enabled — running daemons from one /proc comm scan, env-gated features via
+// getenv — for the config view), the raw @@d device-details (reg 92: serial /
+// MACs / MCU + full firmware version) and @@g multiroom-group (reg 39) register
+// reads, parsed laptop-side, the @@n night-mode readback, and the @@o digest
+// (the Spotify reconnect count and the box's own firmware-check verdict). It appends
 // SoC temp, interface byte counters, Wi-Fi signal/link/noise, three ICMP ping RTTs
 // (laptop / gateway / internet), the ALSA audio chain (playback state, the DAC's
 // actual rate/format/channels, and the buffer fill from avail/buffer_size), the
@@ -42,66 +47,102 @@ import (
 //     connection, so the TUI re-asserts while the overlay is open. Off the
 //     overlay each tick does zero /proc stat reads. The toggle never reaches
 //     LUCI_local and skips the per-keypress track re-read.
+//   - MID 94 (1 = the player view is on screen, 0 = it is not) is the other view
+//     flag: off the player the loop stretches to the 3 s tick and skips the
+//     position read; back on it the metadata is re-read at once.
 //   - night mode (the AED multi-band DRC enable, the one host-writable audio
 //     effect on the box) is a MID-91 message (1 = on, 0 = off) on the same
 //     channel: the loop sets the ALSA boolean and answers with an @@n readback.
 //     It is also read once at connect, so the TUI knows the value to restore.
 //   - per tick the only forks are the LUCI_local device-API reads, and even
-//     those are trimmed: play-state (-r 51) and volume (-r 64) stay per-tick
-//     (they're data-bearing for the watchdog and must reflect external changes
-//     promptly), but position (-r 49) is polled only every 5th tick (pc49 gate)
-//     since the TUI extrapolates position locally and only needs a periodic
-//     resync — any command, play-state flip, or detected track skip forces an
-//     immediate re-read. The per-tick position/play values use echo (a builtin)
-//     rather than printf (an applet on some BusyBox builds). Every stat comes
-//     from /proc and /sys via shell builtins (no awk/sed/grep), and the meminfo
-//     and /proc/net/wireless scans break as soon as their fields are found, so
-//     the timing-based EOF detection stays cheap and undisturbed. The exception
-//     is latency: while the overlay is open the three `ping`s (the only per-tick
-//     execs beyond LUCI_local) run on every 3rd @@s — gated by pgc, mirroring the
-//     pc49 position poll — each capped at -W1 and parsed by parameter expansion in
-//     the pg() helper, which returns via the shared $o (no capturing subshell, so
-//     each call forks once — for ping — not twice). The gate bounds the per-tick
-//     stall (an unreachable target
-//     costs a full -W1 second) so a dead target can't lag playback updates on every
-//     tick; the intervening ticks emit "-", which the parser folds in as "no new
-//     sample" rather than a spike.
+//     those are trimmed: play-state (-r 51) and volume (-r 64) alternate, one
+//     per tick (both on the first tick and after a command burst) — each record
+//     still carries data for the watchdog, and either value is at most one
+//     tick stale — and position (-r 49) is polled only every 5th tick (pc49
+//     gate) since the TUI extrapolates position locally and only needs a
+//     periodic resync — any command, play-state flip, or detected track skip
+//     forces an immediate re-read. The per-tick position/play values use echo
+//     (a builtin) rather than printf (an applet on some BusyBox builds). Every
+//     stat comes from /proc and /sys via shell builtins (no awk/sed/grep), and
+//     the meminfo and /proc/net/wireless scans break as soon as their fields
+//     are found, so the timing-based EOF detection stays cheap and undisturbed.
+//     The exception is latency: while the overlay is open the three `ping`s and
+//     the softvol read (the only per-tick execs beyond LUCI_local) run on every
+//     3rd @@s — gated by pgc, mirroring the pc49 position poll — each ping
+//     capped at -W1 and parsed by parameter expansion in the pg() helper, which
+//     returns via the shared $o (no capturing subshell, so each call forks
+//     once — for ping — not twice). The gate bounds the per-tick stall (an
+//     unreachable target costs a full -W1 second) so a dead target can't lag
+//     playback updates on every tick; the intervening ticks emit "-", which the
+//     parser folds in as "no new sample" rather than a spike. Every ping target
+//     is an address, so no tick waits on the box's resolvers (see PingTarget).
 //   - the once-per-connection @@i probes select the active interface from the
 //     default route and parse iw / ip-route / sysfs and fwVersion.conf with shell
 //     parameter expansion rather than sed|head pipelines, sparing ~a dozen
 //     fork+execs at connect/reconnect.
 //   - the once-per-connection @@c capability block reads the streaming-service
-//     state (pidof for the running daemons, getenv for the env-gated features) —
-//     a read-only burst paid once at connect, not per tick, so the config view
-//     paints the moment it's opened without any further device work. The pr/gv
-//     helpers print "key=value" directly (one exec per service, no capturing
-//     subshell), so the whole block is ~8 forks, not 16.
+//     state (one fork-free pass over /proc/<pid>/comm for the running daemons,
+//     getenv for the env-gated features) — a read-only burst paid once at
+//     connect and after a MID-92 toggle, not per tick, so the config view paints
+//     the moment it's opened without any further device work. The pr/gv helpers
+//     print "key=value" directly (no capturing subshell), so a running daemon
+//     costs no fork at all and an env flag one.
 //
 //go:generate go run mkloop.go
 //go:embed remote_loop.sh
 var remoteLoopScript string
 
 // RemoteLoop returns the on-device loop script with the diagnostics
-// internet-ping target substituted in. The ping host is sanitized then
-// substituted first: sanitizeHost strips quotes and underscores, so a hostile
-// value can neither break out of the single-quoted ph assignment nor forge the
-// __MIDS__ token. The command-id whitelist is the fixed "40|64" (transport +
-// volume) — MIDs 90 (stats toggle), 91 (night mode), 92 (service toggle) and
-// 93 (log tail) have their own arms in the script outside the whitelist, so
-// the alternation never needs to vary. Each placeholder
-// occurs once.
-func RemoteLoop(pingHost string) string {
-	s := strings.Replace(remoteLoopScript, "__PING_HOST__", sanitizeHost(pingHost), 1)
+// internet-ping target substituted in. The target must be an IPv4 address —
+// PingTarget's answer — and anything else (a name, an IPv6 literal, a hostile
+// string) is substituted as no target at all: the loop never receives a name
+// its ping would have to resolve on the box, and nothing but digits and dots
+// reaches the single-quoted ph assignment, so no value can break out of it or
+// forge the __MIDS__ token. The command-id whitelist is the fixed "40|64"
+// (transport + volume) — MIDs 90 (stats toggle), 91 (night mode), 92 (service
+// toggle), 93 (log tail) and 94 (player-visible flag) have their own arms in
+// the script outside the whitelist, so the alternation never needs to vary.
+// Each placeholder occurs once.
+func RemoteLoop(pingIP string) string {
+	target := ""
+	if ip4 := net.ParseIP(pingIP).To4(); ip4 != nil {
+		target = ip4.String()
+	}
+	s := strings.Replace(remoteLoopScript, "__PING_HOST__", target, 1)
 	return strings.Replace(s, "__MIDS__", "40|64", 1)
 }
 
-// sanitizeHost keeps only hostname/IP-safe characters so a user-supplied
-// ping_host can be embedded in the device loop without shell escaping. A value
-// that needed ANY stripping falls back to the default target, not the stripped
-// remainder: that remainder is a different, almost certainly bogus name — an
-// IPv6 literal "2606:4700::1111" would become "260647001111" and fail every
-// gated ping with no indication why — and a working default beats a silently
-// mangled target.
+// pingResolveTimeout bounds PingTarget's lookup: it runs on every session
+// spawn, so a dead laptop resolver may delay a reconnect by this much at most.
+const pingResolveTimeout = time.Second
+
+// PingTarget resolves the configured ping_host (sanitizeHost first) HERE, on
+// the laptop, into the IPv4 the loop's internet ping receives: its first A
+// record, looked up within pingResolveTimeout. The box's resolvers are the weak
+// link — BusyBox ping's -W bounds only the reply wait, and with the box's DHCP
+// resolvers dead one name lookup blocked 10–28 s, past the 8 s watchdog, so
+// the diagnostics turned into an ssh reconnect every ~15 s, the pattern that
+// locks out the box's sshd. When the lookup fails or yields no IPv4 the last
+// good answer stands (last, which the caller carries across spawns); with none
+// the loop gets no target at all, and an empty ping fails at once.
+func PingTarget(ctx context.Context, host, last string) string {
+	rctx, cancel := context.WithTimeout(ctx, pingResolveTimeout)
+	defer cancel()
+	addrs, _ := net.DefaultResolver.LookupIPAddr(rctx, sanitizeHost(host))
+	for _, a := range addrs {
+		if ip4 := a.IP.To4(); ip4 != nil {
+			return ip4.String()
+		}
+	}
+	return last
+}
+
+// sanitizeHost keeps only hostname/IP-safe characters in a user-supplied
+// ping_host before PingTarget looks it up. A value that needed ANY stripping
+// falls back to the default target, not the stripped remainder: that remainder
+// is a different, almost certainly bogus name — an IPv6 literal
+// "2606:4700::1111" would become "260647001111" and fail every gated ping with
+// no indication why — and a working default beats a silently mangled target.
 func sanitizeHost(h string) string {
 	var b strings.Builder
 	for _, r := range h {
@@ -109,15 +150,14 @@ func sanitizeHost(h string) string {
 			b.WriteRune(r)
 		}
 	}
-	// Longer than 64 characters falls back too: the loop rides one ssh exec
-	// request that sits close under dropbear's 9000-byte MAX_CMD_LEN, and the
-	// target is substituted into it — TestRemoteLoopFitsDropbearCmdLen budgets
-	// for exactly this ceiling. No sane ping target is longer.
+	// Longer than maxPingHostLen characters falls back too: no sane ping target
+	// is longer, and the cap keeps an arbitrary configured string away from the
+	// resolver.
 	if h == "" || len(h) > maxPingHostLen || b.String() != h {
 		return "spotify.com"
 	}
 	return h
 }
 
-// maxPingHostLen is the longest ping_host that reaches the device loop.
+// maxPingHostLen is the longest ping_host PingTarget will look up.
 const maxPingHostLen = 48

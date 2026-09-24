@@ -11,7 +11,7 @@
 #   - break a command across lines only at a real, out-of-quote separating space.
 #
 # Two placeholders are substituted at spawn by transport.RemoteLoop:
-#   __PING_HOST__  diagnostics internet-ping target (already host-sanitised)
+#   __PING_HOST__  diagnostics internet-ping target: an IPv4 the laptop resolved, or empty
 #   __MIDS__       whitelisted command-id alternation, e.g. 40|64
 #
 # Footprint note: this whole prologue runs ONCE per connection; the per-tick cost is
@@ -34,23 +34,30 @@ nl=$(printf '\nx'); nl=${nl%x};
 # E() ends a record section; tl() is the shared log-tail pipe (last 160 lines,
 # space-prefixed). Both exist for bytes: the loop rides one ssh exec request and
 # sits just under dropbear's 9000-byte MAX_CMD_LEN.
+# tl() drops, ON THE BOX, every line that names a blob or a username, in any
+# case: the Spotify engine logs its reusable login blob in clear on every start
+# ("SAME USERNAME IS THERE STORE THE BLOB …"), and nothing that reaches the
+# laptop's log pane may carry it. The closing echo gives the next @@E a line of
+# its own: the vendor app may not have finished writing its last line, and a
+# tail that ends mid-line glues E()'s @@E onto it, so the laptop never sees the
+# terminator. The parser skips the empty line the echo leaves otherwise.
 E() { echo @@E; };
-tl() { tail -160 | sed 's/^/ /'; };
+tl() { tail -160 | grep -viE 'blob|username' | sed 's/^/ /'; echo; };
 cip=${SSH_CLIENT%% *};
 # ml: the box's live syslog. NOT /var/log/messages — that file is touched at boot and
-# stays 0 bytes; rsyslog writes here. Shared by lg() and ot() (bytes).
+# stays 0 bytes; rsyslog writes here. Shared by lg() and ot() (bytes). al: the vendor
+# app's own log, shared by ot() and the MID-93 tail.
 ml=/var/log/syslog/messages.log;
+al=/lsync/app.log;
 
-# ── pg(): one ICMP ping — the avg RTT (ms) via shared $o ("-" on failure), plus the
-# target's resolved IPv4 via shared $oip ("" when unparsed), taken from BusyBox
-# ping's "PING host (ip):" header before the RTT parse consumes $o. The caller can
-# pin a hostname target to $oip after the first success so later ticks never
-# re-resolve DNS: -W bounds the reply wait, NOT resolution — a dying resolver
-# would otherwise stall the loop for seconds per attempt.
+# ── pg(): one ICMP ping — the avg RTT (ms) via shared $o ("-" on failure). Every
+# target is an address, never a name: -W bounds the reply wait, NOT resolution,
+# and with the box's DHCP resolvers dead one name lookup blocked 10–28 s — past
+# the laptop's 8 s watchdog, so each reconnect repeated it. The internet target
+# ($ph) is the IPv4 the laptop resolved before it spawned this loop, or empty
+# when nothing resolved: an empty ping fails at once, no resolver involved.
 pg() {
   o=$(ping -c1 -W1 "$1" 2>/dev/null);
-  oip=${o#*\(}; oip=${oip%%\)*};
-  case "$oip" in *[!0-9.]*|'') oip=;; esac;
   case "$o" in
     *"min/avg/max = "*) o=${o#*min/avg/max = }; o=${o%% ms*}; o=${o#*/}; o=${o%%/*};;
     *) o=-;;
@@ -66,20 +73,22 @@ case "$ir" in
     case "$r" in *" dev "*) dv=${r#* dev }; dv=${dv%% *};; esac;;
 esac;
 [ -z "$dv" ] && dv=eth0;
-# The per-tick counter reads share one prefix: six spelled-out paths cost ~150
-# bytes of the ssh command-length budget the loop sits just under.
-sd=/sys/class/net/$dv/statistics;
-mac=; read -r mac 2>/dev/null < /sys/class/net/$dv/address;
+# The interface's sysfs reads share one prefix (nd), and the per-tick counter
+# reads a second (sd): spelled out, the paths cost ~200 bytes of the ssh
+# command-length budget the loop sits just under.
+nd=/sys/class/net/$dv;
+sd=$nd/statistics;
+mac=; read -r mac 2>/dev/null < $nd/address;
 ip=$(ip -o -4 addr show $dv 2>/dev/null); ip=${ip#*inet }; ip=${ip%%/*};
 net=eth; sp=; dx=; ss=; fq=; rt=;
-if [ -d /sys/class/net/$dv/wireless ]; then
+if [ -d $nd/wireless ]; then
   net=wifi; wl=$(iw dev $dv link 2>/dev/null);
   case "$wl" in *"SSID: "*) ss=${wl#*SSID: }; ss=${ss%%"$nl"*};; esac;
   case "$wl" in *"freq: "*) fq=${wl#*freq: }; fq=${fq%%"$nl"*}; fq=${fq%% *};; esac;
   case "$wl" in *"tx bitrate: "*) rt=${wl#*tx bitrate: }; rt=${rt%%"$nl"*}; rt=${rt%% *};; esac;
 else
-  read -r sp 2>/dev/null < /sys/class/net/$dv/speed;
-  read -r dx 2>/dev/null < /sys/class/net/$dv/duplex;
+  read -r sp 2>/dev/null < $nd/speed;
+  read -r dx 2>/dev/null < $nd/duplex;
 fi;
 
 # ── build/app/platform from fwVersion.conf (quoted values) ──
@@ -124,7 +133,7 @@ E;
 
 # ── @@c capability block ──
 # Two independent truths per service, because they diverge and the divergence IS
-# the interesting fault: `<id>` is what is actually RUNNING (pidof), `<id>.env`
+# the interesting fault: `<id>` is what is actually RUNNING (the /proc scan), `<id>.env`
 # is what the config SAYS. The device's own web page only ever reports the env
 # flag, which is how an LP10 can advertise "Spotify: on" with no engine running
 # at all (the AR241CE_8530 OTA left both Spotify flags set and the XOR-guarded
@@ -186,9 +195,13 @@ sy() {
   # field 22 is its start in clock ticks since boot; USER_HZ is 100) and whether
   # an ssh session launched it — an init-started daemon carries no SSH_* in its
   # environment, one kicked from this pane (or a shell) does. Empty when no
-  # engine runs. That is how the 2026-09-04 engine switch was traced.
+  # engine runs. That is how the 2026-09-04 engine switch was traced. The field
+  # count guards an engine that exits between the comm scan and this read (a
+  # toggle, a netdown/netready relaunch): its stat is gone, ${22} is empty, and
+  # the arithmetic error would abort ash mid-@@c — the whole loop, and so the
+  # ssh session.
   ea=; eb=;
-  [ -n "$ep" ] && { set -- $(cat $ep/stat); read -r u9 x9 < /proc/uptime; ea=$((${u9%.*}-${22}/100)); eb=$(grep -c SSH_CLIENT $ep/environ); };
+  [ -n "$ep" ] && { set -- $(cat $ep/stat); [ $# -gt 21 ] && read -r u9 x9 < /proc/uptime && ea=$((${u9%.*}-${22}/100)) && eb=$(grep -c SSH_CLIENT $ep/environ); };
   echo "spotify.proc=$ea${eb:+ $eb}";
   # dirty = the env keys a runtime setenv has touched. The settings store is
   # sqlite (/data/libre/env/env.db) and dbit=1 marks a user-written row — the
@@ -281,7 +294,11 @@ tg() {
     setsid /etc/init.d/$vs $vc </dev/null >/dev/null 2>&1 &
   fi;
   ct;
-  cq=8;
+  # The confirming re-read comes 3 ticks later. Toggles are sent from the
+  # services view, where the loop runs the 3 s tick, so it lands within ~9 s —
+  # inside the TUI's 12 s svcPendingFor. At 8 ticks it came after 12–24 s, and
+  # the row settled on the immediate read's stale "off" first.
+  cq=3;
 };
 
 # ── lg(): the @@l log block (MID 93) ──
@@ -302,22 +319,31 @@ tg() {
 #
 # MID 93 with data 2 answers instead with @@L: the tail of /lsync/app.log, the
 # Rust rakoit_app's own log (since app v32 on fw 8530) — every :2018 tunnel frame
-# and MCU reply, preset (favourite) actions, PlayView publishes. Same space-prefix
-# guard, no severity grep (the laptop filters on its "[LEVEL]" field). Inlined in
+# and MCU reply, preset (favourite) actions, PlayView publishes. Same tl() pipe —
+# the space-prefix guard and the login-blob drop — and no severity grep (the
+# laptop filters on its "[LEVEL]" field). Inlined in
 # the dispatcher rather than a second function: the loop rides one ssh exec
 # request and sits a few hundred bytes under dropbear's 9000-byte ceiling.
 lg() { grep " [EWIDNF]/" $ml 2>/dev/null | grep -v luci_serv | tl; };
 
-# ── ot(): the @@o syslog digest — three tagged lines the laptop turns into the
-# Spotify engine's reconnect rate and the box's OWN firmware-check verdict:
-#   n= how often the eSDK logged "The connection to Spotify has been lost"
-#   t= the syslog's first timestamp (the window those reconnects fall in;
-#      /tmp/syslog is tmpfs, so it holds roughly the last day)
-#   u= the ota daemon's last manifest answer ("error string = No update
-#      available", or the offered package) — it asks the vendor every 4 h on
-#      its own, so lp10 never has to. Sent at connect and whenever the
-#      diagnostics overlay opens. ──
-ot() { echo @@o; { echo "n=$(grep -c 'has been lost' $ml)"; echo "t=$(head -c 15 $ml)"; echo "u=$(grep 'error string' $ml | tail -1)"; } 2>/dev/null; E; };
+# ── ot(): the @@o digest — three tagged lines the laptop turns into the Spotify
+# engine's reconnect rate and the box's OWN firmware-check verdict:
+#   n= how often the eSDK logged "The connection to Spotify has been lost" in
+#      the live syslog
+#   t= that file's first timestamp (the window those reconnects fall in). It is
+#      capped at 1 MiB and rotated onto flash, and while a track plays
+#      luci_service logs three lines a second, so the window is well under an
+#      hour then and days when the box is idle.
+#   u= the last MsgBox-223 report in the vendor app's log: the ota daemon asks
+#      the vendor every 4 h on its own (so lp10 never has to), and the MCU hears
+#      the answer as `payload="NO_UPDATE"`. The syslog's own line of it rotates
+#      away within the hour; app.log keeps weeks. Only its last 256 KiB are read
+#      (0.03 s on the box, against 0.36 s for the whole file) — over a day of
+#      the app's logging, and the report comes every 4 h.
+# Sent at connect and whenever the diagnostics overlay opens — the 0→1 change of
+# dg only: the TUI re-sends "90 1" every ~3 s while the overlay stays open, and
+# each of those is a keep-alive, not a reason to re-read the logs. ──
+ot() { echo @@o; { echo "n=$(grep -c 'has been lost' $ml)"; echo "t=$(head -c 15 $ml)"; echo "u=$(tail -c 262144 $al | grep -aF 'command=223 ' | tail -1)"; } 2>/dev/null; E; };
 
 
 # ── @@d device details (reg 92 JSON: serial / MACs / MCU + full fw version) and
@@ -337,14 +363,24 @@ ot;
 
 # ── main streaming loop ── (state: i=metadata countdown, idl=idle ticks, bw=burst
 # window, dg=diag overlay flag, pv=player-visible flag, pc49=position-poll gate,
-# pgc=ping gate, ef=EOF streak)
+# pgc=ping gate, cq=toggle re-read countdown, tk=state/volume alternation,
+# ef=EOF streak)
+#
+# Cadence: one tick a second while playing, 3 s once idle or off the player.
+# Each tick reads the play-state OR the volume (alternating, both after a
+# command burst), the position every 5th tick while playing on the player
+# view, and the metadata only on the 15-tick fallback or when something
+# forces it.
 #
 # pv (MID 94) is the laptop saying whether the player view is on screen. Off
 # it, nobody reads the position or watches the seek bar, so the loop stretches
-# to the 3 s tick and skips the reg-49 read; state and volume still ride every
-# tick (the watchdog and the other views' playback keys need them fresh-ish),
-# metadata every 5th. That cuts the per-second forks by about two thirds while
-# the services, logs, diagnostics or help are showing.
+# to the 3 s tick and skips the reg-49 read; the state/volume read still rides
+# every tick (the watchdog and the other views' playback keys need them
+# fresh-ish). That cuts the per-second forks by about two thirds while the
+# services, logs, diagnostics or help are showing. Back on the player (94 1)
+# the metadata is re-read at once: off it, a track change can slip past both
+# the 15-tick fallback and the backward-jump detector (the new track's position
+# is past the old one's), and the player would show the old title.
 i=0; prev=; ef=0; idl=0; bw=0; dg=0; pv=1; pc49=0; pgc=0; cq=0; tk=2;
 while :; do
 
@@ -409,23 +445,20 @@ while :; do
     cf=-; read -r cf 2>/dev/null < /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq;
     # three ping RTTs (laptop / gateway / internet) gated to every 3rd @@s (pgc) so a
     # dead target can't stall every tick; skipped ticks emit "-" (parser folds as gap).
-    # The internet target self-pins to its resolved IP after the first success (pg's
-    # $oip), so every later tick skips DNS entirely. The pin is gated on the RTT
-    # parse succeeding, not just resolution: BusyBox ping prints the "PING host
-    # (ip):" header even at 100% loss, and pinning a captive-portal / ICMP-dead
-    # answer would hold a dead IP for the whole connection while DNS recovers.
+    # All three targets are addresses (see pg), so no tick ever waits on DNS.
     # The ALSA softvol "Master" (the real output level on this box: the app keeps it
     # at vol−1) rides the same every-3rd gate, so the laptop can flag the level
     # drifting out of step with the volume the device reports — the one failure
     # mode where the room goes quiet while every display says it didn't.
     pgc=$((pgc-1));
-    if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o; pg "$gw"; pgw=$o; pg "$ph"; pnt=$o; [ "$o" != - ] && [ -n "$oip" ] && ph=$oip; pgc=3; sv=-; mv=$(amixer -c0 cget name=Master 2>/dev/null); case "$mv" in *": values="*) sv=${mv##*: values=}; sv=${sv%%,*}; sv=${sv%%"$nl"*};; esac; else pcl=-; pgw=-; pnt=-; sv=-; fi;
+    if [ $pgc -le 0 ]; then pg "$cip"; pcl=$o; pg "$gw"; pgw=$o; pg "$ph"; pnt=$o; pgc=3; sv=-; mv=$(amixer -c0 cget name=Master 2>/dev/null); case "$mv" in *": values="*) sv=${mv##*: values=}; sv=${sv%%,*}; sv=${sv%%"$nl"*};; esac; else pcl=-; pgw=-; pnt=-; sv=-; fi;
     echo @@s;
     echo "$up $la $lb $lc $ma $mt $nc $fw.$fv $kt-$kr ${tp:--} ${rxb:--} ${txb:--} $sg $lq $pcl $pgw $pnt ${as:--} ${ab:--} ${ar:--} ${af:--} ${ac:--} ${bs:--} ${cf:--} ${r1:--} ${ns:--} ${rxe:--} ${txe:--} ${rxd:--} ${txd:--} ${sv:--}";
   fi;
   # A service toggle re-reads capabilities twice: once immediately (the env write
-  # is visible at once) and once a few ticks later, because a daemon needs a
-  # moment to appear in pidof and the pane must never settle on a stale "off".
+  # is visible at once) and once cq ticks later (see tg), because a daemon needs
+  # a moment to appear in the /proc scan and the pane must never settle on a
+  # stale "off".
   [ $cq -gt 0 ] && { cq=$((cq-1)); [ $cq = 0 ] && ct; };
   E;
 
@@ -449,18 +482,22 @@ while :; do
   # blocking read of one command (timeout $w). On a command: run it (whitelist only),
   # then two-step burst-drain any queued commands. On timeout: time the read to tell a
   # real idle gap from an EOF storm (3 sub-50ms empty reads in a row -> peer gone).
+  # The drain yields after 8 commands (dn) even with more queued: a key held on a
+  # fast repeat can queue them faster than LUCI_local runs them, and a drain that
+  # never ends never reaches E(), so the laptop's 8 s watchdog kills a healthy
+  # session. The rest wait one tick.
   if read -r -t $w mid data; then
-    ef=0; pc=0;
+    ef=0; pc=0; dn=0;
     while :; do
       case "$mid" in
         __MIDS__) LUCI_local "$mid" "$data" >/dev/null 2>&1; pc=1;;
-        90) case "$data" in 1) dg=1; ot;; *) dg=0;; esac;;
-        94) case "$data" in 1) pv=1;; *) pv=0;; esac;;
+        90) case "$data" in 1) [ $dg = 1 ] || ot; dg=1;; *) dg=0;; esac;;
+        94) case "$data" in 1) pv=1; i=0;; *) pv=0;; esac;;
         91) case "$data" in 1) nv=on;; *) nv=off;; esac; amixer -c0 cset name="$an" $nv >/dev/null 2>&1; nm;;
         92) tg "$data";;
-        93) case "$data" in 2) echo @@L; tl 2>/dev/null < /lsync/app.log;; *) echo @@l; lg;; esac; E;;
+        93) case "$data" in 2) echo @@L; tl 2>/dev/null < $al;; *) echo @@l; lg;; esac; E;;
       esac;
-      read -r -t 0 || break;
+      [ $((dn+=1)) -lt 8 ] && read -r -t 0 || break;
       read -r -t 1 mid data || break;
     done;
     [ $pc = 1 ] && { i=0; bw=4; idl=0; pc49=0; tk=2; };

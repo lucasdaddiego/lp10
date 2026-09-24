@@ -4,17 +4,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
-// The @@o digest: the loop ships three tagged lines from the box's own syslog —
-// the eSDK's reconnect count, the log's first timestamp (the window), and the ota
-// daemon's last manifest answer. Each is optional; the year is inferred.
+// report223 is a real MsgBox-223 line from the vendor app's log (2026-09-23),
+// with the stamp and payload swapped in.
+func report223(stamp, payload string) string {
+	return "[" + stamp + "] [DEBUG] [luci-rx] normalized_kind=unknown normalized=None remote_id=0 command_type=2 command=223 command_status=0 crc=16846 data_length=9 payload=\"" + payload + "\""
+}
+
+// The @@o digest: the loop ships three tagged lines — the eSDK's reconnect
+// count and the first timestamp of the live syslog (the window), and the vendor
+// app's last MsgBox-223 report of the box's own manifest check. Each is
+// optional; the syslog stamp's year is inferred.
 func TestParseOpsDigest(t *testing.T) {
 	now := time.Date(2026, 9, 12, 15, 0, 0, 0, time.Local)
 	o := parseOps([]string{
 		"n=88",
 		"t=Sep 11 01:47:58",
-		"u=Sep 12 14:56:15:624239 E/ota[923]: ota: OTA:error string =  No update available",
+		"u=" + report223("2026-09-12 14:56:15.624", "NO_UPDATE"),
 	}, now)
 	if o == nil {
 		t.Fatal("digest dropped")
@@ -33,17 +41,43 @@ func TestParseOpsDigest(t *testing.T) {
 	}
 }
 
+func TestOTAWords(t *testing.T) {
+	for in, want := range map[string]string{"NO_UPDATE": "no update", "UPDATE_AVAILABLE": "update available", "fail": "fail"} {
+		if got := OTAWords(in); got != want {
+			t.Errorf("OTAWords(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestParseOpsOfferedAndPartial(t *testing.T) {
 	now := time.Date(2026, 9, 12, 15, 0, 0, 0, time.Local)
-	// a different answer is carried verbatim (bounded), not read as up to date
-	o := parseOps([]string{"u=Sep 12 02:56:15:000000 E/ota[923]: ota: OTA:error string =  " + strings.Repeat("x", 200)}, now)
-	if o == nil || !o.OTAOK || o.OTAUpToDate || !strings.HasSuffix(o.OTAText, "…") || len(o.OTAText) > 130 {
-		t.Errorf("odd answer: %+v", o)
-	}
-	// the SUCCESS reply logs the package rather than an error string
-	o = parseOps([]string{"u=Sep 12 02:56:15:000000 I/ota[923]: ota: otapackage https://cdn.example/x.swu"}, now)
-	if o == nil || !o.OTAOK || o.OTAUpToDate || o.OTAText != "update offered" {
+	// any other report is carried in words, not read as up to date
+	o := parseOps([]string{"u=" + report223("2026-09-12 02:56:15.000", "UPDATE_AVAILABLE")}, now)
+	if o == nil || !o.OTAOK || o.OTAUpToDate || o.OTAText != "update available" {
 		t.Errorf("offered: %+v", o)
+	}
+	// a long payload is bounded
+	o = parseOps([]string{"u=" + report223("2026-09-12 02:56:15.000", strings.Repeat("X", 200))}, now)
+	if o == nil || !o.OTAOK || !strings.HasSuffix(o.OTAText, "…") || len(o.OTAText) > 70 {
+		t.Errorf("long payload: %+v", o)
+	}
+	// a report without a readable stamp keeps its verdict, with no time
+	o = parseOps([]string{`u=junk command=223 payload="NO_UPDATE"`}, now)
+	if o == nil || !o.OTAOK || !o.OTAUpToDate || !o.OTAAt.IsZero() {
+		t.Errorf("stampless: %+v", o)
+	}
+	// a line that is not a MsgBox-223 report — the old syslog answer, another
+	// MsgBox, a report with no payload — is no verdict at all
+	for _, u := range []string{
+		"u=Sep 12 14:56:15:624239 E/ota[923]: ota: OTA:error string =  No update available",
+		"u=[2026-09-12 02:56:15.000] [DEBUG] [luci-rx] command=64 command_status=0 payload=\"63\"",
+		"u=[2026-09-12 02:56:15.000] [DEBUG] [luci-rx] command=223 command_status=0",
+		`u=[2026-09-12 02:56:15.000] command=223 payload=""`,
+		`u=[2026-09-12 02:56:15.000] command=223 payload="NO_UPDATE`,
+	} {
+		if o := parseOps([]string{u}, now); o != nil {
+			t.Errorf("%q read as a verdict: %+v", u, o)
+		}
 	}
 	// a box with no syslog answers three empty tags: nothing is known, and the
 	// previous digest is kept (nil)
@@ -57,6 +91,28 @@ func TestParseOpsOfferedAndPartial(t *testing.T) {
 	// absent section
 	if parseOps(nil, now) != nil {
 		t.Error("absent section should be nil")
+	}
+}
+
+// clip bounds a string by bytes but cuts back to a rune start, so a long
+// multi-byte report is never split into invalid UTF-8 — which the digest's
+// lower-casing would otherwise paint as U+FFFD.
+func TestClipKeepsUTF8Valid(t *testing.T) {
+	for _, s := range []string{strings.Repeat("é", 40), strings.Repeat("€", 30), strings.Repeat("😀", 20)} {
+		for n := range len(s) {
+			if got := clip(s, n); !utf8.ValidString(got) || len(got) > n+len("…") {
+				t.Fatalf("clip(%q, %d) = %q", s, n, got)
+			}
+		}
+	}
+	now := time.Date(2026, 9, 23, 15, 0, 0, 0, time.Local)
+	u := report223("2026-09-23 14:56:15.624", "x"+strings.Repeat("é", 100))
+	if _, payload, ok := ParseOTAReport(u, time.Local); !ok || !utf8.ValidString(payload) || !strings.HasSuffix(payload, "…") {
+		t.Errorf("payload = %q (ok %v), want it clipped and valid", payload, ok)
+	}
+	o := parseOps([]string{"u=" + u}, now)
+	if o == nil || !utf8.ValidString(o.OTAText) || strings.ContainsRune(o.OTAText, utf8.RuneError) {
+		t.Errorf("OTAText is not clean UTF-8: %+v", o)
 	}
 }
 

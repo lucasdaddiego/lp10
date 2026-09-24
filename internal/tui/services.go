@@ -209,12 +209,21 @@ func svcLabelFor(row svcDef, wire string) string {
 // marks the row pending until the device reports back; the pane never paints an
 // optimistic local state, because the whole point of it is to show what the
 // device actually did.
+//
+// Before the first @@c there is no state to step from, and the pane shows no
+// row to press: a switch computed from an assumed "off" would write
+// persistent flags blind — "spotify hifi" kills a running Pro engine — so
+// enter sends nothing until the services have been read.
 func (m *model) svcToggle(now time.Time) {
 	row := svcRows[m.svcFocus]
 	if row.gate == gateFixed {
 		return
 	}
 	cv := m.st.ConfView()
+	if cv == nil {
+		m.notify("services not read yet · nothing sent", noticeFor)
+		return
+	}
 	next := m.svcWant(row, cv, m.svcPendingRow(row.id, cv, now))
 	if !protocol.ValidatePayload(92, row.id+" "+next) {
 		return // an id the wire refuses is a bug here, not something to send
@@ -268,6 +277,52 @@ func spotifyStateIdx(cv *protocol.ConfInfo) int {
 	return 0
 }
 
+// engineAppears is how long after a Spotify switch from this pane the chosen
+// engine may still be missing without that meaning anything. The loop
+// re-reads the services the moment the flags are written — before the new
+// engine is up — and again eight of its ticks later: about 24 s with the
+// player hidden (3 s ticks), past half a minute when the diagnostics' pings
+// run into their timeouts. Until that second read has had time to land, "set
+// but not running" is the switch still in progress, not a fault.
+const engineAppears = 40 * time.Second
+
+// engineRuns maps a live engine binary to the cycle position it stands for
+// ("" is no engine running); cfgWants maps the loop's word for the env pair to
+// the position it asks for. An engine a future firmware adds is absent from
+// the first, and "both" from the second — that pair already has its own
+// fault-hued state cell — so neither is ever compared. engineName is the name
+// an engine goes by on the row's segments.
+var (
+	engineRuns = map[string]string{"": "off", "newspotifyhifi": "hifi", "spotifymusicpro": "pro"}
+	cfgWants   = map[string]string{"none": "off", "hifi": "hifi", "pro": "pro"}
+	engineName = map[string]string{"hifi": "HiFi", "pro": "Pro"}
+)
+
+// engineMismatch is the Spotify row's own divergence, worded for its flag
+// column ("Pro not running", "HiFi is running"). The pair IS consulted — each
+// init script starts its engine only when its own flag is set and the other
+// clear — so a pair naming one engine while another, or none, runs is exactly
+// the contradiction the warn hue is kept for. "" when the two agree, when
+// either side is unread, and while a switch from this pane may still be
+// bringing its engine up (engineAppears).
+func (m *model) engineMismatch(cv *protocol.ConfInfo, now time.Time) string {
+	if m.svcPending == "spotify" && now.Sub(m.svcPendingAt) < engineAppears {
+		return ""
+	}
+	want, ok := cfgWants[cv.Cfg()]
+	if !ok || cv.Svc["spotify"] == "" { // the pair is unread or "both", or what runs is unread
+		return ""
+	}
+	switch run, known := engineRuns[cv.Engine()]; {
+	case !known || run == want:
+		return ""
+	case run == "off":
+		return engineName[want] + " not running"
+	default:
+		return engineName[run] + " is running"
+	}
+}
+
 // svcState is the row's ONE state cell — what is actually true right now. For
 // most services that is whether the daemon is up; for Spotify it is which engine
 // is configured (a three-way, not a boolean); for USB, which has no daemon to
@@ -301,11 +356,6 @@ func (m *model) svcState(row svcDef, cv *protocol.ConfInfo) string {
 	return t.dmr.render("—")
 }
 
-// svcAction spells out what enter does, on the focused row only. A control
-// surface that makes you press a key to discover what the key does is a guessing
-// game — but printing the same phrase on every row is noise, and only one row is
-// ever actionable. Naming the destination also makes the Spotify row's three-way
-// obvious without a legend.
 // engineSegments draws the Spotify three-way as segments with the current
 // one lit — off · HiFi · Pro — so the row shows the whole cycle, not one word.
 func (m *model) engineSegments(cur int) string {
@@ -324,6 +374,11 @@ func (m *model) engineSegments(cur int) string {
 	return b.String()
 }
 
+// svcAction spells out what enter does, on the focused row only. A control
+// surface that makes you press a key to discover what the key does is a guessing
+// game — but printing the same phrase on every row is noise, and only one row is
+// ever actionable. Naming the destination also makes the Spotify row's three-way
+// obvious without a legend.
 func (m *model) svcAction(row svcDef, cv *protocol.ConfInfo, focused, pending bool) string {
 	t := m.sty.pens()
 	if row.gate == gateFixed {
@@ -365,10 +420,16 @@ func (m *model) svcAction(row svcDef, cv *protocol.ConfInfo, focused, pending bo
 // The warn hue is kept for the case that IS a fault: a flag the init script DOES
 // consult, contradicted by what is actually running. That is the mismatch the
 // device's own web page structurally cannot show, and hiding it among agreeing
-// columns is what made it invisible in the first place.
-func (m *model) svcFlagNote(row svcDef, cv *protocol.ConfInfo) string {
+// columns is what made it invisible in the first place. Spotify's pair names an
+// engine rather than on/off, so its contradiction is engineMismatch.
+func (m *model) svcFlagNote(row svcDef, cv *protocol.ConfInfo, now time.Time) string {
 	if row.gate == gateDaemon {
 		return m.sty.pens().dmr.render("flag not consulted")
+	}
+	if row.gate == gateEngine {
+		if note := m.engineMismatch(cv, now); note != "" {
+			return m.sty.sevs[1].Render("⚠ " + note)
+		}
 	}
 	if row.id != "usb" && cv.Divergent(row.id) {
 		return m.sty.sevs[1].Render("⚠ flag says " + cv.Env(row.id))
@@ -414,12 +475,19 @@ func (m *model) svcOrigin(row svcDef, cv *protocol.ConfInfo) string {
 // renderServices draws the pane: the services this app can move, then the ones it
 // can only report on, kept in their own group so a switch that is absent reads as
 // deliberate rather than broken.
+//
+// Those rows are the control surface and never scroll, so the row enter acts on
+// is always on screen. The read-out under them — the Spotify engine, the focused
+// row's explanation — scrolls a page at a time (←→) when the frame is too short
+// for it, as the diagnostics do: at 80×24 it would otherwise be cut off with no
+// way to reach it.
 func (m *model) renderServices(now time.Time, W int) []string {
 	t := m.sty.pens()
-	cv := m.st.ConfView()
+	dv := m.st.DiagnosticView(now) // one read, so the rows and the engine section agree
+	cv := dv.ConfInfo
 	if cv == nil {
 		return frameBody([]string{t.dmr.render("reading services from the device…")},
-			[]string{m.svcFooter(W)}, m.bodyRows(), true)
+			[]string{m.svcFooter("", W)}, m.bodyRows(), true)
 	}
 
 	row := func(i int, d svcDef) string {
@@ -433,8 +501,10 @@ func (m *model) renderServices(now time.Time, W int) []string {
 			state = t.dmr.render("… " + svcLabelFor(d, m.svcPendingWant))
 		}
 		action := m.svcAction(d, cv, i == m.svcFocus, pend)
+		// the note column is one wider than its longest note ("flag not
+		// consulted", "⚠ HiFi not running"), so the action never runs into it
 		return clipStyled(cur+padVis(label, 16)+padVis(state, 22)+
-			padVis(m.svcFlagNote(d, cv), 18)+action, W)
+			padVis(m.svcFlagNote(d, cv, now), 19)+action, W)
 	}
 
 	var content []string
@@ -450,15 +520,31 @@ func (m *model) renderServices(now time.Time, W int) []string {
 			content = append(content, row(i, d))
 		}
 	}
+	content = append(content, "") // pinned too: a scrolled read-out never abuts the rows
 
-	content = append(content, "", m.sectionHead("Spotify engine", W), "")
-	content = append(content, m.spotifyInsight(cv, m.st.DiagnosticView(now), now, W)...)
-	content = append(content, "", m.sectionHead(svcRows[m.svcFocus].label, W), "")
+	var more []string
+	more = append(more, m.sectionHead("Spotify engine", W), "")
+	more = append(more, m.spotifyInsight(cv, dv, now, W)...)
+	more = append(more, "", m.sectionHead(svcRows[m.svcFocus].label, W), "")
 	for _, d := range svcRows[m.svcFocus].detail {
-		content = append(content, t.dmr.render(Clip(d, W)))
+		more = append(more, t.dmr.render(Clip(d, W)))
 	}
-	return frameBody(content, []string{"", m.svcFooter(W)}, m.bodyRows(), false)
+	more, hint := m.diagWindow(more, m.bodyRows()-svcTailRows-len(content), "←→ scroll")
+	return frameBody(append(content, more...), []string{"", m.svcFooter(hint, W)}, m.bodyRows(), false)
 }
+
+// svcTailRows is the pane's pinned tail: a blank row, then the footer.
+const svcTailRows = 2
+
+// svcSurfaceRows is the height of the control surface renderServices pins above
+// the read-out: one row per service, each group's heading with the blank under
+// it, the blank between the two groups and the one closing the surface.
+func svcSurfaceRows() int { return len(svcRows) + 6 }
+
+// svcPage is one page of the pane's scrolling read-out, for ←→: the rows the
+// frame leaves it between the control surface and the tail. (The diagnostics'
+// page, a whole frame, would skip past a read-out this short.)
+func (m *model) svcPage() int { return max(m.bodyRows()-svcTailRows-svcSurfaceRows(), 1) }
 
 // spotifyInsight is the deep readout the rest of the pane's rows don't need: the
 // engine actually loaded, its Spotify eSDK build, and what that build can
@@ -484,10 +570,10 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnaps
 	if sdk := cv.SDK(); sdk != "" {
 		out = append(out, m.diagLine("eSDK", t.txt.render(sdk)))
 	}
-	if st := m.engineStarted(cv); st != "" {
+	if st := m.engineStarted(cv, d.ConfAt, now); st != "" {
 		out = append(out, m.diagLine("started", st))
 	}
-	if rc := m.reconnectReadout(d.Ops, now); rc != "" {
+	if rc := m.reconnectReadout(d.Ops, d.OpsAt); rc != "" {
 		out = append(out, m.diagLine("link", rc))
 	}
 	if cv.Cfg() == "both" {
@@ -503,17 +589,21 @@ func (m *model) spotifyInsight(cv *protocol.ConfInfo, d protocol.DiagnosticSnaps
 	return out
 }
 
-// sectionHead is the pane's rule-and-title row, matching the dashboard's
-// equalizer divider so the overlays read as the same product.
 // engineStarted is the live engine's age and who launched it: init at boot or
 // netready (the normal case — the engines restart on every network event), or
 // an ssh session, which is what a toggle from this pane is. An engine that was
 // started from ssh eleven minutes after a cold boot is how the 2026-09-04
 // engine switch was traced; this line makes that a glance rather than a dig.
-func (m *model) engineStarted(cv *protocol.ConfInfo) string {
+// The age is read with the capability block, which comes only at connect and
+// after a toggle, so it is carried forward by the time since that read
+// (confAt) — the line keeps counting instead of freezing at connect time.
+func (m *model) engineStarted(cv *protocol.ConfInfo, confAt, now time.Time) string {
 	age, ok := cv.EngineUptime()
 	if !ok {
 		return ""
+	}
+	if !confAt.IsZero() && now.After(confAt) {
+		age += now.Sub(confAt)
 	}
 	t := m.sty.pens()
 	out := t.txt.render(fmtUptime(strconv.Itoa(int(age.Seconds()))) + " ago")
@@ -528,11 +618,14 @@ func (m *model) engineStarted(cv *protocol.ConfInfo) string {
 }
 
 // reconnectReadout is the engine's own account of its Spotify link: how often
-// the eSDK logged "the connection to Spotify has been lost" in the box's syslog
-// (which holds roughly the last day), as a count and a per-hour rate. It is
-// what the syslog says, not a diagnosis — the Pro engine was seen doing this
-// 54 times in 23 h while everything else on the link stayed up.
-func (m *model) reconnectReadout(ops *protocol.DevOps, now time.Time) string {
+// the eSDK logged "the connection to Spotify has been lost" in the box's live
+// syslog, as a count and a per-hour rate, with the time the file begins — it is
+// capped at 1 MiB and rotated, so while a track plays it covers well under an
+// hour and idle it spans days. It is what the syslog says, not a diagnosis:
+// both engines were seen doing this 1–3 times an hour while everything else on
+// the link stayed up (teardown §8.1). at is when the digest was read — the end
+// of the window its count covers (see reconnectRate).
+func (m *model) reconnectReadout(ops *protocol.DevOps, at time.Time) string {
 	if ops == nil || !ops.ReconnectsOK {
 		return ""
 	}
@@ -542,7 +635,7 @@ func (m *model) reconnectReadout(ops *protocol.DevOps, now time.Time) string {
 		return t.txt.render("no reconnects") + t.dmr.render(" in the box's syslog")
 	}
 	s := t.txt.render(fmt.Sprintf("%d reconnect%s", n, plural(n)))
-	if rate, ok := reconnectRate(ops, now); ok {
+	if rate, ok := reconnectRate(ops, at); ok {
 		pen := t.txt
 		if rate >= reconnectWarnPerHour {
 			pen = t.warn
@@ -568,6 +661,8 @@ func plural(n int) string {
 	return "s"
 }
 
+// sectionHead is the pane's rule-and-title row, matching the dashboard's
+// equalizer divider so the overlays read as the same product.
 func (m *model) sectionHead(title string, W int) string {
 	lead := 2
 	body := " " + title + " "
@@ -575,9 +670,22 @@ func (m *model) sectionHead(title string, W int) string {
 	return m.sty.pens().dmr.render(strings.Repeat("─", lead) + body + strings.Repeat("─", rest))
 }
 
-func (m *model) svcFooter(W int) string {
-	left := "↑↓ select · enter switch · esc player · ? help"
-	right := "enter writes the device's config"
-	return between(m.sty.pens().dmr.render(left), DispW(left),
-		m.sty.pens().dmr.render(right), DispW(right), W)
+// svcKeys is the pane's key hint, widest first (see footerFit).
+var svcKeys = []string{
+	"↑↓ select · enter switch · esc player · ? help",
+	"↑↓ select · enter switch · ? help",
+	"↑↓ select · enter switch",
+}
+
+// svcFooter is the pane's bottom row: the keys, and on the right how much of
+// the read-out is off-screen (hint, from diagWindow) or, when nothing is, the
+// reminder that enter writes the device's config. On a narrow terminal the
+// keys give way to it.
+func (m *model) svcFooter(hint string, W int) string {
+	ps := m.sty.pens()
+	fact, pen := hint, ps.dim
+	if hint == "" {
+		fact, pen = "enter writes the device's config", ps.dmr
+	}
+	return m.footerFit(svcKeys, pen.render(fact), DispW(fact), W)
 }

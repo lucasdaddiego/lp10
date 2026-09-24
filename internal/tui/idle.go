@@ -47,8 +47,9 @@ func bigClock(now time.Time) []string {
 }
 
 // sourcesOn names the streaming sources that are switched on, from the
-// capability block — the ones that can wake the box. Falls back to the three
-// that are always there when the block has not arrived.
+// capability block — the ones that can wake the box — or "" when none is.
+// Falls back to the three that are always there when the block has not
+// arrived.
 func sourcesOn(cv *protocol.ConfInfo) string {
 	if cv == nil {
 		return "Spotify · AirPlay · Bluetooth"
@@ -59,10 +60,16 @@ func sourcesOn(cv *protocol.ConfInfo) string {
 			on = append(on, row.label)
 		}
 	}
-	if len(on) == 0 {
-		return "no streaming service is switched on · 3 opens the services"
-	}
 	return strings.Join(on, " · ")
+}
+
+// wakeHint is the line under "nothing playing": what would wake the box, or,
+// with every source switched off, where to switch one on.
+func wakeHint(cv *protocol.ConfInfo) string {
+	if on := sourcesOn(cv); on != "" {
+		return "start something on " + on
+	}
+	return "no streaming service is switched on · 3 opens the services"
 }
 
 // renderIdle is the full player's body when the box is connected and nothing
@@ -76,7 +83,7 @@ func (m *model) renderIdle(s protocol.Snapshot, now time.Time, W, h int) []strin
 	}
 	mid = append(mid, "",
 		ccell(ps.dim.render("nothing playing"), W),
-		ccell(ps.dmr.render(Clip("start something on "+sourcesOn(m.st.ConfView()), W)), W))
+		ccell(ps.dmr.render(Clip(wakeHint(m.st.ConfView()), W)), W))
 	if lbl, _ := m.sleepLabel(now); lbl != "" {
 		mid = append(mid, ccell(ps.dmr.render(lbl), W))
 	}

@@ -1,11 +1,13 @@
 package transport
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // shRun executes a shell fragment, surfacing sh's own stderr on failure.
@@ -38,7 +40,7 @@ func (e *shError) Error() string { return e.err.Error() + ": " + e.stderr }
 // AR241CE_8530 OTA did to this device. tg() must always write the pair.
 func TestRemoteLoopServiceToggleParses(t *testing.T) {
 	// tg() as the loop actually carries it (sn() is its one helper).
-	snip := loopSlice(t, "sn() {", "cq=8;};")
+	snip := toggleSlice(t)
 	dir := t.TempDir()
 	log := filepath.Join(dir, "acts")
 	// Stub every side effect to an append-only log, so the test sees the exact
@@ -96,5 +98,42 @@ func TestRemoteLoopServiceToggleParses(t *testing.T) {
 		if strings.Join(got, "|") != strings.Join(c.want, "|") {
 			t.Errorf("tg %q:\n got %q\nwant %q", c.arg, got, c.want)
 		}
+	}
+}
+
+// toggleSlice cuts tg() and its helper sn() out of the loop, ending where the
+// next function (lg) begins.
+func toggleSlice(t *testing.T) string {
+	t.Helper()
+	return strings.TrimSuffix(loopSlice(t, "sn() {", "};lg() {"), "lg() {")
+}
+
+// After a toggle the loop re-reads the capability block twice: at once, and cq
+// ticks later, for a daemon that needs a moment to start. Toggles come from the
+// services view, where the loop runs its 3 s tick, and the TUI stops waiting
+// for the device after 12 s (tui's svcPendingFor): a confirmation that lands
+// later leaves the row settled on the immediate read's stale "off". So the
+// countdown tg() starts must run out by the 3rd tick — and not before the 2nd,
+// or the daemon has no time to appear.
+func TestServiceToggleConfirmLandsInsidePendingWindow(t *testing.T) {
+	const (
+		servicesTick  = 3 * time.Second
+		svcPendingFor = 12 * time.Second
+	)
+	perTick := loopSlice(t, "[ $cq -gt 0 ] &&", "ct; };")
+	const stub = `setenv() { :; }; killall() { :; }; setsid() { :; }; ct() { n=$((n+1)); }; n=0; `
+	script := stub + toggleSlice(t) + ` tg "airplay 1"; wait; ticks=0; ` +
+		`while [ $n -lt 2 ] && [ $ticks -lt 20 ]; do ticks=$((ticks+1)); ` + perTick + ` done; echo "$n $ticks"`
+	out, err := exec.Command("sh", "-c", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("sh: %v\n%s", err, out)
+	}
+	var reads, ticks int
+	if _, err := fmt.Sscanf(string(out), "%d %d", &reads, &ticks); err != nil || reads != 2 {
+		t.Fatalf("toggle output %q: want the immediate read and one confirming read", out)
+	}
+	if ticks < 2 || time.Duration(ticks)*servicesTick >= svcPendingFor {
+		t.Errorf("the confirming read lands %d ticks after the toggle (%v at the services view's tick), want 2–3 ticks, inside svcPendingFor (%v)",
+			ticks, time.Duration(ticks)*servicesTick, svcPendingFor)
 	}
 }

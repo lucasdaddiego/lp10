@@ -18,6 +18,12 @@ import (
 // past the last entry turns the timer off again.
 var sleepPresets = []int{15, 30, 45, 60, 90}
 
+// sleepLate bounds how long after its deadline a timer the link kept from
+// firing may still pause. After a blip of a few minutes the pause is still
+// the one that was asked for; after an outage that ran through the night it
+// would stop the next morning's playback, hours after anyone wanted it.
+const sleepLate = 10 * time.Minute
+
 // sleepCycle arms the next preset: off -> 15 -> 30 -> 45 -> 60 -> 90 -> off. A
 // re-arm restarts the countdown from now, so "s s" is a fresh 30 minutes, not
 // 30 minus the seconds already spent at 15.
@@ -75,12 +81,19 @@ func (m *model) bedtimeCycle(now time.Time) {
 // With the ssh link down at the deadline the timer stays armed and fires on
 // reconnect: a PAUSE queued into a dead link expires unheard ("command not
 // delivered") while the room plays on all night, and a bedtime arming would
-// have put its night-mode restore through the same dead pipe.
+// have put its night-mode restore through the same dead pipe. A reconnect
+// more than sleepLate past the deadline cancels the timer instead of pausing
+// — putting night mode back just as a fire would — and says so.
 func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 	if m.sleepAt.IsZero() || now.Before(m.sleepAt) {
 		return
 	}
 	if !s.Connected {
+		return
+	}
+	if late := now.Sub(m.sleepAt); late > sleepLate {
+		m.sleepCancel() // also restores night mode after a bedtime arming
+		m.notify("sleep timer cancelled · it ran out "+fmtAgeShort(late)+" ago", noticeFor*2)
 		return
 	}
 	if m.st.PauseOptimistic() {

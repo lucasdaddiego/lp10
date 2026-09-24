@@ -531,17 +531,22 @@ func TestSectionHeadNarrow(t *testing.T) {
 	}
 }
 
-// Toggling before the first @@c has landed must still send something sane
-// rather than reading a nil capability view as "everything is on".
+// Toggling before the first @@c has landed sends nothing: with no capability
+// block there is no state to step from, and a switch computed from an assumed
+// "off" would write persistent flags blind — "spotify hifi" kills a running
+// Pro engine, Tidal would get "1". The notice says why nothing happened.
 func TestServicesToggleBeforeFirstCapabilityBlock(t *testing.T) {
 	st := protocol.NewState()
 	m, _, collect := modelWith(st)
 	m.rows, m.cols, m.sty = 44, 120, newTheme()
 	m.openOverlay(ovServices)
-	m.svcFocus = 0 // Spotify: unknown config steps to the safe engine
+	m.svcFocus = 0 // Spotify
 	m.svcToggle(time.Now())
-	if got := collect(); len(got) != 1 || got[0].Data != "spotify hifi" {
-		t.Errorf("spotify toggle with no @@c sent %+v, want \"spotify hifi\"", got)
+	if got := collect(); len(got) != 0 {
+		t.Errorf("spotify toggle with no @@c sent %+v, want nothing", got)
+	}
+	if !strings.Contains(m.notice, "services not read yet") {
+		t.Errorf("notice = %q, want it to say the services are not read yet", m.notice)
 	}
 	for i, row := range svcRows {
 		if row.id == "tidal" {
@@ -549,8 +554,14 @@ func TestServicesToggleBeforeFirstCapabilityBlock(t *testing.T) {
 		}
 	}
 	m.svcToggle(time.Now())
+	if got := collect(); len(got) != 0 {
+		t.Errorf("tidal toggle with no @@c sent %+v, want nothing", got)
+	}
+	// once the block lands, the same press is a real toggle
+	protocol.ApplyRecord(st, protocol.Record{"c": {"tidal=off", "tidal.env=off"}})
+	m.svcToggle(time.Now())
 	if got := collect(); len(got) != 1 || got[0].Data != "tidal 1" {
-		t.Errorf("tidal toggle with no @@c sent %+v, want \"tidal 1\"", got)
+		t.Errorf("tidal toggle after @@c sent %+v, want \"tidal 1\"", got)
 	}
 }
 
@@ -730,7 +741,7 @@ func TestDiagStripDivergenceMatchesPane(t *testing.T) {
 	}})
 	m, _, _ := modelWith(st)
 	m.rows, m.cols, m.sty = 44, 120, newTheme()
-	strip := clean(strings.Join(m.serviceStripFor(m.st.ConfView(), 114), "\n"))
+	strip := clean(strings.Join(m.serviceStripFor(m.st.ConfView(), time.Now(), 114), "\n"))
 	if !strings.Contains(strip, "Tidal") {
 		t.Fatalf("strip missing Tidal: %q", strip)
 	}
@@ -827,27 +838,33 @@ func TestDeviceCardShowsVendorApp(t *testing.T) {
 	}
 }
 
-// A second enter on a row toggled before the device has reported its services
-// (no @@c yet) finds the row pending with no capability block to settle it
-// against; that used to dereference the missing block and take the program
-// down. It must simply keep the row pending.
+// Repeated enters before the device has reported its services (no @@c yet)
+// send nothing and leave no row pending. The settle check itself must still
+// survive a missing capability block — reading it used to dereference the
+// block and take the program down — and keep such a row pending.
 func TestServicesPaneSecondEnterBeforeCapabilitiesDoesNotPanic(t *testing.T) {
 	m, _, collect := modelWith(protocol.NewState())
 	m.rows, m.cols = 44, 120
 	m.openOverlay(ovServices)
+	now := time.Now()
 	for i, row := range svcRows {
 		if row.gate == gateFixed {
 			continue
 		}
 		m.svcFocus = i
-		m.svcToggle(time.Now())
-		m.svcToggle(time.Now())
-		if m.svcPending != row.id || !m.svcPendingRow(row.id, nil, time.Now()) {
-			t.Errorf("%s: second press must leave the row pending (nothing has settled it)", row.id)
+		m.svcToggle(now)
+		m.svcToggle(now)
+		if m.svcPending != "" {
+			t.Errorf("%s: enter before @@c marked the row pending", row.id)
 		}
+		m.svcPending, m.svcPendingWant, m.svcPendingAt = row.id, m.svcWant(row, nil, false), now
+		if !m.svcPendingRow(row.id, nil, now) {
+			t.Errorf("%s: with no block to settle against, a pending row must stay pending", row.id)
+		}
+		m.svcPending = ""
 	}
-	if got := collect(); len(got) == 0 {
-		t.Error("the blind toggle before @@c is an existing contract: something must have been sent")
+	if got := collect(); len(got) != 0 {
+		t.Errorf("enter before @@c sent %+v, want nothing", got)
 	}
 }
 

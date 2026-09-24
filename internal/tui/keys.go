@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
 // keyKind is the normalized key class dispatched to the controller logic.
@@ -20,7 +22,7 @@ const (
 	kRight
 	kUp
 	kDown
-	kTab // tab and shift-tab alike: with two panes the toggle is its own inverse
+	kTab // tab and shift-tab alike: both step to the next numbered view
 	kRune
 )
 
@@ -128,29 +130,19 @@ func (m *model) key(ev keyEvent) (quit bool) {
 			return false
 		}
 	case viewDiag:
-		switch {
-		case ev.kind == kUp:
-			m.diagScrollBy(-1)
+		if m.scrollKey(ev) {
 			return false
-		case ev.kind == kDown:
-			m.diagScrollBy(+1)
-			return false
-		case ev.kind == kLeft:
-			m.diagScrollBy(-m.diagPage())
-			return false
-		case ev.kind == kRight:
-			m.diagScrollBy(+m.diagPage())
-			return false
-		case ev.kind == kRune && (ev.r == 'u' || ev.r == 'U'):
-			// u asks the vendor's manifest directly — the one request that
-			// leaves the LAN, so it is a deliberate keystroke, never a side
-			// effect of opening the view (which shows the box's own 4-hourly
-			// verdict).
-			m.st.RequestOTA()
+		}
+		if ev.kind == kRune && (ev.r == 'u' || ev.r == 'U') {
+			m.updateCheck()
 			return false
 		}
 	case viewHelp:
-		return false // a reference page: esc, q or ? leave it
+		// A reference page: esc, q or ? leave it, the arrows scroll it, and
+		// the playback keys below work here as the page says they do.
+		if m.scrollKey(ev) {
+			return false
+		}
 	default:
 		if m.playerKey(ev) {
 			return false
@@ -199,12 +191,18 @@ func (m *model) viewKey(ev keyEvent) bool {
 }
 
 // setView shows a view. Nothing but the player is drawn at mini size, so the
-// switch is refused there. Opening the logs costs a device round trip, so it
-// is asked for once per run unless the user refreshes: reopening shows the
-// tail already in hand instead of stalling on a fresh fetch.
+// switch is refused there. The diagnostics and the help page scroll by one
+// shared offset (diagWindow), so a change of view puts it back to the top:
+// each opens at its first row, never at the other's position. Opening the
+// logs costs a device round trip, so it is asked for once per run unless the
+// user refreshes: reopening shows the tail already in hand instead of
+// stalling on a fresh fetch.
 func (m *model) setView(v view) {
 	if m.miniMode() {
 		return
+	}
+	if v != m.view {
+		m.diagScroll = 0
 	}
 	m.view = v
 	if v == viewLogs && !m.logAsked[m.logSrc] {
@@ -222,8 +220,39 @@ func (m *model) toggleView(v view) {
 	m.setView(v)
 }
 
-// openOverlay is the older name for setView, kept for its callers.
-func (m *model) openOverlay(which view) { m.setView(which) }
+// scrollKey scrolls the diagnostics or the help page when either is taller
+// than the frame: ↑↓ by a row, ←→ by a page. The render clamps the offset, so
+// scrolling past either end is inert.
+func (m *model) scrollKey(ev keyEvent) bool {
+	switch ev.kind {
+	case kUp:
+		m.diagScrollBy(-1)
+	case kDown:
+		m.diagScrollBy(+1)
+	case kLeft:
+		m.diagScrollBy(-m.diagPage())
+	case kRight:
+		m.diagScrollBy(+m.diagPage())
+	default:
+		return false
+	}
+	return true
+}
+
+// updateCheck is u in the diagnostics: it asks the vendor's manifest directly
+// — the one request that leaves the LAN, so it is a deliberate keystroke,
+// never a side effect of opening the view (which shows the box's own 4-hourly
+// verdict). LP10_OTA_URL set empty switches the check off and its worker
+// never starts, so a raised request would leave the update line on
+// "checking…" for the rest of the run: the notice says the check is off
+// instead.
+func (m *model) updateCheck() {
+	if _, on := workers.ManifestURL(); !on {
+		m.notify("update check is off · LP10_OTA_URL is empty", noticeFor)
+		return
+	}
+	m.st.RequestOTA()
+}
 
 // playerKey is the player's own keys: arrows move the volume and the
 // transport focus, enter presses the focused button.
@@ -273,6 +302,10 @@ func (m *model) servicesKey(ev keyEvent) bool {
 		m.svcMove(+1)
 	case kEnter:
 		m.svcToggle(time.Now())
+	case kLeft: // the read-out under the rows scrolls; the rows never do
+		m.diagScrollBy(-m.svcPage())
+	case kRight:
+		m.diagScrollBy(+m.svcPage())
 	default:
 		return false
 	}
@@ -340,7 +373,7 @@ func (m *model) playbackKey(ev keyEvent) {
 		m.notify("sleep timer cancelled", noticeFor)
 	case 'b':
 		m.bedtimeCycle(time.Now()) // sleep step + night mode on, restored when the timer ends
-		m.notify("bedtime · "+m.sleepNotice()+" · night mode on", noticeFor)
+		m.notify(m.bedtimeNotice(), noticeFor)
 	case 'd':
 		m.nightToggle() // night mode: the device's multi-band DRC
 		if m.st.Snap().Night {
@@ -357,4 +390,15 @@ func (m *model) sleepNotice() string {
 		return "sleep timer set · " + lbl
 	}
 	return "sleep timer off"
+}
+
+// bedtimeNotice words what a b press left behind, read after the step: the
+// press past the last preset turns the timer off and puts night mode back to
+// its connect-time value, so "night mode on" is not a given.
+func (m *model) bedtimeNotice() string {
+	night := "night mode off"
+	if s := m.st.Snap(); s.NightKnown && s.Night {
+		night = "night mode on"
+	}
+	return "bedtime · " + m.sleepNotice() + " · " + night
 }

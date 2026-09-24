@@ -152,7 +152,8 @@ func TestMuteRoundTripRestoresPremute(t *testing.T) {
 }
 
 func TestMuteWithNoHistoryUsesDefault(t *testing.T) {
-	m, _, collect := modelWith(protocol.NewState()) // fresh: vol 0, no premute
+	m, st, collect := modelWith(protocol.NewState())                                // fresh: no premute
+	protocol.ApplyRecord(st, protocol.Record{"v": {"MID-Read:64 Data:0 Length:1"}}) // the device reads 0
 	m.key(kr('m'))
 	if c := last(collect()); c.Mid != 64 || c.Data != "30" {
 		t.Errorf("mute with no history should use default 30, got %+v", c)
@@ -220,6 +221,7 @@ func TestControllerDoActions(t *testing.T) {
 	if c := collect(); len(c) != 1 || c[0].Data != "PREV" {
 		t.Errorf("prev: %+v", c)
 	}
+	protocol.ApplyRecord(st, protocol.Record{"v": {"MID-Read:64 Data:50 Length:2"}}) // volume keys wait for a live read
 	st.SetVol(50)
 	m.do("volup")
 	if c := collect(); len(c) != 1 || c[0].Mid != 64 || c[0].Data != "52" {
@@ -467,7 +469,7 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 
 	// closed overlay: never asks the box for stats
 	for range 3 {
-		m.syncStats()
+		m.syncStats(true)
 	}
 	if c := collect(); len(c) != 0 {
 		t.Fatalf("no stats signal while diag closed, got %+v", c)
@@ -475,7 +477,7 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 
 	// opening it sends a single "on"
 	m.view = viewDiag
-	m.syncStats()
+	m.syncStats(true)
 	if c := collect(); len(c) != 1 || c[0].Mid != 90 || c[0].Data != "1" {
 		t.Fatalf("diag open should send 90 1, got %+v", c)
 	}
@@ -483,23 +485,23 @@ func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
 	// it does not re-send every tick — only after the re-assert interval
 	// (statsTicks counts StatsReassertTicks decrements down to 0)
 	for range StatsReassertTicks {
-		m.syncStats()
+		m.syncStats(true)
 	}
 	if c := collect(); len(c) != 0 {
 		t.Errorf("should not re-assert before the interval, got %+v", c)
 	}
-	m.syncStats() // interval elapsed -> keep-alive re-assert (survives reconnect)
+	m.syncStats(true) // interval elapsed -> keep-alive re-assert (survives reconnect)
 	if c := collect(); len(c) != 1 || c[0].Data != "1" {
 		t.Errorf("should re-assert 90 1 after the interval, got %+v", c)
 	}
 
 	// closing it sends a single "off", then goes quiet
 	m.view = viewPlayer
-	m.syncStats()
+	m.syncStats(true)
 	if c := collect(); len(c) != 1 || c[0].Mid != 90 || c[0].Data != "0" {
 		t.Fatalf("diag close should send 90 0, got %+v", c)
 	}
-	m.syncStats()
+	m.syncStats(true)
 	if c := collect(); len(c) != 0 {
 		t.Errorf("no further signal once closed, got %+v", c)
 	}

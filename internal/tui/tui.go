@@ -37,12 +37,12 @@ func startupNote(warn string, keyErr error) string {
 	return warn
 }
 
-// Run wires up State, the worker goroutines, and the Bubble Tea program, then
-// tears everything down on exit. Returns the process exit code: 0 clean quit,
-// 130 Ctrl-C, 143 SIGTERM/SIGHUP.
 // renderFPS caps the renderer's flush rate (see Run).
 const renderFPS = 15
 
+// Run wires up State, the worker goroutines, and the Bubble Tea program, then
+// tears everything down on exit. Returns the process exit code: 0 clean quit,
+// 130 Ctrl-C, 143 SIGTERM/SIGHUP.
 func Run(cfg config.Config) (int, error) {
 	st := protocol.NewState()
 	background := workers.StartRuntime(st, cfg)

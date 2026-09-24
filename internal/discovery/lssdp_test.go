@@ -3,8 +3,10 @@ package discovery
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const liveReply = "HTTP/1.1 200 OK\r\nUSN:d8f710710ad6\r\nHOST:239.255.255.250:1800\r\nVersion:LSSDP 1.0\r\nFN:1\r\nFWVERSION:AR241CE_8530.23.2\r\nCAST_FWVERSION:.\r\nCAST_TIMEZONE:\r\nCAST_MODEL:LP10\r\nPORT:7777\r\nDeviceName:Living\r\nState:S\r\nNETMODE:ETH0\r\nSPEAKERTYPE:Wireless Speaker\r\nTCPPORT:2020\r\nWIFIBAND:ETH\r\nSOURCE_LIST:LS8::01000030\r\nMRAMode:DDMS\r\n\r\n"
@@ -29,7 +31,18 @@ func TestParseLSSDP(t *testing.T) {
 		t.Errorf("field not bounded: %d", len(long.Name))
 	}
 	if !isLP10(info) || isLP10(LSSDPInfo{FW: "AR241CE_8530.23.2", Model: "A50"}) {
-		t.Error("isArylic should key off the AR firmware prefix / LS8 platform")
+		t.Error("isLP10 should key off CAST_MODEL, not the firmware prefix other Arylic units share")
+	}
+}
+
+// The field cap counts bytes, so it can land inside a multi-byte character: the
+// cut must not leave half of one at the end of the value.
+func TestParseLSSDPCapKeepsValidUTF8(t *testing.T) {
+	head := strings.Repeat("a", maxLSSDPField-1)
+	info, ok := parseLSSDP([]byte("HTTP/1.1 200 OK\r\nDeviceName:" + head + "ü\r\nCAST_MODEL:LP10\r\n")) // ü straddles the cap
+	if !ok || info.Name != head {
+		t.Errorf("Name = %q (valid UTF-8: %v), want the %d bytes before the split character",
+			info.Name, utf8.ValidString(info.Name), len(head))
 	}
 }
 

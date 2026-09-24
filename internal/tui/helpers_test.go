@@ -23,5 +23,5 @@ func (m *model) renderDiagCards(s protocol.Snapshot, now time.Time, W int) []str
 }
 
 func (m *model) serviceStrip(w int) []string {
-	return m.serviceStripFor(m.st.ConfView(), w)
+	return m.serviceStripFor(m.st.ConfView(), time.Now(), w)
 }

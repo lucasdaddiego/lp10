@@ -33,20 +33,22 @@ func TestEmbeddedLoopMatchesSource(t *testing.T) {
 // longer than MAX_CMD_LEN (9000 by default) with a connection-fatal error whose
 // stderr classifies as transient — a silent infinite reconnect loop. Guard the
 // headroom so growth is caught here, not on the device. The budget is measured
-// with the LONGEST ping target sanitizeHost lets through (maxPingHostLen), so
-// the remaining margin is real headroom, not a hostname's worth of luck.
+// with the LONGEST ping target RemoteLoop lets through — a dotted-quad IPv4 —
+// so the remaining margin is real headroom; a name, even the longest ping_host
+// sanitizeHost accepts, never reaches the loop at all.
 func TestRemoteLoopFitsDropbearCmdLen(t *testing.T) {
-	longest := strings.Repeat("h", maxPingHostLen-len(".example.com")) + ".example.com"
-	if len(longest) != maxPingHostLen {
-		t.Fatalf("test bug: longest host is %d chars", len(longest))
-	}
+	const longest = "255.255.255.255"
 	if n := len(RemoteLoop(longest)); n > 8900 {
-		t.Errorf("RemoteLoop is %d bytes with a %d-char ping host — within 100 of dropbear's MAX_CMD_LEN (9000); trim the loop", n, maxPingHostLen)
+		t.Errorf("RemoteLoop is %d bytes with a %d-char ping target — within 100 of dropbear's MAX_CMD_LEN (9000); trim the loop", n, len(longest))
+	}
+	name := strings.Repeat("h", maxPingHostLen-len(".example.com")) + ".example.com"
+	if len(RemoteLoop(name)) > len(RemoteLoop(longest)) {
+		t.Errorf("a %d-char ping_host name reached the loop", len(name))
 	}
 }
 
-// A ping_host longer than the loop's byte budget allows falls back whole (the
-// device loop must fit dropbear's command ceiling with any accepted target).
+// A ping_host longer than maxPingHostLen falls back whole to the default
+// target: no sane ping target is longer.
 func TestSanitizeHostCapsLength(t *testing.T) {
 	long := strings.Repeat("a", maxPingHostLen+1)
 	if got := sanitizeHost(long); got != "spotify.com" {

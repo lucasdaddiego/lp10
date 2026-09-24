@@ -37,10 +37,10 @@ const (
 	StatsReassertTicks = 30
 
 	// Layout thresholds (rows × cols). Below mini -> one frameless line; below
-	// the full size -> a compact dashboard with no art and a one-line EQ.
+	// the full size -> a compact player with no art and no volume rail.
 	MiniRows = 9
 	MiniCols = 58
-	FullRows = 25 // full dashboard (art + the EQ slider rows + volume rail) needs the height
+	FullRows = 25 // full dashboard (the framed cover beside the volume rail) needs the height
 	FullCols = 70 // the cover, a usable metadata column and the volume rail side by side
 )
 
@@ -68,19 +68,12 @@ const numberedViews = 5
 // viewNames labels the view strip, in view order.
 var viewNames = [...]string{"player", "equalizer", "services", "logs", "diagnostics", "help"}
 
-// The old overlay names, kept as aliases for the callers (and tests) that
-// grew up with them.
-const (
-	ovNone     = viewPlayer
-	ovServices = viewServices
-	ovLogs     = viewLogs
-)
-
 // miniMode reports whether the terminal is too small for the dashboard, so only
-// the one-line mini view renders (no EQ pane). Only key dispatch consults this
-// (the view has its own rows==0 guard), so before the first WindowSizeMsg it
-// reports mini: nothing is drawn yet, and scripted input racing startup (`tmux
-// send-keys "e" Left`) must not adjust an invisible equalizer through the gap.
+// the one-line mini view renders (no EQ pane). Key dispatch and syncViews
+// consult this (the view has its own rows==0 guard), so before the first
+// WindowSizeMsg it reports mini: nothing is drawn yet, and scripted input racing
+// startup (`tmux send-keys "e" Left`) must not adjust an invisible equalizer
+// through the gap.
 func (m *model) miniMode() bool {
 	return m.rows < MiniRows || m.cols < MiniCols
 }
@@ -128,6 +121,7 @@ type model struct {
 	bgDark        *bool
 	themeDark     bool
 	eqFocus       int  // EQ-strip display position (index into eqOrder)
+	eqScroll      int  // first slider row drawn when the frame is too short for all nine (see eqWindow)
 	frame         int  // animation frame for the art motif (advances while playing)
 	motifLive     bool // the plasma motif was actually drawn last render (gates the fast frame tick)
 	searchLive    bool // the connecting search figure was drawn last render (keeps the frame clock ticking while idle)

@@ -260,7 +260,18 @@ func (m *model) renderLogs(now time.Time, W int) []string {
 			age += " · scrolled " + strconv.Itoa(m.logScroll)
 		}
 	}
-	left := "↑↓ scroll · ←→ page · s source · f filter · r refresh · F follow · esc player"
-	tail := []string{"", between(t.dmr.render(left), DispW(left), t.dmr.render(age), DispW(age), W)}
+	tail := []string{"", m.footerFit(logKeys, t.dmr.render(age), DispW(age), W)}
 	return frameBody(content, tail, m.bodyRows(), false)
+}
+
+// logKeys is the pane's key hint, widest first. The facts beside it — how old
+// the tail is, how many lines, how far up it is scrolled — are what the footer
+// is for, so on a narrow terminal the keys give way (see footerFit): the
+// universal ones first, then follow, then the pane's own.
+var logKeys = []string{
+	"↑↓ scroll · ←→ page · s source · f filter · r refresh · F follow · esc player",
+	"↑↓ scroll · ←→ page · s source · f filter · r refresh · F follow",
+	"s source · f filter · r refresh · F follow",
+	"s source · f filter · r refresh",
+	"r refresh",
 }

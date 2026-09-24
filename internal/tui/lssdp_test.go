@@ -135,9 +135,9 @@ func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
 	if m.view != viewDiag || st.DiagnosticView(time.Now()).OTAPending {
 		t.Fatal("i did not open the diagnostics, or asked the vendor on its own")
 	}
-	// the box's own verdict, from the syslog digest
+	// the box's own verdict, from the digest's MsgBox-223 report
 	protocol.ApplyRecord(st, protocol.Record{"o": {"n=2", "t=Sep 11 01:47:58",
-		"u=" + time.Now().Add(-3*time.Hour).Format("Jan _2 15:04:05") + ":000000 E/ota[923]: ota: OTA:error string =  No update available"}})
+		"u=[" + time.Now().Add(-3*time.Hour).Format("2006-01-02 15:04:05") + ".634] [DEBUG] [luci-rx] normalized_kind=unknown normalized=None remote_id=0 command_type=2 command=223 command_status=0 crc=16846 data_length=9 payload=\"NO_UPDATE\""}})
 	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update    up to date · the box asked 3h ago · it asks every 4 h") {
 		t.Errorf("the box's own verdict missing:\n%s", out)
 	}
@@ -257,9 +257,9 @@ func TestDiagBootReconnectsAndRadio(t *testing.T) {
 	if f := bootFact(protocol.DiagnosticSnapshot{DevInfo: &protocol.DevInfo{Net: "eth"}}, now); f != "" {
 		t.Errorf("boot fact without a reason = %q", f)
 	}
-	// an offered update is carried as the box logged it
-	d := protocol.DiagnosticSnapshot{Ops: &protocol.DevOps{OTAOK: true, OTAText: "update offered", OTAAt: now.Add(-time.Hour)}}
-	if f := boxUpdateFact(d, now); f != "update offered · the box asked 60m ago · it asks every 4 h" {
+	// any other report is carried in the box's words
+	d := protocol.DiagnosticSnapshot{Ops: &protocol.DevOps{OTAOK: true, OTAText: "update available", OTAAt: now.Add(-time.Hour)}}
+	if f := boxUpdateFact(d, now); f != "update available · the box asked 60m ago · it asks every 4 h" {
 		t.Errorf("offered fact = %q", f)
 	}
 }

@@ -295,20 +295,36 @@ func fetch(ctx context.Context, rawurl, allowHost string) ([]byte, error) {
 	return raw, nil
 }
 
-// PruneCache keeps at most `keep` cover files in dir (the most-recently-modified),
-// removing older ones so the cache can't grow without bound. Best effort: any IO
-// error just leaves the cache as-is. A non-positive keep, or "" dir, is a no-op.
-func PruneCache(dir string, keep int) {
-	if dir == "" || keep <= 0 {
+// staleTempAfter is when a temporary save sibling in the cache counts as a crash's
+// leftover rather than a save in progress (see PruneCache).
+const staleTempAfter = time.Hour
+
+// PruneCache bounds the cover cache in dir by count AND by total size. It keeps
+// the most recently modified files — a cache hit touches its file, so this is
+// LRU — while both their count (keep) and their total size (maxBytes) fit, and
+// removes the rest: the first file that does not fit and every older one, so
+// no cover outlives a newer one. A count alone never bounded the disk: one
+// cover may be as large as the fetch cap (maxArtBytes), so a count of 256 could
+// reach 2 GB. Best effort: any IO error just leaves the cache as-is. A
+// non-positive keep or maxBytes, or "" dir, is a no-op.
+//
+// A dot-prefixed name is never a cover (entries are bare hex hashes, see
+// cacheFile): it is atomicfile.Write's temporary sibling, "."+name+".tmp-*",
+// which a save is still writing before it renames it into place. It is not
+// counted, and it is removed only once it is older than staleTempAfter — a save
+// takes seconds, so an hour-old one is what a crash mid-write left behind, and
+// would otherwise sit outside both budgets for good.
+func PruneCache(dir string, keep int, maxBytes int64) {
+	if dir == "" || keep <= 0 || maxBytes <= 0 {
 		return
 	}
 	ents, err := os.ReadDir(dir)
-	if err != nil || len(ents) <= keep {
+	if err != nil {
 		return
 	}
 	type f struct {
-		path string
-		mod  int64
+		path      string
+		mod, size int64
 	}
 	files := make([]f, 0, len(ents))
 	for _, e := range ents {
@@ -319,14 +335,24 @@ func PruneCache(dir string, keep int) {
 		if err != nil {
 			continue
 		}
-		files = append(files, f{filepath.Join(dir, e.Name()), info.ModTime().UnixNano()})
-	}
-	if len(files) <= keep {
-		return
+		if strings.HasPrefix(e.Name(), ".") {
+			if time.Since(info.ModTime()) > staleTempAfter {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
+			continue
+		}
+		files = append(files, f{filepath.Join(dir, e.Name()), info.ModTime().UnixNano(), info.Size()})
 	}
 	slices.SortFunc(files, func(a, b f) int { return cmp.Compare(b.mod, a.mod) }) // newest first
-	for _, old := range files[keep:] {
-		_ = os.Remove(old.path)
+	var total int64
+	for i, file := range files {
+		total += file.size
+		if i >= keep || total > maxBytes {
+			for _, old := range files[i:] {
+				_ = os.Remove(old.path)
+			}
+			return
+		}
 	}
 }
 

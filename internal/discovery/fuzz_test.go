@@ -2,11 +2,13 @@
 // unauthenticated UDP from anything on the LAN (or a spoofed responder), so
 // parsePacket must never panic and must keep its output bounded by the
 // arithmetic the wire format allows. The parsed records are then run through
-// the collector/selection path with the same no-panic expectation.
+// the collector/selection path and the Spotify endpoint assembly with the same
+// no-panic expectation.
 
 package discovery
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -22,6 +24,10 @@ func fuzzSeedPacket() []byte {
 
 func FuzzParsePacket(f *testing.F) {
 	f.Add(fuzzSeedPacket())
+	f.Add(spotifyPkt("Living", "Living.local", "192.168.0.13", 9095))
+	// an instance label that lower-casing grows (each invalid byte becomes a
+	// 3-byte U+FFFD): the name cut once indexed past the end of the original
+	f.Add(spotifyPkt(strings.Repeat("\xff", 15), "x.local", "192.168.0.13", 9095))
 	f.Add(buildQuery(service, typePTR))
 	// self-referential compression pointer at the first answer name
 	f.Add(append(append([]byte(nil), 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0), 0xC0, 12, 0, 12, 0, 1, 0, 0, 0, 0, 0, 0))
@@ -67,6 +73,13 @@ func FuzzParsePacket(f *testing.F) {
 		_, _ = pickLP10(ds, "")
 		for _, d := range ds {
 			_ = d.Addr()
+		}
+		// and so must the Spotify endpoint assembly, which cuts names out of
+		// the same records
+		eps := spotifyEndpoints(recs)
+		_, _ = pickSpotify(eps, "Living.local", nil)
+		for _, e := range eps {
+			_ = e.Addr()
 		}
 	})
 }

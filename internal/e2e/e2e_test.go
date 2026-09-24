@@ -68,6 +68,16 @@ func bootTUISetup(t *testing.T, setup func(cfgDir, stateDir string)) *tuiSession
 	fake := testutil.FakeSSH(t)
 	tmp := t.TempDir()
 	cfgDir, stateDir := filepath.Join(tmp, "config"), filepath.Join(tmp, "state")
+	// Each spawn resolves ping_host on the laptop (the box is handed only an
+	// address), so the default "spotify.com" would put a DNS query on the
+	// wire from a test. A documentation address keeps the run off the
+	// network; a setup that writes its own config replaces it.
+	if err := os.MkdirAll(filepath.Join(cfgDir, "lp10"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "lp10", "config.toml"), []byte("ping_host = \"192.0.2.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if setup != nil {
 		setup(cfgDir, stateDir)
 	}

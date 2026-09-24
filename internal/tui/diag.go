@@ -21,8 +21,16 @@ import (
 // narrow terminal and degrades gracefully) is used instead.
 const diagCardsMinW = 100
 
-// diagFooter is the overlay's bottom help line (both layouts).
-const diagFooter = "live · u asks the vendor about updates · esc player · ? help"
+// diagFooters is the overlay's bottom help line (both layouts), widest first:
+// on a narrow terminal the keys give way to the fact beside them — how much of
+// the read-out is off-screen — rather than push it off the row (footerFit).
+var diagFooters = []string{
+	"live · u asks the vendor about updates · esc player · ? help",
+	"u asks the vendor about updates · esc player · ? help",
+	"u asks the vendor · esc player · ? help",
+	"u asks the vendor · ? help",
+	"? help",
+}
 
 // ---- shared severity model -----------------------------------------------------
 //
@@ -35,8 +43,14 @@ var (
 	thrMem    = [2]float64{70, 88} // % used
 	thrTemp   = [2]float64{60, 75} // °C SoC
 	thrData   = [2]float64{80, 92} // % of /lsync used
-	thrRx     = [2]float64{3, 8}   // seconds since the last framed record
 	thrSignal = [2]float64{60, 72} // Wi-Fi signal as -dBm (-41 good, -72 warn)
+
+	// thrRx is the seconds since the last framed record. While the diagnostics
+	// are open the player is hidden, so the loop ticks every 3 s, and every
+	// third tick also pings three targets for up to 1 s each: a gap of about
+	// 6.2 s is the loop's normal cadence, so the warn starts past it. The fault
+	// is where the watchdog gives up on the stream.
+	thrRx = [2]float64{6.5, workers.SilentAfter.Seconds()}
 )
 
 func sev(v float64, thr [2]float64) int {
@@ -527,7 +541,7 @@ func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now tim
 	if zr := m.zcReadout(d, now); zr != "" {
 		rows = append(rows, m.diagLine("spotify", zr))
 	}
-	if rc := m.reconnectReadout(d.Ops, now); rc != "" {
+	if rc := m.reconnectReadout(d.Ops, d.OpsAt); rc != "" {
 		rows = append(rows, m.diagLine("engine", rc))
 	}
 	return append(rows,
@@ -564,6 +578,9 @@ func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) strin
 	}
 	if d.LSSDP.NetMode != "" {
 		facts = append(facts, strings.ToLower(d.LSSDP.NetMode))
+	}
+	if len(facts) == 1 {
+		return ps.acc.render(facts[0])
 	}
 	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
 }
@@ -650,35 +667,46 @@ func identityFacts(d protocol.DiagnosticSnapshot, base *sweep.Report, now time.T
 // sweepDeltaFact compares the live identity with the last `lp10 sweep`'s
 // baseline: the firmware build, the MCU and the vendor app — the three things
 // an update moves. "" without a baseline or before the identity has arrived;
-// otherwise what changed, or that nothing did, dated to the sweep.
+// otherwise what changed, or that nothing did, dated to when the oldest of the
+// compared values was read: a baseline is merged fact by fact, so after a
+// sweep whose ssh failed these values are an earlier sweep's (Carried).
 func sweepDeltaFact(id diagIdentity, dev *protocol.DevInfo, base *sweep.Report) string {
 	if base == nil {
 		return ""
 	}
 	var changes []string
-	known := false
+	var read time.Time // the oldest read among the compared values
+	compared := func(key string) {
+		at, ok := base.Carried[key]
+		if !ok {
+			at = base.At
+		}
+		if read.IsZero() || at.Before(read) {
+			read = at
+		}
+	}
 	if fw := firmwareBuildOf(id.fw); fw != "" && base.Build != "" {
-		known = true
+		compared("identity")
 		if fw != base.Build {
 			changes = append(changes, "firmware "+base.Build+" → "+fw)
 		}
 	}
 	if mcu := strings.TrimPrefix(id.mcu, "v"); mcu != "" && mcu != "—" && base.MCU != "" {
-		known = true
+		compared("mcu")
 		if mcu != base.MCU {
 			changes = append(changes, "mcu "+base.MCU+" → "+mcu)
 		}
 	}
 	if dev != nil && dev.VendorApp != "" && base.VendorApp != "" {
-		known = true
+		compared("vendorApp")
 		if dev.VendorApp != base.VendorApp {
 			changes = append(changes, "vendor app "+base.VendorApp+" → "+dev.VendorApp)
 		}
 	}
-	if !known {
+	if read.IsZero() {
 		return ""
 	}
-	when := base.At.Format("Jan 2 15:04")
+	when := read.Format("Jan 2 15:04")
 	if len(changes) == 0 {
 		return "unchanged since " + when
 	}
@@ -718,10 +746,11 @@ func bootFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 }
 
 // boxUpdateFact is the firmware verdict the box fetched itself — its ota
-// daemon asks the vendor manifest every 4 h and logs the answer, which the
-// loop's syslog digest carries — so the overlay says whether the build is
-// current without lp10 making a request of its own. "" until a digest with an
-// answer has arrived (a box rebooted within the last 4 h has none yet).
+// daemon asks the vendor manifest every 4 h, the MCU hears the answer as a
+// MsgBox-223 report, and the vendor app logs that report, which the loop's @@o
+// digest carries — so the overlay says whether the build is current without
+// lp10 making a request of its own. "" until a digest with a report has
+// arrived (a box rebooted within the last 4 h has none yet).
 func boxUpdateFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 	if d.Ops == nil || !d.Ops.OTAOK {
 		return ""
@@ -758,15 +787,28 @@ func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 	return "update available" + age
 }
 
+// diagStackedDeviceRows pairs the identity facts two to a row, in order — but
+// a fact too long for its half of the row gets the whole row. The
+// sentence-length facts (how the box came up and when, the build with the
+// vendor app beside it, what moved since the last sweep, the update verdicts)
+// carry their point at the end, which a half-width cell would clip away.
 func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, w int) []string {
 	facts := identityFacts(d, m.baseline, now)
-	rows := make([]string, 0, (len(facts)+1)/2)
-	for i := 0; i < len(facts); i += 2 {
-		k2, v2 := "", ""
-		if i+1 < len(facts) {
-			k2, v2 = facts[i+1].k, facts[i+1].v
+	left, right := w/2-gridLabW, w-w/2-gridLabW // each cell's room for its value
+	rows := make([]string, 0, len(facts))
+	for i := 0; i < len(facts); {
+		f := facts[i]
+		switch {
+		case DispW(f.v) > left:
+			rows = append(rows, m.cellKV(f.k, f.v, w))
+			i++
+		case i+1 < len(facts) && DispW(facts[i+1].v) <= right:
+			rows = append(rows, m.gridRow(f.k, f.v, facts[i+1].k, facts[i+1].v, w))
+			i += 2
+		default: // no partner: the next fact is too long to share a row, or there is none
+			rows = append(rows, m.gridRow(f.k, f.v, "", "", w))
+			i++
 		}
-		rows = append(rows, m.gridRow(facts[i].k, facts[i].v, k2, v2, w))
 	}
 	return rows
 }
@@ -905,16 +947,14 @@ func (m *model) appendDiagStackedSection(lines []string, title string, rows []st
 }
 
 func (m *model) diagStackedContent(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w, gaugeW int) []string {
-	t := m.sty
-	hr, hrW, _ := m.diagStatus(d.Snapshot.Connected, d.LastData, now)
-	lines := []string{between(t.sAcc.Bold(true).Render("diagnostics"), DispW("diagnostics"), hr, hrW, w), ""}
+	lines := []string{m.diagMasthead(d, v, now, w), ""}
 	lines = m.appendDiagStackedSection(lines, "audio", m.diagStackedAudioRows(d, v, w, gaugeW), w)
 	lines = m.appendDiagStackedSection(lines, "connection", m.diagStackedConnectionRows(d, now), w)
 	lines = m.appendDiagStackedSection(lines, "device", m.diagStackedDeviceRows(d, now, w), w)
 	lines = m.appendDiagStackedSection(lines, "hardware", m.diagStackedHardwareRows(w), w)
 	lines = m.appendDiagStackedSection(lines, "network", m.diagStackedNetworkRows(d, w, gaugeW), w)
 	lines = m.appendDiagStackedSection(lines, "resources", m.diagStackedResourceRows(d, v, w, gaugeW), w)
-	lines = m.appendDiagStackedSection(lines, "services", m.serviceStripFor(d.ConfInfo, w), w)
+	lines = m.appendDiagStackedSection(lines, "services", m.serviceStripFor(d.ConfInfo, now, w), w)
 	return lines
 }
 
@@ -1032,25 +1072,34 @@ func diagVerdict(v diagVitals, lastRx, now time.Time) (worst int, why []string) 
 func withOpsVitals(v diagVitals, d protocol.DiagnosticSnapshot, now time.Time) diagVitals {
 	v.levelDesync = d.LevelDesync
 	v.onWifi = d.DevInfo != nil && d.DevInfo.Net == "wifi"
-	v.reconnectRate, v.haveReconnect = reconnectRate(d.Ops, now)
+	v.reconnectRate, v.haveReconnect = reconnectRate(d.Ops, d.OpsAt)
 	return v
 }
 
 // reconnectRate is the engine's reconnects per hour over the syslog's window,
 // false until the window is at least half an hour (a fresh log would otherwise
-// turn two events into a storm).
-func reconnectRate(ops *protocol.DevOps, now time.Time) (float64, bool) {
+// turn two events into a storm). The window ends at the digest's read time
+// (at): the count is a snapshot taken then, so dividing it by a window that
+// runs on to now would decay the rate for as long as the view stays open — or
+// lift a window too short at the read past the half-hour guard with no new
+// data.
+func reconnectRate(ops *protocol.DevOps, at time.Time) (float64, bool) {
 	if ops == nil || !ops.ReconnectsOK || !ops.LogSinceOK {
 		return 0, false
 	}
-	win := now.Sub(ops.LogSince)
+	win := at.Sub(ops.LogSince)
 	if win < 30*time.Minute {
 		return 0, false
 	}
 	return float64(ops.Reconnects) / win.Hours(), true
 }
 
-func (m *model) diagCardMasthead(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w int) string {
+// diagMasthead is the top line of both diagnostics layouts: the title, the
+// health verdict with the signals behind it (while connected and the stream
+// is not silent), and the connection light + clock. The stacked layout is the
+// one an 80-column terminal gets, so it needs the verdict as much as the cards
+// do — a box at 95 % cpu must not read as fine there.
+func (m *model) diagMasthead(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w int) string {
 	t := m.sty
 	hr, hrW, silent := m.diagStatus(d.Snapshot.Connected, d.LastData, now)
 	left, leftW := t.sAcc.Bold(true).Render("diagnostics"), DispW("diagnostics")
@@ -1087,8 +1136,9 @@ func (m *model) diagScrollBy(n int) {
 
 // diagWindow cuts the scrollable rows to the room, honouring and clamping the
 // scroll offset, and returns the rows plus a hint for the footer when there is
-// more above or below ("" when everything fits).
-func (m *model) diagWindow(rows []string, room int) ([]string, string) {
+// more above or below ("" when everything fits). keys names what scrolls the
+// view: the diagnostics' ↑↓, or ←→ in the services pane, where ↑↓ select.
+func (m *model) diagWindow(rows []string, room int, keys string) ([]string, string) {
 	if room <= 0 {
 		return nil, ""
 	}
@@ -1101,12 +1151,12 @@ func (m *model) diagWindow(rows []string, room int) ([]string, string) {
 		m.diagScroll = over
 	}
 	below := over - m.diagScroll
-	hint := fmt.Sprintf("↑↓ scroll · %d more row%s below", below, plural(below))
+	hint := fmt.Sprintf("%s · %d more row%s below", keys, below, plural(below))
 	switch {
 	case below == 0:
-		hint = fmt.Sprintf("↑↓ scroll · %d row%s above", m.diagScroll, plural(m.diagScroll))
+		hint = fmt.Sprintf("%s · %d row%s above", keys, m.diagScroll, plural(m.diagScroll))
 	case m.diagScroll > 0:
-		hint = fmt.Sprintf("↑↓ scroll · %d above · %d below", m.diagScroll, below)
+		hint = fmt.Sprintf("%s · %d above · %d below", keys, m.diagScroll, below)
 	}
 	return rows[m.diagScroll : m.diagScroll+room], hint
 }
@@ -1129,7 +1179,7 @@ func (m *model) diagCardConnectionRows(d protocol.DiagnosticSnapshot, now time.T
 	if zr := m.zcReadout(d, now); zr != "" {
 		rows = append(rows, f.styled("spotify", zr))
 	}
-	if rc := m.reconnectReadout(d.Ops, now); rc != "" {
+	if rc := m.reconnectReadout(d.Ops, d.OpsAt); rc != "" {
 		rows = append(rows, f.styled("engine", rc))
 	}
 	return append(rows,
@@ -1283,7 +1333,7 @@ func (m *model) diagCardSections(d protocol.DiagnosticSnapshot, v diagVitals, no
 		{"latency", m.diagCardLatencyRows(d)},
 		{"network", m.diagCardNetworkRows(d, f)},
 		{"resources", m.diagCardResourceRows(d, v, f)},
-		{"services", m.serviceStripFor(d.ConfInfo, f.inner)},
+		{"services", m.serviceStripFor(d.ConfInfo, now, f.inner)},
 	}
 	sections := make([]diagSection, 0, len(candidates))
 	for _, section := range candidates {
@@ -1351,13 +1401,11 @@ func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now tim
 	if line, ok := diagErrLine(s, now, W); ok {
 		tail = append(tail, line, "")
 	}
-	tail = append(tail, t.pens().dmr.render(diagFooter))
+	tail = append(tail, "") // the footer, once the window says what is off-screen
 
 	// on a too-short pane the read-out scrolls; the footer says how much is off-screen
-	L, hint := m.diagWindow(L, m.bodyRows()-len(tail))
-	if hint != "" {
-		tail[len(tail)-1] = between(t.pens().dmr.render(diagFooter), DispW(diagFooter), t.pens().dim.render(hint), DispW(hint), W)
-	}
+	L, hint := m.diagWindow(L, m.bodyRows()-len(tail), "↑↓ scroll")
+	tail[len(tail)-1] = m.footerFit(diagFooters, t.pens().dim.render(hint), DispW(hint), W)
 	return frameBody(L, tail, m.bodyRows(), false) // top-aligned: read-out hugs the top, footer stays pinned below
 }
 
@@ -1380,7 +1428,7 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 	split := splitDiagSections(sections)
 	left2 := diagColumn(format, sections[:split], colW)
 	right2 := diagColumn(format, sections[split:], rightW)
-	masthead := m.diagCardMasthead(d, vit, now, W)
+	masthead := m.diagMasthead(d, vit, now, W)
 
 	// ---- compose: the status line, a heavy rule, then the zipped columns ----
 	head := []string{masthead, t.pens().dmr.render(strings.Repeat("━", W))}
@@ -1406,13 +1454,13 @@ func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.
 	if line, ok := diagErrLine(s, now, W); ok {
 		tail = append(tail, line, "")
 	}
-	body, hint := m.diagWindow(body, m.bodyRows()-len(head)-len(tail)-1)
+	body, hint := m.diagWindow(body, m.bodyRows()-len(head)-len(tail)-1, "↑↓ scroll")
 	right := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") + t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
 	rightW2 := DispW("● good   ● warn   ● fault")
 	if hint != "" {
 		right, rightW2 = t.pens().dim.render(hint), DispW(hint)
 	}
-	tail = append(tail, between(t.pens().dmr.render(diagFooter), DispW(diagFooter), right, rightW2, W))
+	tail = append(tail, m.footerFit(diagFooters, right, rightW2, W))
 	return frameBody(append(head, body...), tail, m.bodyRows(), false)
 }
 
@@ -1471,35 +1519,44 @@ var confHardware = []struct{ k, v string }{
 // that outgrows the column WRAPS onto aligned continuation rows (flowGroup)
 // rather than clipping, so no service is ever hidden and the dots keep their
 // colours at any width. Degrades to a "reading…" line until @@c arrives.
-func (m *model) serviceStripFor(cv *protocol.ConfInfo, w int) []string {
+func (m *model) serviceStripFor(cv *protocol.ConfInfo, now time.Time, w int) []string {
 	if cv == nil {
 		return []string{clipStyled(m.sty.pens().dmr.render("reading from device…"), w)}
 	}
-	var on, off []string
+	var on, off, unread []string
 	for _, sv := range confServices {
 		// A service whose configured flag and running state disagree gets the warn
 		// hue rather than being quietly filed under on or off: that mismatch is the
 		// fault the device's own web page structurally cannot show, since it reads
 		// the flag and never looks for the daemon. Only where the flag is actually
 		// consulted, though — see svcFlagNote: a gateDaemon row's init script never
-		// reads its flag, so the two disagreeing there means nothing.
-		mark := sv.gate != gateDaemon && cv.Divergent(sv.id)
-		if cv.Svc[sv.id] == "on" {
+		// reads its flag, so the two disagreeing there means nothing. Spotify's
+		// flags are a pair naming an engine, so its mismatch is engineMismatch.
+		mark := sv.gate != gateDaemon && cv.Divergent(sv.id) ||
+			sv.gate == gateEngine && m.engineMismatch(cv, now) != ""
+		switch cv.Svc[sv.id] {
+		case "on":
 			dot, name := m.sty.pens().acc.render("●"), m.sty.pens().txt.render(sv.label)
 			if mark {
 				dot, name = m.sty.sevs[1].Render("◍"), m.sty.sevs[1].Render(sv.label)
 			}
 			on = append(on, dot+" "+name)
-		} else {
+		case "off":
 			dot, name := m.sty.pens().dmr.render("○"), m.sty.pens().dim.render(sv.label)
 			if mark {
 				dot, name = m.sty.sevs[1].Render("◌"), m.sty.sevs[1].Render(sv.label)
 			}
 			off = append(off, dot+" "+name)
+		default:
+			// Unread: the loop could not tell. Filed under off it would claim a
+			// state nobody reported — the services pane shows "—" for it — so it
+			// gets its own group, in the dimmest pen.
+			unread = append(unread, m.sty.pens().dmr.render("○ "+sv.label))
 		}
 	}
 	rows := m.flowGroup("on", on, w)
 	rows = append(rows, m.flowGroup("off", off, w)...)
+	rows = append(rows, m.flowGroup("?", unread, w)...)
 	rows = append(rows, m.flowGroup("lan", m.exposedItems(cv), w)...) // ≤3 chars: the group label column is 4 wide
 	rows = append(rows, m.flowGroup("via", m.engineItems(cv), w)...)
 	rows = append(rows, m.sty.pens().dmr.render("env-gated · c to switch them here"))
@@ -1600,6 +1657,23 @@ func clipStyled(styled string, w int) string {
 	return ansi.Truncate(styled, w, "") // no room for the ellipsis: hard cut
 }
 
+// footerFit lays a view's key hint beside its fact on the footer row, the fact
+// right-aligned (fact is styled; factW is its visible width). The fact is what
+// the row is for — how old the tail is, how much is off-screen — so it keeps
+// its place and the keys give way: the widest of hints (widest first) that
+// still fits beside it, or none. Only a fact wider than the row is clipped.
+func (m *model) footerFit(hints []string, fact string, factW, W int) string {
+	if factW >= W {
+		return clipStyled(fact, W)
+	}
+	for _, h := range hints {
+		if hw := DispW(h); hw+1+factW <= W {
+			return between(m.sty.pens().dmr.render(h), hw, fact, factW, W)
+		}
+	}
+	return spaces(W-factW) + fact
+}
+
 // gridRow renders a two-column "label value | label value" row, exactly W wide.
 func (m *model) gridRow(k1, v1, k2, v2 string, W int) string {
 	half := W / 2
@@ -1607,10 +1681,9 @@ func (m *model) gridRow(k1, v1, k2, v2 string, W int) string {
 }
 
 func (m *model) cellKV(k, v string, w int) string {
-	const labW = 9
-	vv := Clip(v, w-labW)
-	out := m.sty.pens().dim.render(k) + labelGap(k, labW) + m.sty.pens().txt.render(vv)
-	if vis := labW + DispW(vv); vis < w {
+	vv := Clip(v, w-gridLabW)
+	out := m.sty.pens().dim.render(k) + labelGap(k, gridLabW) + m.sty.pens().txt.render(vv)
+	if vis := gridLabW + DispW(vv); vis < w {
 		out += strings.Repeat(" ", w-vis)
 	}
 	return out
@@ -1718,6 +1791,10 @@ const (
 	// diagLabelW is the dim label column shared by every diagnostics row (see
 	// diagLine / diagGauge): the label, left-padded to this width, then the value.
 	diagLabelW = 10
+
+	// gridLabW is the label column of one cell in the stacked layout's
+	// two-to-a-row grid (see cellKV).
+	gridLabW = 9
 
 	// The latency row's fixed fields, in render order (see latencyRow).
 	latNameW   = 8     // target name (left-padded)

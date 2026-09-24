@@ -1,7 +1,6 @@
 // The equalizer pane: display order, the control verbs that ride the :2018
-// tunnel, and its two renderers (the full-dashboard slider rows and the
-// compact one-line summary); the diagnostics readout is diag.go's
-// tunnelReadout.
+// tunnel, and the view that draws them as slider rows; the diagnostics
+// readout is diag.go's tunnelReadout.
 
 package tui
 
@@ -171,13 +170,21 @@ func (m *model) queryEQ(code string) {
 
 // sendEQ records the change optimistically (arming the echo hold) and enqueues
 // the tunnel write, never blocking the update loop (drop-oldest like send).
+// While the tunnel is down the equalizer is read-only: the write would wait in
+// the queue until the worker dropped it (EQCommandDeadline), leaving a value
+// painted that the device never received, so the change is refused and the
+// notice says why.
 func (m *model) sendEQ(code string, val int) {
+	if conn, _ := m.st.EQView(); !conn {
+		m.notifyWarn("equalizer read-only · the :2018 tunnel is down", noticeFor)
+		return
+	}
 	m.st.SetEQLocal(code, val)
 	nbSend(m.eqcmds, workers.EQCommand{Code: code, Val: val, TS: time.Now()})
 }
 
 // eqSliders renders one horizontal row per EQ band, all W columns wide, in
-// display order. The rows are pinned to the bottom tail of the full dashboard.
+// display order; renderEQ windows them on a short frame.
 func (m *model) eqSliders(W int) []string {
 	_, vals := m.st.EQView()
 	rows := make([]string, len(eqOrder))
@@ -185,6 +192,21 @@ func (m *model) eqSliders(W int) []string {
 		rows[d] = m.eqSliderRow(idx, vals, m.view == viewEQ && m.eqFocus == d, W)
 	}
 	return rows
+}
+
+// eqWindow cuts the slider rows to the room a short frame leaves them, always
+// keeping the focused row: ←→ and enter act on it, so it must never sit past
+// the frame's edge (↑ from the first row wraps to Max volume, the last). The
+// window moves only as far as the focus needs, like a scrolled list.
+func (m *model) eqWindow(rows []string, room int) []string {
+	if room >= len(rows) {
+		m.eqScroll = 0
+		return rows
+	}
+	room = max(room, 1)
+	lo, hi := max(m.eqFocus-room+1, 0), min(m.eqFocus, len(rows)-room)
+	m.eqScroll = min(max(m.eqScroll, lo), hi)
+	return rows[m.eqScroll : m.eqScroll+room]
 }
 
 // eqSliderRow renders one EQ control as a W-wide horizontal row:
@@ -209,9 +231,14 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	labelCell := labelPen.render(raw) + spaces(sliderLabelW-DispW(raw))
 
 	if spec.Kind == tunnel.Toggle {
+		if !known {
+			// "—" until the device reports the switch, as the other rows say
+			// it: "○ off" would claim a state nobody has read.
+			return labelCell + ps.dmr.render("—") + spaces(max(trackW+sliderValW-DispW("—"), 0))
+		}
 		knob, state := "○", "off"
 		knobPen, statePen := ps.dmr, ps.dmr
-		if known && v != 0 {
+		if v != 0 {
 			knob, state = "●", "on"
 			knobPen, statePen = ps.acc, ps.acc
 		}
@@ -224,7 +251,10 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	if spec.Kind == tunnel.Choice {
 		// A selector: every named option in a row, the current one lit. The
 		// whole list is clipped to the row, never wrapped; the current name is
-		// always drawn first-class when it fits (the device names six).
+		// always drawn first-class when it fits (the device names six). The
+		// list starts at the first name when the names up to the current one
+		// fit, and late enough to include the current one when they do not —
+		// at the narrowest frame the sixth name falls past the row's end.
 		names := m.st.EQPresets()
 		roomW := trackW + sliderValW
 		var parts []string
@@ -234,16 +264,25 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 			cur = v
 		}
 		n := max(len(names), cur+1)
-		for i := range n {
+		start := 0
+		if cur > 0 {
+			w := DispW(presetName(names, cur))
+			for start = cur; start > 0; start-- {
+				if w += 3 + DispW(presetName(names, start-1)); w > roomW {
+					break
+				}
+			}
+		}
+		for i := start; i < n; i++ {
 			txt := presetName(names, i)
 			segW := DispW(txt)
-			if i > 0 {
+			if i > start {
 				segW += 3
 			}
 			if used+segW > roomW {
 				break
 			}
-			if i > 0 {
+			if i > start {
 				parts = append(parts, ps.dmr.render(" · "))
 			}
 			switch {
@@ -307,13 +346,15 @@ func (m *model) eqSliderRow(specIdx int, vals map[string]int, focused bool, W in
 	return labelCell + track + spaces(sliderValW-DispW(vraw)) + valPen.render(vraw)
 }
 
-// renderEQ is the equalizer view: the nine controls as wide slider rows, then
-// a note about the focused one. The equalizer rides the :2018 tunnel, apart
-// from the ssh player stream, so a dead tunnel greys this view out alone.
+// renderEQ is the equalizer view: the nine controls as wide slider rows (as
+// many as the frame has room for, the focused one always among them), then a
+// note about the focused one. The equalizer rides the :2018 tunnel, apart from
+// the ssh player stream, so a dead tunnel makes this view alone read-only.
 func (m *model) renderEQ(W int) []string {
 	t := m.sty.pens()
+	tail := []string{"", m.footerRow(W)}
 	content := []string{m.sectionHead("equalizer", W), ""}
-	content = append(content, m.eqSliders(W)...)
+	content = append(content, m.eqWindow(m.eqSliders(W), m.bodyRows()-len(tail)-len(content))...)
 	if conn, _ := m.st.EQView(); !conn {
 		content = append(content, "", t.warn.render(Clip(GL["warn"]+" the :2018 control tunnel is down — values are the last known until it returns", W)))
 	}
@@ -322,7 +363,7 @@ func (m *model) renderEQ(W int) []string {
 	for _, ln := range eqAbout[sp.Code] {
 		content = append(content, t.dmr.render(Clip(ln, W)))
 	}
-	return frameBody(content, []string{"", m.footerRow(W)}, m.bodyRows(), false)
+	return frameBody(content, tail, m.bodyRows(), false)
 }
 
 // toneStr formats a signed tone value: "+3", "0", "-6" (avoids an odd "+0").

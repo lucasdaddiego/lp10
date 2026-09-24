@@ -46,7 +46,8 @@ func TestNoticeLineEvents(t *testing.T) {
 	if strings.TrimSpace(strings.Trim(line(), "┃")) != "" {
 		t.Errorf("notice should have faded, got %q", line())
 	}
-	// the services toggle reports what it asked for
+	// the services toggle reports what it asked for (once the services are read)
+	applyFixtureRecords(st, "config_record.txt")
 	m.setView(viewServices)
 	m.svcFocus = 0
 	m.svcToggle(time.Now())
@@ -67,10 +68,16 @@ func TestStartupSummaryAndConnectionNotices(t *testing.T) {
 	protocol.ApplyRecord(st, protocol.Record{"o": {"n=88", "t=Sep 11 01:47:58", "u="}})
 	m.trackConnection(st.Snap(), now)
 	got := stripANSI(m.noticeRow(now, 120))
-	for _, want := range []string{"connected", "firmware AR241CE_8530.23.2", "HiFi engine", "88 reconnects in the log", "power-on"} {
+	for _, want := range []string{"connected", "firmware AR241CE_8530.23.2", "HiFi engine", "88 reconnects since Sep 11 01:47", "power-on"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary %q missing %q", got, want)
 		}
+	}
+	// without the log's first stamp the count cannot name its window
+	d := st.DiagnosticView(now)
+	d.Ops = &protocol.DevOps{Reconnects: 1, ReconnectsOK: true}
+	if got := startupSummary(d); !strings.Contains(got, "1 reconnect in the log") {
+		t.Errorf("stampless summary = %q", got)
 	}
 	// a disconnect after a connection warns
 	st.Disconnect()
@@ -126,7 +133,7 @@ func TestIdleScreen(t *testing.T) {
 	if got := sourcesOn(nil); got != "Spotify · AirPlay · Bluetooth" {
 		t.Errorf("sourcesOn(nil) = %q", got)
 	}
-	if got := sourcesOn(&protocol.ConfInfo{Svc: map[string]string{"spotify": "off"}}); !strings.Contains(got, "no streaming service") {
+	if got := wakeHint(&protocol.ConfInfo{Svc: map[string]string{"spotify": "off"}}); got != "no streaming service is switched on · 3 opens the services" {
 		t.Errorf("all-off = %q", got)
 	}
 }
@@ -151,6 +158,14 @@ func TestSinceSweepFact(t *testing.T) {
 	if sweepDeltaFact(diagIdentity{fw: "—", mcu: "—"}, nil, base) != "" {
 		t.Error("no identity yet should print nothing")
 	}
+	// a merged baseline: an ssh-less sweep on Sep 14 carried the identity read
+	// on Sep 12, so "unchanged" dates to Sep 12, not to the latest sweep
+	merged := *base
+	merged.At = time.Date(2026, 9, 14, 9, 0, 0, 0, time.Local)
+	merged.Carried = map[string]time.Time{"identity": base.At, "mcu": base.At, "vendorApp": base.At}
+	if got := sweepDeltaFact(same, &protocol.DevInfo{VendorApp: "32"}, &merged); got != "unchanged since Sep 12 16:00" {
+		t.Errorf("carried identity dated %q, want the read date", got)
+	}
 	// on the card
 	m, st, _ := makeModel(t)
 	m.sty = newTheme()
@@ -169,6 +184,7 @@ func TestLogsFollowMode(t *testing.T) {
 	m, _, collect := makeModel(t)
 	m.sty = newTheme()
 	m.rows, m.cols = 40, 120
+	m.dispatch(logicMsg{}) // the connect's tick, before anything is asked (it re-asks what was)
 	m.setView(viewLogs)
 	collect() // the fetch on open
 	m.key(kr('F'))

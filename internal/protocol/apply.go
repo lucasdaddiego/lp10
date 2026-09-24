@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var reNum = regexp.MustCompile(`Data:(-?\d+)`)
@@ -158,7 +159,7 @@ var confKeys = map[string]bool{
 }
 
 // ConfInfo holds the device's streaming-capability state from the one-shot @@c
-// section, refreshed once per connection. Svc maps a capability id (see confKeys)
+// section, read at connect and again after every service toggle. Svc maps a capability id (see confKeys)
 // to "on" (env-enabled / daemon running), "off", or "" (unknown — the device
 // couldn't read the flag). It feeds the config view; it carries no live metrics,
 // so unlike @@s it is gathered unconditionally at connect, not gated on an overlay.
@@ -258,20 +259,22 @@ func (c *ConfInfo) Dirty(key string) (dirty, known bool) {
 	return false, true
 }
 
-// DevOps is the @@o syslog digest: what the box's own logs say about the
-// Spotify engine's link and about the firmware check the box performs itself
-// (every 4 h, on its own timer — so lp10 never has to leave the LAN to ask).
-// The syslog lives on tmpfs and holds roughly the last day, which is the window
-// Reconnects counts over.
+// DevOps is the @@o digest: what the box's own logs say about the Spotify
+// engine's link and about the firmware check the box performs itself (every
+// 4 h, on its own timer — so lp10 never has to leave the LAN to ask).
+// Reconnects counts over the live syslog file only: rsyslog caps it at 1 MiB
+// and rotates it onto flash, so while a track plays it reaches back well under
+// an hour and when the box is idle it spans days — LogSince says which. The
+// firmware verdict comes from the vendor app's log, which keeps weeks.
 type DevOps struct {
-	Reconnects   int       // eSDK "connection to Spotify has been lost" lines in the syslog
+	Reconnects   int       // eSDK "connection to Spotify has been lost" lines in the live syslog
 	ReconnectsOK bool      // a count was read
-	LogSince     time.Time // the syslog's first timestamp (the window Reconnects covers)
+	LogSince     time.Time // the live syslog's first timestamp (the window Reconnects covers)
 	LogSinceOK   bool
 	OTAAt        time.Time // when the box last heard from the vendor manifest
-	OTAUpToDate  bool      // the answer was "No update available"
-	OTAText      string    // the answer as logged when it is NOT that ("" otherwise)
-	OTAOK        bool      // an OTA answer was present in the syslog
+	OTAUpToDate  bool      // the answer was NO_UPDATE
+	OTAText      string    // the answer, in words, when it is NOT that ("" otherwise)
+	OTAOK        bool      // an OTA report was found
 }
 
 // Divergent reports a service whose configured flag and running state disagree
@@ -358,8 +361,9 @@ func parseRecord(rec Record) parsedRecord {
 }
 
 // parseOps decodes the @@o digest: three tagged lines — n= the reconnect count,
-// t= the syslog's first timestamp, u= the ota daemon's last answer line. Each is
-// optional (a missing syslog leaves all three empty); absent section -> nil.
+// t= the live syslog's first timestamp, u= the vendor app's last MsgBox-223
+// report line (ParseOTAReport). Each is optional (a missing log leaves its tag
+// empty); absent section -> nil.
 func parseOps(lines []string, now time.Time) *DevOps {
 	if len(lines) == 0 {
 		return nil
@@ -379,24 +383,15 @@ func parseOps(lines []string, now time.Time) *DevOps {
 		case "t":
 			o.LogSince, o.LogSinceOK = parseSyslogTime(v, now)
 		case "u":
-			if v == "" {
+			at, payload, ok := ParseOTAReport(v, now.Location())
+			if !ok {
 				continue
 			}
-			// "Sep 12 14:56:15:624239 E/ota[923]: ota: OTA:error string =  No update available"
-			if len(v) >= 15 {
-				o.OTAAt, _ = parseSyslogTime(v[:15], now)
-			}
-			o.OTAOK = true
-			if _, ans, found := strings.Cut(v, "error string ="); found {
-				ans = strings.TrimSpace(ans)
-				if strings.EqualFold(ans, "No update available") {
-					o.OTAUpToDate = true
-				} else {
-					o.OTAText = clip(ans, 120)
-				}
+			o.OTAAt, o.OTAOK = at, true
+			if payload == OTANoUpdate {
+				o.OTAUpToDate = true
 			} else {
-				// the manifest's SUCCESS reply carries the offered package
-				o.OTAText = "update offered"
+				o.OTAText = OTAWords(payload)
 			}
 		}
 	}
@@ -405,6 +400,50 @@ func parseOps(lines []string, now time.Time) *DevOps {
 	}
 	return o
 }
+
+// OTANoUpdate is the MsgBox-223 payload for "the vendor has nothing newer".
+const OTANoUpdate = "NO_UPDATE"
+
+// ParseOTAReport reads the box's own firmware verdict from one line of the
+// vendor app's log (/lsync/app.log) — the MsgBox-223 report the MCU hears after
+// each of the box's 4-hourly manifest checks:
+//
+//	[2026-09-23 14:56:15.634] [DEBUG] [luci-rx] … command=223 … payload="NO_UPDATE"
+//
+// The stamp is the box's local time (the zone the room is in, as for the
+// syslog), so it is read in loc; a line without a readable stamp still
+// carries its verdict, with a zero time. The line must already be printable.
+// ok is false for any line that is not such a report.
+func ParseOTAReport(line string, loc *time.Location) (at time.Time, payload string, ok bool) {
+	if !strings.Contains(line, "command=223 ") {
+		return time.Time{}, "", false
+	}
+	_, p, found := strings.Cut(line, `payload="`)
+	if !found {
+		return time.Time{}, "", false
+	}
+	payload, _, found = strings.Cut(p, `"`)
+	if !found || payload == "" {
+		return time.Time{}, "", false
+	}
+	if len(line) >= 20 && line[0] == '[' {
+		if t, err := time.ParseInLocation("2006-01-02 15:04:05", line[1:20], loc); err == nil {
+			at = t
+		}
+	}
+	return at, clip(payload, 60), true
+}
+
+// OTAWords turns a MsgBox-223 payload into words for display: "NO_UPDATE" →
+// "no update", "UPDATE_AVAILABLE" → "update available". Only NO_UPDATE has been
+// seen on this box; any other report is shown as the box put it.
+func OTAWords(payload string) string {
+	return strings.ToLower(strings.ReplaceAll(payload, "_", " "))
+}
+
+// ParseSyslogTime is the exported form of parseSyslogTime, for `lp10 sweep`,
+// which reads the same stamps out of its one-shot inventory.
+func ParseSyslogTime(s string, now time.Time) (time.Time, bool) { return parseSyslogTime(s, now) }
 
 // parseSyslogTime reads a BusyBox/rsyslog timestamp with no year ("Sep 11
 // 01:47:58", the first 15 bytes of a line) in the local zone — the box keeps
@@ -427,13 +466,24 @@ func parseSyslogTime(s string, now time.Time) (time.Time, bool) {
 	return t, true
 }
 
-// clip bounds a device string for display.
+// clip bounds a device string for display: at most n bytes of it, then "…".
+// The cut backs up to the start of a rune, so a multi-byte character is never
+// split into invalid UTF-8.
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
 	return s[:n] + "…"
 }
+
+// reCredential matches a log line that can carry the Spotify login. The engine
+// logs its reusable blob and the account name in clear at I/ level ("SAME
+// USERNAME IS THERE STORE THE BLOB …", "DIFF USER LOGGED IN STORE USERNAME %s
+// AND THE BLOB %s IN ENV"), and the Logs view paints every line it is handed.
+var reCredential = regexp.MustCompile(`(?i)blob|username`)
 
 // parseLogs decodes a log-tail section — "l" (the device syslog) or "L" (the
 // vendor app's /lsync/app.log). The device prefixes every line with a space so
@@ -441,6 +491,12 @@ func clip(s string, n int) string {
 // that one space comes back off here. Present-but-empty is meaningful (the
 // filter matched nothing) and must not read as "no answer", hence the comma-ok
 // on the section rather than a length test.
+//
+// A line that can carry the Spotify login (reCredential) is dropped from both
+// logs. The loop drops such lines on the box; this is the second guard, so one
+// that gets past that filter still never reaches the screen. It is matched
+// after the strip, on the text the view would show, so an invisible character
+// inside the word cannot hide it.
 func parseLogs(rec Record, tag string) ([]string, bool) {
 	lines, ok := rec[tag]
 	if !ok {
@@ -448,7 +504,11 @@ func parseLogs(rec Record, tag string) ([]string, bool) {
 	}
 	out := make([]string, 0, len(lines))
 	for _, ln := range lines {
-		out = append(out, printable(strings.TrimPrefix(ln, " ")))
+		ln = printable(strings.TrimPrefix(ln, " "))
+		if reCredential.MatchString(ln) {
+			continue
+		}
+		out = append(out, ln)
 	}
 	return out, true
 }
@@ -502,7 +562,7 @@ func ApplyRecord(st *State, rec Record) bool {
 		st.devinfo = p.devinfo
 	}
 	if p.confinfo != nil {
-		st.confinfo = p.confinfo
+		st.confinfo, st.confAt = p.confinfo, now
 	}
 	if p.hasVlog {
 		st.vlogs, st.vlogsAt = p.vlogs, now
@@ -561,6 +621,9 @@ func ApplyRecord(st *State, rec Record) bool {
 			st.posAt = now // external resume: clock restarts at last position
 		}
 		st.playing = p.play
+	}
+	if p.volOK {
+		st.volLive = true // the device's own level, read this run
 	}
 	if p.volOK && !now.Before(st.volHold) {
 		v := clamp100(p.vol)

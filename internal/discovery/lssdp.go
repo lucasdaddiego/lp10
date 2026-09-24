@@ -59,7 +59,9 @@ func parseLSSDP(b []byte) (LSSDPInfo, bool) {
 		}
 		v = strings.TrimSpace(v)
 		if len(v) > maxLSSDPField {
-			v = v[:maxLSSDPField]
+			// The cap counts bytes, so the cut can halve a multi-byte
+			// character; ToValidUTF8 drops the partial one it leaves at the end.
+			v = strings.ToValidUTF8(v[:maxLSSDPField], "")
 		}
 		switch strings.ToUpper(strings.TrimSpace(k)) {
 		case "DEVICENAME":

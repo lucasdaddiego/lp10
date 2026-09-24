@@ -1,6 +1,8 @@
 package workers
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/fixtures"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/testutil"
 	"github.com/lucasdaddiego/lp10/internal/transport"
@@ -25,6 +28,11 @@ func waitFor(pred func() bool, timeout time.Duration) bool {
 	}
 	return pred()
 }
+
+// testPingHost is the ping_host every spawning test runs with: an IPv4
+// literal, so the laptop-side lookup at each spawn (transport.PingTarget) puts
+// no DNS query on the wire.
+const testPingHost = "192.0.2.1"
 
 type startOpts struct {
 	fastFatal bool
@@ -98,7 +106,8 @@ func (h *harness) start(scenario string, opts startOpts) *protocol.State {
 		h.restore = func() { classify = orig } // run post-join, see newHarness
 	}
 	cfg := config.Load()
-	h.wg.Go(func() { streamWorker(h.st, cfg, opts.snapshot, h.procs, h.control) })
+	cfg.PingHost = testPingHost
+	h.wg.Go(func() { streamWorker(context.Background(), h.st, cfg, opts.snapshot, h.procs, h.control) })
 	if opts.watchdog != nil {
 		w := opts.watchdog
 		if w.dataless == 0 {
@@ -136,11 +145,28 @@ func TestGarbageStreamStillParses(t *testing.T) {
 	}
 }
 
+// A session that logs in and ends on its own reconnects on the backoff; when
+// that repeats — a loop that dies right after the login, every session — the
+// stall streak holds the logins apart exactly as it does for watchdog kills:
+// each one is a login the box's sshd counts toward its lockout.
 func TestEofReconnects(t *testing.T) {
 	h := newHarness(t)
+	origHold, origMax := stallHold, stallHoldMax
+	stallHold, stallHoldMax = 700*time.Millisecond, 1400*time.Millisecond
+	h.restore = func() { stallHold, stallHoldMax = origHold, origMax } // post-join, see newHarness
 	st := h.start("eof", startOpts{})
+	if !waitFor(func() bool { return st.RawAttempts() >= 2 }, 6*time.Second) {
+		t.Fatalf("attempts = %d, want a reconnect after the first EOF", st.RawAttempts())
+	}
+	if !waitFor(func() bool { return strings.HasPrefix(st.Snap().Error, "2 short sessions in a row") }, 6*time.Second) {
+		t.Fatalf("note = %q, want the hold after two short logins", st.Snap().Error)
+	}
+	noted := st.Snap().ErrorAt
 	if !waitFor(func() bool { return st.RawAttempts() >= 3 }, 6*time.Second) {
-		t.Fatalf("attempts = %d, want >= 3", st.RawAttempts())
+		t.Fatalf("attempts = %d, want the third login after the hold", st.RawAttempts())
+	}
+	if gap := time.Since(noted); gap < stallHold {
+		t.Errorf("the third login came %v after the note, want at least the %v hold", gap, stallHold)
 	}
 }
 
@@ -530,6 +556,48 @@ func TestStreamBackoffResetNeedsSustainedSession(t *testing.T) {
 	}
 }
 
+// The loop's internet ping never gets a name: the stream worker resolves
+// ping_host on the laptop at each spawn and hands the loop the address, so the
+// box's resolvers can never stall a stats tick past the watchdog.
+func TestStreamWorkerHandsTheLoopAnAddress(t *testing.T) {
+	testutil.Isolate(t)
+	dir := t.TempDir()
+	loop := filepath.Join(dir, "loop")
+	// a fake ssh that keeps the loop (its last argument) and exits: a clean EOF
+	ssh := filepath.Join(dir, "record-ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nfor a; do l=$a; done\nprintf '%s' \"$l\" > "+loop+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LP10_SSH", ssh)
+	for host, want := range map[string]string{
+		"localhost": "ph='127.0.0.1';", // a name, resolved HERE (from the hosts file)
+		"192.0.2.7": "ph='192.0.2.7';", // an address is its own answer
+	} {
+		os.Remove(loop)
+		st := protocol.NewState()
+		control := newRunControl()
+		done := make(chan struct{})
+		go func() {
+			streamWorker(context.Background(), st, config.Config{Host: "127.0.0.1", PingHost: host}, "", newProcessSlot(), control)
+			close(done)
+		}()
+		spawned := waitFor(func() bool { return strings.Contains(readFile(loop), "ph=") }, 5*time.Second)
+		control.stop.Set()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("stream worker did not exit after stop")
+		}
+		if !spawned {
+			t.Fatalf("ping_host %q: the fake ssh never received a loop", host)
+		}
+		if got := readFile(loop); !strings.Contains(got, want) {
+			i := strings.Index(got, "ph=")
+			t.Errorf("ping_host %q reached the loop as %q, want %s", host, got[i:min(len(got), i+24)], want)
+		}
+	}
+}
+
 // Three fatal verdicts in a row stretch the retry cadence sixfold: the sshd
 // lockout looks exactly like a rejected password, and hammering it every
 // cadence only keeps it locked. The harness cadence is 200 ms, so the fourth
@@ -546,5 +614,247 @@ func TestFatalCadenceEscalatesAfterThreeHits(t *testing.T) {
 	}
 	if el := time.Since(t0); el < 900*time.Millisecond {
 		t.Errorf("fourth attempt came after %v, want the stretched cadence (~1.2 s)", el)
+	}
+}
+
+// ---- lockout insurance: the stall streak ------------------------------------
+
+// The rule at its real values: the first short stall reconnects on the normal
+// backoff, the second holds the next spawn 30 s, and each further one doubles
+// the hold, up to 2 minutes.
+func TestStallStreakEscalatesToTheCap(t *testing.T) {
+	var s stallStreak
+	for i, want := range []time.Duration{0, 30 * time.Second, time.Minute, 2 * time.Minute, 2 * time.Minute, 2 * time.Minute} {
+		if got := s.after(true, 10*time.Second); got != want {
+			t.Errorf("stall %d in a row: hold %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+// One stall in a long healthy session is not a pattern: a session that had
+// delivered for 2 minutes reconnects on the normal backoff even mid-streak,
+// and the next streak starts from scratch. A second less still counts as short.
+func TestStallStreakSparesALongSession(t *testing.T) {
+	var s stallStreak
+	s.after(true, 0)
+	s.after(true, 0)
+	if got := s.after(true, stallResetAfter-time.Second); got != time.Minute {
+		t.Fatalf("a stall just short of stallResetAfter: hold %v, want the streak's 1m0s", got)
+	}
+	if got := s.after(true, stallResetAfter); got != 0 {
+		t.Errorf("a stall after 2 minutes of delivery: hold %v, want 0 (the normal backoff)", got)
+	}
+	for i, want := range []time.Duration{0, 30 * time.Second} {
+		if got := s.after(true, 0); got != want {
+			t.Errorf("stall %d of the next streak: hold %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+// A session that delivers for 2 minutes ends the streak however it ends. A
+// shorter one that ends any other way (a clean EOF, a refused login) neither
+// extends nor breaks it, so such endings between the stalls cannot dodge the
+// hold.
+func TestStallStreakResetsOnATwoMinuteSession(t *testing.T) {
+	var s stallStreak
+	s.after(true, 0)
+	s.after(true, 0) // the streak holds 30 s now
+	if got := s.after(false, 30*time.Second); got != 0 {
+		t.Errorf("a short session that ended on its own: hold %v, want 0", got)
+	}
+	if got := s.after(true, 0); got != time.Minute {
+		t.Errorf("the stall after a short clean ending: hold %v, want 1m0s (the streak kept)", got)
+	}
+	s.after(false, 2*time.Minute) // healthy for 2 minutes, then a clean end
+	for i, want := range []time.Duration{0, 30 * time.Second} {
+		if got := s.after(true, 0); got != want {
+			t.Errorf("stall %d after a 2-minute session: hold %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+func TestStallNoteSaysWhyAndHowLong(t *testing.T) {
+	for _, tc := range []struct {
+		n    int
+		wait time.Duration
+		want string
+	}{
+		{2, 30 * time.Second, "2 short sessions in a row · waiting 30 s — the box's sshd locks out rapid logins"},
+		{4, 2 * time.Minute, "4 short sessions in a row · waiting 120 s — the box's sshd locks out rapid logins"},
+		{3, 1400 * time.Millisecond, "3 short sessions in a row · waiting 2 s — the box's sshd locks out rapid logins"},
+	} {
+		if got := stallNote(tc.n, tc.wait); got != tc.want {
+			t.Errorf("stallNote(%d, %v) = %q, want %q", tc.n, tc.wait, got, tc.want)
+		}
+	}
+}
+
+// The watchdog marks what it kills, and the stream worker holds off: a box
+// that stalls every session (fake "silent": one record, then nothing) gets its
+// first stall back on the normal backoff — the first note comes with two
+// attempts made — then holds that grow, each announced by ONE note that stands
+// for the whole wait. The holds are shortened; the rule's real values are
+// pinned above.
+func TestStallKillsHoldTheNextSpawn(t *testing.T) {
+	h := newHarness(t)
+	origHold, origMax := stallHold, stallHoldMax
+	stallHold, stallHoldMax = 700*time.Millisecond, 1400*time.Millisecond
+	h.restore = func() { stallHold, stallHoldMax = origHold, origMax } // post-join, see newHarness
+	st := h.start("silent", startOpts{watchdog: &struct{ silent, connect, dataless time.Duration }{
+		silent: 300 * time.Millisecond, connect: 5 * time.Second}})
+	for _, step := range []struct {
+		made int // attempts made when the note comes
+		note string
+		hold time.Duration
+	}{
+		{2, "2 short sessions in a row · waiting 1 s", 700 * time.Millisecond},
+		{3, "3 short sessions in a row · waiting 2 s", 1400 * time.Millisecond},
+	} {
+		if !waitFor(func() bool { return strings.HasPrefix(st.Snap().Error, step.note) }, 8*time.Second) {
+			t.Fatalf("note = %q, want %q…", st.Snap().Error, step.note)
+		}
+		noted := st.Snap().ErrorAt
+		if n := st.RawAttempts(); n != step.made {
+			t.Fatalf("%q came with %d attempts made, want %d", step.note, n, step.made)
+		}
+		if !waitFor(func() bool { return st.RawAttempts() > step.made }, 8*time.Second) {
+			t.Fatalf("no respawn after the %v hold", step.hold)
+		}
+		if gap := time.Since(noted); gap < step.hold {
+			t.Errorf("attempt %d came %v after the note, want at least the %v hold", step.made+1, gap, step.hold)
+		}
+		if at := st.Snap().ErrorAt; !at.Equal(noted) {
+			t.Errorf("the note was rewritten during the hold (%v, then %v), want once per wait", noted, at)
+		}
+	}
+}
+
+// The hold stays interruptible: quit during a 30 s hold (the real value) ends
+// the stream worker at once, not when the hold runs out.
+func TestStallHoldEndsOnQuit(t *testing.T) {
+	h := newHarness(t)
+	st := h.start("silent", startOpts{watchdog: &struct{ silent, connect, dataless time.Duration }{
+		silent: 300 * time.Millisecond, connect: 5 * time.Second}})
+	if !waitFor(func() bool { return strings.Contains(st.Snap().Error, "waiting 30 s") }, 8*time.Second) {
+		t.Fatalf("note = %q, want the 30 s hold", st.Snap().Error)
+	}
+	h.control.stop.Set()
+	done := make(chan struct{})
+	go func() { h.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream worker sat out the hold after quit")
+	}
+}
+
+// stallSSH writes a fake ssh for a session that logs in, delivers — a playing
+// record, then beats heartbeats 50 ms apart — and then goes silent until it is
+// killed. exec leaves the one process that holds stdout for the kill to hit.
+func stallSSH(t *testing.T, beats int) string {
+	t.Helper()
+	dir := t.TempDir()
+	play, beat := filepath.Join(dir, "play"), filepath.Join(dir, "beat")
+	for p, fixture := range map[string]string{play: "playing_record.txt", beat: "heartbeat_record.txt"} {
+		if err := os.WriteFile(p, []byte(fixtures.Get(fixture)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ssh := filepath.Join(dir, "stall-ssh")
+	script := fmt.Sprintf("#!/bin/sh\ncat '%s'\ni=0\nwhile [ $i -lt %d ]; do sleep 0.05; cat '%s'; i=$((i+1)); done\nexec sleep 60\n", play, beats, beat)
+	if err := os.WriteFile(ssh, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return ssh
+}
+
+// stallSession runs one stream lifecycle (from InitialBackoff) against $LP10_SSH
+// under its own watchdog, carrying stalls, and returns the next backoff and the
+// session's state. The watchdog is joined before it returns.
+func stallSession(stalls *stallStreak, silent, dataless time.Duration) (time.Duration, *protocol.State) {
+	st, procs, dog := protocol.NewState(), newProcessSlot(), newRunControl()
+	done := make(chan struct{})
+	go func() { watchdog(st, procs, dog, silent, 10*time.Second, dataless); close(done) }()
+	defer func() { dog.stop.Set(); <-done }()
+	return streamOnceWithSnapshot(st, config.Config{}, "", InitialBackoff, stalls, "", procs, newRunControl()), st
+}
+
+// How long a stalled session delivered decides whether it counts, measured
+// from its first data record to its last: this session's ~0.4 s of heartbeats
+// clears a 150 ms stallResetAfter, so its stall — mid-streak — respawns on the
+// normal backoff and ends the streak; against a minute the same session is
+// short, extends the streak and holds the next spawn.
+func TestStallStreakMeasuresDelivery(t *testing.T) {
+	testutil.Isolate(t)
+	t.Setenv("LP10_SSH", stallSSH(t, 8))
+	origReset, origHold := stallResetAfter, stallHold
+	defer func() { stallResetAfter, stallHold = origReset, origHold }()
+	stallHold = 500 * time.Millisecond
+
+	stallResetAfter = 150 * time.Millisecond
+	var stalls stallStreak
+	stalls.after(true, 0)
+	stalls.after(true, 0) // two stalls in a row: the next short one would hold 1 s
+	next, st := stallSession(&stalls, 300*time.Millisecond, 10*time.Second)
+	if e := st.Snap().Error; next != 2*InitialBackoff || stalls.n != 0 || e != "" {
+		t.Errorf("a long session's stall: next=%v streak=%d note=%q, want %v, 0, none", next, stalls.n, e, 2*InitialBackoff)
+	}
+
+	stallResetAfter = time.Minute
+	stalls.after(true, 0) // one stall: this session is the second in a row
+	next, st = stallSession(&stalls, 300*time.Millisecond, 10*time.Second)
+	s := st.Snap()
+	if next != 2*InitialBackoff || stalls.n != 2 || !strings.HasPrefix(s.Error, "2 short sessions in a row") {
+		t.Errorf("a short session's stall: next=%v streak=%d note=%q, want %v, 2, the hold's note", next, stalls.n, s.Error, 2*InitialBackoff)
+	}
+	if held := time.Since(s.ErrorAt); held < stallHold {
+		t.Errorf("returned %v after the note, want at least the %v hold", held, stallHold)
+	}
+}
+
+// A record of any kind proves the login, not only player data: a loop whose
+// LUCI reads wedge sends empty frames until the watchdog's dataless kill, the
+// same every session, and that stall is held off like any other.
+func TestStallStreakCountsADatalessWedge(t *testing.T) {
+	testutil.Isolate(t)
+	t.Setenv("LP10_SSH", testutil.FakeSSH(t))
+	t.Setenv("LP10_FAKE_SCENARIO", "dataless")
+	origHold := stallHold
+	defer func() { stallHold = origHold }()
+	stallHold = 300 * time.Millisecond
+
+	var stalls stallStreak
+	stalls.after(true, 0) // one stall: this wedge is the second in a row
+	_, st := stallSession(&stalls, 10*time.Second, 400*time.Millisecond)
+	if e := st.Snap().Error; stalls.n != 2 || !strings.HasPrefix(e, "2 short sessions in a row") {
+		t.Errorf("a dataless wedge: streak=%d note=%q, want 2 and the hold's note", stalls.n, e)
+	}
+}
+
+// A watchdog kill before the first record counts too: ssh's own ConnectTimeout
+// and a refused password end a session long before the connect window, so a
+// session still there to be killed had logged in and its loop printed nothing —
+// a loop that hangs at startup every session paces logins like any stall.
+func TestStallStreakCountsAKillBeforeTheFirstRecord(t *testing.T) {
+	testutil.Isolate(t)
+	ssh := filepath.Join(t.TempDir(), "mute-ssh")
+	if err := os.WriteFile(ssh, []byte("#!/bin/sh\nexec sleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LP10_SSH", ssh)
+	origHold := stallHold
+	defer func() { stallHold = origHold }()
+	stallHold = 300 * time.Millisecond
+
+	var stalls stallStreak
+	stalls.after(true, 0) // one short login: this mute one is the second in a row
+	st, procs, dog := protocol.NewState(), newProcessSlot(), newRunControl()
+	done := make(chan struct{})
+	go func() { watchdog(st, procs, dog, 10*time.Second, 300*time.Millisecond, 10*time.Second); close(done) }()
+	streamOnceWithSnapshot(st, config.Config{}, "", InitialBackoff, &stalls, "", procs, newRunControl())
+	dog.stop.Set()
+	<-done
+	if e := st.Snap().Error; stalls.n != 2 || !strings.HasPrefix(e, "2 short sessions in a row") {
+		t.Errorf("a kill before the first record: streak=%d note=%q, want 2 and the hold's note", stalls.n, e)
 	}
 }

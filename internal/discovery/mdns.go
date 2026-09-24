@@ -34,9 +34,9 @@ const (
 
 // Device is a discovered LinkPlay/Arylic endpoint.
 type Device struct {
-	Name  string // friendly name (after '@' in the RAOP instance), e.g. "Living"
+	Name  string // friendly name (after the first '@' in the RAOP instance), e.g. "Living"
 	Model string // TXT am= value, e.g. "LP10"
-	MAC   string // before '@' in the instance, e.g. "AABBCCDDEEFF"
+	MAC   string // before the first '@' in the instance, e.g. "AABBCCDDEEFF"
 	Host  string // SRV target (.local host), e.g. "Living.local"
 	IP    net.IP // first IPv4 A record, when one arrived
 }
@@ -191,6 +191,23 @@ func dnsKey(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
+// instanceLabel is an instance's own label: the PTR target with the service
+// type cut off its end, in the advertised spelling. The suffix is compared
+// case-insensitively and cut by its length, never at an index found in a
+// lower-cased copy: lower-casing does not keep byte lengths (an invalid byte
+// becomes a 3-byte U+FFFD, the 3-byte Kelvin sign a 1-byte 'k'), so such an
+// index can run past the end of the original — a panic on one hostile answer —
+// or cut a real name short. A target that does not end in the service comes
+// back whole.
+func instanceLabel(inst, svc string) string {
+	label := strings.TrimSuffix(inst, ".")
+	suffix := "." + svc
+	if len(label) >= len(suffix) && strings.EqualFold(label[len(label)-len(suffix):], suffix) {
+		return label[:len(label)-len(suffix)]
+	}
+	return label
+}
+
 func (c *collector) add(recs []rr) {
 	for _, r := range recs {
 		switch r.typ {
@@ -229,15 +246,10 @@ func (c *collector) add(recs []rr) {
 func (c *collector) devices() []Device {
 	var ds []Device
 	for key, inst := range c.instances {
-		label := strings.TrimSuffix(inst, ".")
-		suffix := "." + service
-		if len(label) >= len(suffix) && strings.EqualFold(label[len(label)-len(suffix):], suffix) {
-			label = label[:len(label)-len(suffix)] // "<MAC>@<name>", preserving advertised case
-		}
-		mac, name := label, ""
-		if i := strings.LastIndex(label, "@"); i >= 0 {
-			mac, name = label[:i], label[i+1:]
-		}
+		// "<MAC>@<name>", in the advertised case. The MAC is hex and never
+		// holds an '@', but the user-chosen name can ("Kids@Home"), so the
+		// split is at the first one.
+		mac, name, _ := strings.Cut(instanceLabel(inst, service), "@")
 		d := Device{Name: name, MAC: mac}
 		if m, ok := c.txt[key]; ok {
 			d.Model = m["am"]
