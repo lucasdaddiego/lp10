@@ -1683,3 +1683,23 @@ func TestRecheckCutByBudgetIsNotOK(t *testing.T) {
 		t.Errorf("scan = %v with no error: the budget cut the recheck, yet the scan claims a complete answer", open)
 	}
 }
+
+// The UPnP GET goes to the box's LAN address: an HTTP_PROXY in the shell
+// cannot reach it (502), so the upnp fact would fail on every sweep and the
+// merge would keep the old one for ever. lanClient must not take the proxy.
+func TestUPnPIgnoresTheEnvProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:9")
+	t.Setenv("http_proxy", "http://127.0.0.1:9")
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	req, _ := http.NewRequest(http.MethodGet, upnpURL("192.168.0.13"), nil)
+	tr, _ := lanClient.Transport.(*http.Transport)
+	if tr == nil {
+		tr = http.DefaultTransport.(*http.Transport)
+	}
+	if tr.Proxy != nil {
+		if u, _ := tr.Proxy(req); u != nil {
+			t.Errorf("the LAN UPnP GET would go through the proxy %v", u)
+		}
+	}
+}

@@ -226,8 +226,12 @@ type Probes struct {
 var probesFor = DefaultProbes
 
 // lanClient fetches from the box. It follows no redirect: the box's answer is
-// LAN input, and a redirect would send the sweep wherever it names.
-var lanClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+// LAN input, and a redirect would send the sweep wherever it names. It takes no
+// proxy either: an HTTP_PROXY cannot reach the LAN (discovery's zcClient, too).
+var lanClient = &http.Client{
+	Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // DefaultProbes talks to the real box and the real vendor.
 func DefaultProbes() Probes {
