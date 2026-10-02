@@ -39,6 +39,23 @@ func startupNote(warn string, keyErr error) string {
 // renderFPS caps the renderer's flush rate (see Run).
 const renderFPS = 15
 
+// mediaKeyConfig is the media-key tap's wiring: it consumes the keys only
+// while connected, and hands each one to the program (send) as a mediaKeyMsg.
+// The tap re-arming goes the same way, as a mediaKeysOnMsg.
+func mediaKeyConfig(st *protocol.State, send func(tea.Msg)) mediakey.Config {
+	return mediakey.Config{
+		Connected: func() bool { return st.Snap().Connected },
+		OnKey: func(k mediakey.Key) {
+			if action, ok := keyToAction(k); ok {
+				send(mediaKeyMsg{action: action})
+			}
+		},
+		// Fires only when the tap re-arms after an earlier denial (Accessibility
+		// granted mid-session), confirming the keys are now live.
+		OnActive: func() { send(mediaKeysOnMsg{}) },
+	}
+}
+
 // Run wires up State, the worker goroutines, and the Bubble Tea program, then
 // tears everything down on exit. Returns the process exit code: 0 clean quit,
 // 130 Ctrl-C, 143 SIGTERM/SIGHUP.
@@ -62,17 +79,7 @@ func Run(cfg config.Config) (int, error) {
 	// consumes the keys while connected, so they pass through to other apps when
 	// the device is away. No-op on non-macOS; best-effort if the tap can't be
 	// installed (Accessibility not granted) — note it and carry on.
-	stopKeys, keyErr := mediakey.Start(mediakey.Config{
-		Connected: func() bool { return st.Snap().Connected },
-		OnKey: func(k mediakey.Key) {
-			if action, ok := keyToAction(k); ok {
-				p.Send(mediaKeyMsg{action: action})
-			}
-		},
-		// Fires only when the tap re-arms after an earlier denial (Accessibility
-		// granted mid-session), confirming the keys are now live.
-		OnActive: func() { st.Note("media keys on") },
-	})
+	stopKeys, keyErr := mediakey.Start(mediaKeyConfig(st, p.Send))
 	// Surface the startup problems (broken config, no media-key tap) as ONE
 	// note: State keeps a single message slot, so noting them separately would
 	// let the later clobber the earlier before the first paint ever showed it.

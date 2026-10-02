@@ -4,6 +4,8 @@ import (
 	"slices"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/lucasdaddiego/lp10/internal/mediakey"
 )
 
@@ -34,5 +36,23 @@ func TestMediaKeyMsgRunsAction(t *testing.T) {
 		if got := wire(collect()); !slices.Equal(got, []string{want}) {
 			t.Errorf("media %s -> %v, want [%s]", action, got, want)
 		}
+	}
+}
+
+// The tap re-arming mid-session (Accessibility granted) is good news: "media
+// keys on" prints on the notice line in the plain pen, and the red error line
+// stays clear.
+func TestMediaKeysOnIsANoticeNotAnError(t *testing.T) {
+	m, st, _ := makeModel(t)
+	var sent []tea.Msg
+	mediaKeyConfig(st, func(msg tea.Msg) { sent = append(sent, msg) }).OnActive()
+	for _, msg := range sent {
+		m.Update(msg)
+	}
+	if e := st.Snap().Error; e != "" {
+		t.Errorf("the error slot holds %q", e)
+	}
+	if m.notice != "media keys on" || m.noticeWarn {
+		t.Errorf("notice %q (warn %v), want \"media keys on\" in the plain pen", m.notice, m.noticeWarn)
 	}
 }

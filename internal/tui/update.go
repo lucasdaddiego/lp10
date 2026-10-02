@@ -31,6 +31,11 @@ type frameMsg struct{}
 // action runs on the update loop — the tap thread must never touch model state.
 type mediaKeyMsg struct{ action string }
 
+// mediaKeysOnMsg says the media-key tap re-armed after an earlier denial: the
+// keys are live now. That is news, not a fault, so it prints on the notice
+// line, not State's red error line.
+type mediaKeysOnMsg struct{}
+
 // keyToAction maps a captured media key to the transport action do() understands.
 func keyToAction(k mediakey.Key) (action string, ok bool) {
 	switch k {
@@ -221,6 +226,9 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case mediaKeyMsg:
 		m.do(msg.action)
+		return m, nil
+	case mediaKeysOnMsg:
+		m.notify("media keys on", noticeFor)
 		return m, nil
 	}
 	return m, nil
