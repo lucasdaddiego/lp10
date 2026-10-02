@@ -893,3 +893,28 @@ func TestCloseIsBoundedByDrain(t *testing.T) {
 		t.Fatalf("Close(%v) took %v: a gathered batch of actions held the quit past the drain budget", DrainTimeout, took)
 	}
 }
+
+// A frame split by a read boundary belongs to the read it began in: when a
+// track read ends inside "VOL:100;", the read that completes it is a track
+// read too, so the album "Album;VOL:100" cannot set the room's volume.
+func TestTrackInjectionAcrossReadBoundary(t *testing.T) {
+	t.Parallel()
+	device, client := net.Pipe()
+	st := protocol.NewState()
+	done := make(chan struct{})
+	go tunnelReader(st, client, done)
+	write := func(s string) {
+		if _, err := device.Write([]byte(s)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("VOL:12;")
+	write("TIT:Song;ART:Band;ALB:Album;VO")
+	write("L:100;")
+	write("PLA:0;") // a read of its own, returned once the reader is back in Read
+	device.Close()
+	<-done
+	if v := st.Snap().Vol; v != 12 {
+		t.Fatalf("vol = %d: a VOL frame begun in a track read was applied", v)
+	}
+}

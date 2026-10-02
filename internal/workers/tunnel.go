@@ -404,6 +404,7 @@ func tunnelReader(st *protocol.State, conn net.Conn, done chan struct{}) {
 	defer func() { recover() }()
 	buf := make([]byte, 4096)
 	var carry string
+	carryTrack := false // the partial frame in carry began in a track read
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
@@ -412,7 +413,10 @@ func tunnelReader(st *protocol.State, conn net.Conn, done chan struct{}) {
 				rest = "" // separator-free flood: drop, keep framing
 			}
 			carry = rest
-			trackRead := slices.ContainsFunc(updates, isTrackField)
+			// a frame split by the read boundary belongs to the read it began in:
+			// "ALB:Album;VO" + "L:100;" must not apply VOL:100 on the second read
+			trackRead := carryTrack || slices.ContainsFunc(updates, isTrackField)
+			carryTrack = trackRead && rest != ""
 			for _, u := range updates {
 				if trackRead && actedOn(u) {
 					continue
