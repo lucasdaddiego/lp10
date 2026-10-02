@@ -638,7 +638,7 @@ func TestSendBatchPaced(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			c := &scriptConn{failAt: tc.failAt}
-			carry, dead, v := sendBatchPaced(protocol.NewState(), c, tc.cmds)
+			carry, dead, v := sendBatchPaced(context.Background(), protocol.NewState(), c, tc.cmds)
 			if !slices.Equal(c.written(), tc.wrote) || !slices.Equal(carry, tc.carry) || dead != (tc.carry != nil) || v != tc.vol {
 				t.Errorf("wrote %q carry %+v dead %v vol %v; want %q %+v %v %v", c.written(), carry, dead, v, tc.wrote, tc.carry, tc.carry != nil, tc.vol)
 			}
@@ -657,14 +657,14 @@ func TestDrainOnStop(t *testing.T) {
 	t.Parallel()
 	c := &scriptConn{}
 	cmds := make(chan Command, 4)
-	drainOnStop(protocol.NewState(), c, cmds)
+	drainOnStop(context.Background(), protocol.NewState(), c, cmds)
 	if len(c.written()) != 0 {
 		t.Fatalf("an empty queue wrote %q", c.written())
 	}
 	cmds <- Command{Code: "TRE", Val: 1}
 	cmds <- Command{Code: "TRE", Val: 2}
 	cmds <- Command{Code: "POP"}
-	drainOnStop(protocol.NewState(), c, cmds)
+	drainOnStop(context.Background(), protocol.NewState(), c, cmds)
 	if got := c.written(); !slices.Equal(got, []string{"TRE:2;", "POP;"}) {
 		t.Errorf("drained %q, want TRE:2; POP;", got)
 	}
@@ -867,5 +867,29 @@ func TestActedOn(t *testing.T) {
 		if got := actedOn(tc.u); got != tc.want {
 			t.Errorf("actedOn(%s) = %v, want %v", tc.u.Code, got, tc.want)
 		}
+	}
+}
+
+// Close waits at most drain for the tunnel. Actions never coalesce, so a
+// pasted line of play/skip keys gathers into one long batch; the send loop
+// must stop when Close cancels ctx, not hold the quit 50ms per command.
+func TestCloseIsBoundedByDrain(t *testing.T) {
+	dev := newLiveBox()
+	box := newFakeBox(t, dev.answer)
+	t.Setenv("LP10_TUNNEL_ADDR", box.addr)
+	disableProbes(t)
+	st := protocol.NewState()
+	r := StartRuntime(st, config.Config{Host: "lp10.local"})
+	box.waitFrame(t, 5*time.Second, "the last seed query", is("VER"))
+	eventually(t, "connected", 2*time.Second, func() bool { return st.Snap().Connected })
+	time.Sleep(300 * time.Millisecond) // the write loop is up
+	for range 200 {
+		r.Commands <- Command{Code: "NXT", TS: time.Now()}
+	}
+	time.Sleep(20 * time.Millisecond) // the worker has gathered the batch
+	start := time.Now()
+	r.Close(DrainTimeout)
+	if took := time.Since(start); took > DrainTimeout+time.Second {
+		t.Fatalf("Close(%v) took %v: a gathered batch of actions held the quit past the drain budget", DrainTimeout, took)
 	}
 }

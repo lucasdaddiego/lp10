@@ -170,7 +170,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 	// Carried commands get first claim on the fresh connection, ahead of the
 	// queue they were consumed from.
 	if !dead && len(carry) > 0 {
-		carry, dead = sendBatch(st, conn, coalesce(carry))
+		carry, dead = sendBatch(ctx, st, conn, coalesce(carry))
 	}
 
 	// Write loop: drain queued commands, poll the status, and watch for
@@ -188,7 +188,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		case cmd := <-cmds: // never closed: Runtime.Close stops the worker via ctx/stop
 			batch := gather(cmd, cmds)
 			var vol bool
-			carry, dead, vol = sendBatchPaced(st, conn, coalesce(batch))
+			carry, dead, vol = sendBatchPaced(ctx, st, conn, coalesce(batch))
 			if vol {
 				control.stop.Wait(volumePace)
 			}
@@ -207,7 +207,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 				// the level the device reports but may not be playing at (see
 				// protocol.State.TakeVolumeBridge). Not carried when the write
 				// fails: the next connection's first reading bridges anew.
-				if _, dead, _ = sendBatchPaced(st, conn, []Command{{Code: tunnel.VolumeCode, Val: v}}); dead {
+				if _, dead, _ = sendBatchPaced(ctx, st, conn, []Command{{Code: tunnel.VolumeCode, Val: v}}); dead {
 					break
 				}
 			}
@@ -229,7 +229,7 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 		// Quit: write what was queued before it (a pause pressed just before q
 		// still reaches the box), then let Close go on.
 		if !dead {
-			drainOnStop(st, conn, cmds)
+			drainOnStop(ctx, st, conn, cmds)
 		}
 		control.drained.Set()
 	}
@@ -291,10 +291,10 @@ func gather(first Command, cmds <-chan Command) []Command {
 
 // drainOnStop writes what is queued at quit, so a key pressed just before q is
 // not lost. It never blocks: what is not already queued stays unsent.
-func drainOnStop(st *protocol.State, conn net.Conn, cmds <-chan Command) {
+func drainOnStop(ctx context.Context, st *protocol.State, conn net.Conn, cmds <-chan Command) {
 	select {
 	case c := <-cmds:
-		sendBatch(st, conn, coalesce(gather(c, cmds)))
+		sendBatch(ctx, st, conn, coalesce(gather(c, cmds)))
 	default:
 	}
 }
@@ -327,15 +327,21 @@ func coalesce(cmds []Command) []Command {
 // sendBatch writes cmds in order. On a dead connection it hands back the
 // command that failed and everything queued behind it, for the next
 // connection.
-func sendBatch(st *protocol.State, conn net.Conn, cmds []Command) (carry []Command, dead bool) {
-	carry, dead, _ = sendBatchPaced(st, conn, cmds)
+func sendBatch(ctx context.Context, st *protocol.State, conn net.Conn, cmds []Command) (carry []Command, dead bool) {
+	carry, dead, _ = sendBatchPaced(ctx, st, conn, cmds)
 	return carry, dead
 }
 
 // sendBatchPaced is sendBatch that also reports whether a volume set went
-// out, so the caller can pace the next batch (volumePace).
-func sendBatchPaced(st *protocol.State, conn net.Conn, cmds []Command) (carry []Command, dead, vol bool) {
+// out, so the caller can pace the next batch (volumePace). It stops when ctx
+// ends and hands the rest back unsent: Runtime.Close cancels ctx when its drain
+// window is over, and a pasted line of play/skip keys (actions never coalesce)
+// would otherwise hold the quit 50ms per command.
+func sendBatchPaced(ctx context.Context, st *protocol.State, conn net.Conn, cmds []Command) (carry []Command, dead, vol bool) {
 	for i, c := range cmds {
+		if ctx.Err() != nil {
+			return cmds[i:], false, vol
+		}
 		if i > 0 {
 			time.Sleep(tunnelSpacing / 3) // a short gap: back-to-back frames can be dropped
 		}
