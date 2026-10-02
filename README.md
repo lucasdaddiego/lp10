@@ -113,9 +113,9 @@ Spotify ZeroConf answers for its identity.
   entirely in lp10: at the deadline it sends the device's play/pause toggle —
   only while the device says it is playing, so a timer can never resume the
   room. It ends with the process: quitting lp10 cancels it. A deadline that
-  passes while the link is down fires when the link comes back — unless that
-  is more than ten minutes late (an outage through the night), when lp10
-  cancels the timer with a notice.
+  passes while the link is down fires when the link comes back and the device
+  says again whether it plays — unless that is more than ten minutes late (an
+  outage through the night), when lp10 cancels the timer with a notice.
 - **`lp10 sweep`** — the "did it update?" command, with no login: one
   read-only pass over the box and the vendor. On the LAN: a TCP connect scan of
   every port (ssh 22, telnet 23 and adb 5037 / 5555 called out if they ever

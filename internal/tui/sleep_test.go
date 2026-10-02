@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // ---- sleep timer: arming ------------------------------------------------------
@@ -297,12 +299,41 @@ func TestSleepWaitsForTheLinkThenFires(t *testing.T) {
 		t.Fatal("the timer must stay armed while the link is down")
 	}
 	connect(st) // the link is back, still playing
+	st.ApplyStatus("NET", false, 44, true)
 	m.dispatch(logicMsg{})
 	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
 		t.Fatalf("after reconnect sent %v, want [POP]", got)
 	}
 	if !m.sleepAt.IsZero() {
 		t.Error("the timer must disarm once it has fired")
+	}
+}
+
+// The timer that ran out during an outage fires on the reconnect only on a
+// play state the new link reported. Until then State holds the one from
+// before the outage, and any recognised frame marks the link live: a track
+// push in the read that carried the seed's STA reply drops that STA (the
+// reader's track-read guard), so the tick sees Connected with the stale
+// "playing". If the room was paused meanwhile (the phone, the box's button),
+// a POP then is a toggle that resumes it.
+func TestSleepWaitsForAPlayStateOnTheNewLink(t *testing.T) {
+	m, st, collect := makeModel(t)
+	st.Disconnect()
+	m.sleepAt = time.Now().Add(-time.Second)
+	m.dispatch(logicMsg{})
+	connect(st) // a frame marks the link live; no play state on it yet
+	st.ApplyTrackField(protocol.FieldTitle, "Persiana Americana")
+	m.dispatch(logicMsg{})
+	if got := collect(); len(got) != 0 {
+		t.Fatalf("fired on the play state from before the outage: sent %v", wire(got))
+	}
+	if m.sleepAt.IsZero() {
+		t.Fatal("the timer must stay armed until the new link reports a play state")
+	}
+	st.ApplyStatus("NET", false, 44, false) // the room was paused during the outage
+	m.dispatch(logicMsg{})
+	if got := collect(); len(got) != 0 || !m.sleepAt.IsZero() || st.Snap().Playing {
+		t.Errorf("paused room: sent %v, armed %v, playing %v; want nothing sent, disarmed", wire(got), !m.sleepAt.IsZero(), st.Snap().Playing)
 	}
 }
 

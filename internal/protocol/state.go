@@ -31,7 +31,7 @@ type State struct {
 	service   string // the latest VND word ("spotify"), carried into the next track
 	source    string // the input: NET, BT, LINE-IN, USBPLAY ("" until read)
 	playing   bool
-	playKnown bool // the device has reported a play state this run
+	playKnown bool // the device has reported a play state on this connection
 	playHold  time.Time
 	vol       int
 	volHold   time.Time
@@ -136,8 +136,9 @@ type Snapshot struct {
 	Service string // the latest VND word, "" until the device names one
 	Source  string // the input, "" until read
 	Playing bool
-	// PlayKnown is false until the device has reported its play state this
-	// run: before that Playing is only the zero value.
+	// PlayKnown is false until the device has reported its play state on
+	// this connection: before that Playing is the zero value, or the state
+	// from before the outage.
 	PlayKnown bool
 	Vol       int
 	Muted     bool
@@ -370,15 +371,21 @@ func (st *State) ToggleOptimistic() bool {
 // pauses only if the device last said it is playing — decided under the
 // lock, so a pause landing between a snapshot and the flip can never turn the
 // timer's toggle into a resume — and reports whether a POP must be sent.
-func (st *State) PauseOptimistic() bool {
+// known is false, and nothing changes, while this connection has not
+// reported a play state yet: the one held is from before the outage, and
+// the caller waits for the device's.
+func (st *State) PauseOptimistic() (pause, known bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if !st.playKnown {
+		return false, false
+	}
 	if !st.playing {
-		return false
+		return false, true
 	}
 	st.playing = false
 	st.playHold = time.Now().Add(PlayHoldDuration)
-	return true
+	return true, true
 }
 
 // ---- volume / mute ----
@@ -512,6 +519,7 @@ func (st *State) StartConnection() {
 	st.attempts++
 	st.lastRx = time.Time{}
 	st.devVolKnown, st.bridgePending = false, false
+	st.playKnown = false // the room may have paused or resumed during the outage
 }
 
 // Received marks a parsed frame: the link is live, and when it last spoke.

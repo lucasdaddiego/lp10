@@ -419,6 +419,7 @@ func TestSleepTooLateOnReconnectIsCancelled(t *testing.T) {
 	m.sleepAt = time.Now().Add(-9 * time.Minute)
 	m.dispatch(logicMsg{})
 	connect(st)
+	st.ApplyStatus("NET", false, 44, true) // the new link's seed: still playing
 	m.dispatch(logicMsg{})
 	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
 		t.Errorf("a blip past the deadline sent %v, want [POP]", got)

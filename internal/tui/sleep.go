@@ -52,7 +52,8 @@ func (m *model) sleepCancel() {
 // device's echo is held off — and disarms. Already paused or idle, it just
 // disarms. The device's POP is a toggle, so the pause is decided inside State
 // under its lock (PauseOptimistic): the POP goes out only while the device
-// last said it plays — a timer must never RESUME, and a device-side pause
+// last said, on this connection, that it plays — a timer must never RESUME,
+// and a device-side pause
 // landing between the tick's snapshot and the flip would have turned the
 // toggle into exactly that. It needs no track metadata, so a source playing
 // without a title still goes quiet. One-shot by construction. No note is
@@ -61,9 +62,11 @@ func (m *model) sleepCancel() {
 //
 // With the tunnel down at the deadline the timer stays armed and fires on
 // reconnect: a POP queued into a dead link expires unheard ("command not
-// delivered") while the room plays on all night. A reconnect more than
-// sleepLate past the deadline cancels the timer instead of pausing, and says
-// so.
+// delivered") while the room plays on all night. It fires once the new link
+// has said whether the room plays: the play state from before the outage may
+// be wrong now, and a POP on it would resume a room paused meanwhile. A
+// reconnect more than sleepLate past the deadline cancels the timer instead
+// of pausing, and says so.
 func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 	if m.sleepAt.IsZero() || now.Before(m.sleepAt) {
 		return
@@ -76,7 +79,11 @@ func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 		m.notify("sleep timer cancelled · it ran out "+fmtAgeShort(late)+" ago", noticeFor*2)
 		return
 	}
-	if m.st.PauseOptimistic() {
+	pause, known := m.st.PauseOptimistic()
+	if !known {
+		return // the new link has not said yet whether the room plays
+	}
+	if pause {
 		m.flash["toggle"] = now.Add(FlashDuration)
 		m.send(tunnel.ToggleCode, 0)
 	}

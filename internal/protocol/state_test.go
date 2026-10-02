@@ -715,10 +715,15 @@ func TestToggleOptimistic(t *testing.T) {
 }
 
 // PauseOptimistic is one-way: a paused player is never "paused" again (that
-// would send POP, a toggle, and resume it) and arms no hold.
+// would send POP, a toggle, and resume it) and arms no hold. With no play
+// state read on this connection it decides nothing and says so.
 func TestPauseOptimisticIsOneWay(t *testing.T) {
 	st := NewState()
-	if st.PauseOptimistic() {
+	if pause, known := st.PauseOptimistic(); pause || known {
+		t.Fatalf("no play state read: (%v, %v), want (false, false)", pause, known)
+	}
+	st.ApplyPlaying(false)
+	if pause, known := st.PauseOptimistic(); pause || !known {
 		t.Fatal("a paused player must not be paused again (POP would resume it)")
 	}
 	locked(st, func() {
@@ -730,14 +735,33 @@ func TestPauseOptimisticIsOneWay(t *testing.T) {
 		t.Fatal("a refused pause changed the play state")
 	}
 	st.ApplyPlaying(true)
-	if !st.PauseOptimistic() {
+	if pause, _ := st.PauseOptimistic(); !pause {
 		t.Fatal("a playing player must pause")
 	}
 	if st.Snap().Playing {
 		t.Error("Playing is still true after the pause")
 	}
-	if st.PauseOptimistic() {
+	if pause, _ := st.PauseOptimistic(); pause {
 		t.Error("the second call must be a no-op: one-shot, never a resume")
+	}
+}
+
+// A new connection forgets the play state as a basis for the pause: the
+// room may have paused during the outage, and "playing" from before it would
+// make the timer's POP a resume.
+func TestPauseOptimisticWaitsForTheNewConnection(t *testing.T) {
+	st := NewState()
+	st.StartConnection()
+	st.ApplyStatus("NET", false, 44, true)
+	st.Disconnect()
+	st.StartConnection()
+	st.Received()
+	if pause, known := st.PauseOptimistic(); pause || known || !st.Snap().Playing || st.Snap().PlayKnown {
+		t.Errorf("before the new link's play state: (%v, %v), snap %+v", pause, known, st.Snap())
+	}
+	st.ApplyStatus("NET", false, 44, true)
+	if pause, known := st.PauseOptimistic(); !pause || !known {
+		t.Errorf("after the new link's STA: (%v, %v), want (true, true)", pause, known)
 	}
 }
 
