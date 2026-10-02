@@ -224,6 +224,55 @@ func TestSlug(t *testing.T) {
 	}
 }
 
+// Two hosts never share a state file. The slug wrote "fe80::1" and
+// "fe80__1" (or "living room" and "living_room") to one name, so one box's
+// snapshot and sweep baseline stood in for the other's. A host safe as a file
+// name keeps its name; one whose name changed starts from a copy of the file
+// under its old name, and that file stays for a host that still maps to it.
+func TestStatePathsAreOnePerHost(t *testing.T) {
+	d := t.TempDir()
+	t.Setenv("LP10_STATE_DIR", d)
+	seen := map[string]string{}
+	for _, h := range []string{"fe80::1", "fe80__1", "fe80_:1", "living room", "living_room", "living%20room", "a/b", "a_b"} {
+		for _, p := range []string{SnapshotPath(Config{Host: h}), SweepPath(Config{Host: h})} {
+			if other, ok := seen[p]; ok {
+				t.Errorf("%q and %q share %s", h, other, p)
+			}
+			seen[p] = h
+		}
+	}
+	if got, want := SnapshotPath(Config{Host: "192.168.1.40"}), filepath.Join(d, "snapshot-192.168.1.40.json"); got != want {
+		t.Errorf("a file-safe host moved: %q, want %q", got, want)
+	}
+
+	old := filepath.Join(d, "snapshot-fe80__1_en0.json") // slug("fe80::1%en0")
+	if err := os.WriteFile(old, []byte(`{"vol":33}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Host: "fe80::1%en0"}
+	if p := SnapshotPath(cfg); p == old {
+		t.Fatalf("fe80::1%%en0 still keys on %s", p)
+	}
+	if got := LoadSnapshot(SnapshotPath(cfg)); got == nil || got.Vol != 33 {
+		t.Fatalf("the old file's snapshot was lost: %+v", got)
+	}
+	SaveSnapshot(SnapshotPath(cfg), CachedSnapshot{Vol: 44})
+	if got := LoadSnapshot(SnapshotPath(cfg)); got == nil || got.Vol != 44 {
+		t.Errorf("after a save: %+v, want vol 44", got)
+	}
+	if got := LoadSnapshot(SnapshotPath(Config{Host: "fe80__1_en0"})); got == nil || got.Vol != 33 {
+		t.Errorf("the host still named by the old file lost it: %+v", got)
+	}
+
+	oldSweep := filepath.Join(d, "sweep-living_room.json")
+	if err := os.WriteFile(oldSweep, []byte(`{"host":"living room"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(SweepPath(Config{Host: "living room"})); err != nil || string(b) != `{"host":"living room"}` {
+		t.Errorf("the old sweep baseline was lost: %q %v", b, err)
+	}
+}
+
 func TestSaveSnapshotWithIOErrorIsSwallowed(t *testing.T) {
 	badPath := filepath.Join(t.TempDir(), "nonexistent", "snap.json")
 	SaveSnapshot(badPath, CachedSnapshot{Vol: 50}) // must not panic

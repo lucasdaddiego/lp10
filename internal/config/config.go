@@ -219,8 +219,48 @@ func StateDir() string {
 
 var slugRe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 
+// slug is the state files' old key: every rune outside [A-Za-z0-9._-] became
+// "_", so "fe80::1" and "fe80__1" shared one file. statePath still reads it.
 func slug(host string) string {
 	return slugRe.ReplaceAllString(host, "_")
+}
+
+// fileKey is host as a file name, one name per host: every byte outside
+// [A-Za-z0-9._-] is written %XX, the "%" itself included. A host already
+// safe as a name ("lp10.local", "192.168.1.40") keeps its old file name.
+func fileKey(host string) string {
+	var b strings.Builder
+	for i := 0; i < len(host); i++ {
+		switch c := host[i]; {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9', c == '.', c == '_', c == '-':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// statePath is the state dir's kind-<fileKey>.json for cfg's StateKey, or ""
+// when there is no usable state dir. When that file does not exist yet but
+// the one under the old slug name does, it starts as a copy of that one, so
+// no saved state is lost; the old file stays, as another host may still map
+// to it.
+func statePath(kind string, cfg Config) string {
+	d := StateDir()
+	if d == "" {
+		return ""
+	}
+	key := cfg.stateKey()
+	p := filepath.Join(d, kind+"-"+fileKey(key)+".json")
+	if old := filepath.Join(d, kind+"-"+slug(key)+".json"); old != p {
+		if _, err := os.Lstat(p); errors.Is(err, fs.ErrNotExist) {
+			if b, err := os.ReadFile(old); err == nil {
+				_ = atomicfile.Write(p, b)
+			}
+		}
+	}
+	return p
 }
 
 // SnapshotPath is a per-device file under the state dir, or "" when there is
@@ -228,10 +268,7 @@ func slug(host string) string {
 // Host, which discovery rewrites to whatever address the box holds today:
 // keyed on the address, a new DHCP lease lost the first-paint snapshot.
 func SnapshotPath(cfg Config) string {
-	if d := StateDir(); d != "" {
-		return filepath.Join(d, "snapshot-"+slug(cfg.stateKey())+".json")
-	}
-	return ""
+	return statePath("snapshot", cfg)
 }
 
 // stateKey is StateKey, or Host for a Config built without Load (tests).
@@ -246,10 +283,7 @@ func (cfg Config) stateKey() string {
 // (the last sweep's findings, diffed against the next), or "" when there is no
 // usable state dir.
 func SweepPath(cfg Config) string {
-	if d := StateDir(); d != "" {
-		return filepath.Join(d, "sweep-"+slug(cfg.stateKey())+".json")
-	}
-	return ""
+	return statePath("sweep", cfg)
 }
 
 func clampVol(v int) int {
