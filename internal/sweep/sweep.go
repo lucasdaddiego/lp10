@@ -608,7 +608,7 @@ func resolveHost(ctx context.Context, host string) (string, error) {
 			return a.IP.String(), nil
 		}
 	}
-	return addrs[0].IP.String(), nil
+	return addrs[0].String(), nil // IPAddr.String keeps a link-local zone (fe80::1%en0)
 }
 
 // The Linux ephemeral range (ip_local_port_range's default). A socket bound to

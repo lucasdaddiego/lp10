@@ -519,9 +519,11 @@ func TestScanPortsAnswers(t *testing.T) {
 	}
 }
 
-// The host resolves once, to an IPv4 address when it has one.
+// The host resolves once, to an IPv4 address when it has one. A link-local
+// IPv6 host keeps its zone: without it every connect fails "no route to host".
 func TestResolveHost(t *testing.T) {
-	for host, want := range map[string]string{"127.0.0.1": "127.0.0.1", "::1": "::1", "localhost": "127.0.0.1"} {
+	for host, want := range map[string]string{"127.0.0.1": "127.0.0.1", "::1": "::1", "localhost": "127.0.0.1",
+		"fe80::1%lo0": "fe80::1%lo0"} {
 		if got, err := resolveHost(context.Background(), host); err != nil || got != want {
 			t.Errorf("%s = %q, %v; want %s", host, got, err, want)
 		}
