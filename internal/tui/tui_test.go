@@ -2,98 +2,22 @@ package tui
 
 import (
 	"errors"
-	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/lucasdaddiego/lp10/internal/config"
-	"github.com/lucasdaddiego/lp10/internal/fixtures"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
-	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
-// applyFixtureRecords feeds every framed record of a fixture into st.
-func applyFixtureRecords(st *protocol.State, name string) {
-	lines := strings.Split(strings.TrimSuffix(fixtures.Get(name), "\n"), "\n")
-	for rec := range protocol.IterRecords(feeder(lines)) {
-		protocol.ApplyRecord(st, rec)
-	}
-}
-
-// ---- controller harness -----------------------------------------------------
-
-func feeder(lines []string) func() (string, bool) {
-	i := 0
-	return func() (string, bool) {
-		if i >= len(lines) {
-			return "", false
-		}
-		l := lines[i]
-		i++
-		return l, true
-	}
-}
-
-func playingRecord() protocol.Record {
-	lines := strings.Split(strings.TrimSuffix(fixtures.Get("playing_record.txt"), "\n"), "\n")
-	for rec := range protocol.IterRecords(feeder(lines)) {
-		return rec
-	}
-	return nil
-}
-
-func defaultCfg() config.Config {
-	return config.Config{Host: "192.168.1.40", User: "root", Name: "LP10 · Living", VolStep: 2}
-}
-
-// makeModel returns a model seeded with the playing record (playing == 0), plus
-// the State and a collector that drains the command channel.
-func makeModel(t *testing.T) (*model, *protocol.State, func() []protocol.Command) {
-	t.Helper()
-	st := protocol.NewState()
-	protocol.ApplyRecord(st, playingRecord())
-	return modelWith(st)
-}
-
-func modelWith(st *protocol.State) (*model, *protocol.State, func() []protocol.Command) {
-	cmds := make(chan *protocol.Command, 64)
-	m := newModel(st, defaultCfg(), cmds, nil)
-	m.premutePath = "" // unit models must not read or write the user's state dir
-	// A sized model: before the first WindowSizeMsg miniMode() gates the EQ
-	// keys shut, and most tests exercise full-dashboard behaviour. Tests for
-	// the mini/unsized paths set their own rows/cols.
-	m.rows, m.cols = FullRows, FullCols
-	collect := func() []protocol.Command {
-		var out []protocol.Command
-		for {
-			select {
-			case c := <-cmds:
-				if c != nil {
-					out = append(out, *c)
-				}
-			default:
-				return out
-			}
-		}
-	}
-	return m, st, collect
-}
-
-func kr(r rune) keyEvent    { return keyEvent{kind: kRune, r: r} }
-func ke(k keyKind) keyEvent { return keyEvent{kind: k} }
-func last(c []protocol.Command) protocol.Command {
-	return c[len(c)-1]
-}
-
-// ---- controller: focus / quit / drain ---------------------------------------
+// ---- controller: focus / quit / transport ------------------------------------
 
 func TestQuitAndFocusKeys(t *testing.T) {
 	m, _, _ := makeModel(t)
 	if !m.key(kr('q')) {
-		t.Error("q should quit")
+		t.Error("q should quit from the player")
 	}
 	if m.focus != 1 {
 		t.Errorf("focus = %d, want 1", m.focus)
@@ -111,139 +35,166 @@ func TestQuitAndFocusKeys(t *testing.T) {
 	if m.focus != len(actions)-1 {
 		t.Errorf("focus = %d, want wrap to %d", m.focus, len(actions)-1)
 	}
-}
-
-func TestEnterPressesFocusedButton(t *testing.T) {
-	m, _, collect := makeModel(t)
-	m.focus = 2 // next
-	m.key(ke(kEnter))
-	got := collect()
-	if len(got) != 1 || got[0].Mid != 40 || got[0].Data != "NEXT" {
-		t.Errorf("sent = %+v, want [40 NEXT]", got)
+	m.key(ke(kRight))
+	if m.focus != 0 {
+		t.Errorf("focus = %d, want wrap to 0", m.focus)
 	}
 }
 
+// Enter presses the focused transport button, each one its own tunnel action.
+func TestEnterPressesFocusedButton(t *testing.T) {
+	m, _, collect := makeModel(t)
+	for focus, want := range []string{"PRE", "POP", "NXT"} {
+		m.focus = focus
+		m.key(ke(kEnter))
+		if got := wire(collect()); !slices.Equal(got, []string{want}) {
+			t.Errorf("enter on %s sent %v, want [%s]", actions[focus], got, want)
+		}
+		if !m.flash[actions[focus]].After(time.Now()) {
+			t.Errorf("enter on %s did not flash its button", actions[focus])
+		}
+	}
+}
+
+// The device's POP is a toggle, so the wire command is the same both ways;
+// the screen flips at once and the echo hold keeps a stale PLA from undoing it.
 func TestToggleIsOptimistic(t *testing.T) {
 	m, st, collect := makeModel(t)
-	if st.Snap().Playing != 0 {
+	if !st.Snap().Playing {
 		t.Fatal("setup: should start playing")
 	}
 	m.key(kr(' '))
-	got := collect()
-	if len(got) != 1 || got[0].Mid != 40 || got[0].Data != "PAUSE" {
-		t.Errorf("sent = %+v, want [40 PAUSE]", got)
+	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
+		t.Errorf("space sent %v, want [POP]", got)
 	}
-	if st.Snap().Playing == 0 {
-		t.Error("playing should optimistically flip to not-playing")
+	if st.Snap().Playing {
+		t.Error("playing should optimistically flip to paused")
+	}
+	st.ApplyPlaying(true) // a poll answered before the POP landed
+	if st.Snap().Playing {
+		t.Error("the echo hold should keep the stale PLA:1 from undoing the flip")
+	}
+	m.key(kr(' '))
+	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) || !st.Snap().Playing {
+		t.Errorf("second space sent %v, playing=%v; want [POP] and playing again", got, st.Snap().Playing)
 	}
 }
 
-func TestMuteRoundTripRestoresPremute(t *testing.T) {
+// n and p send the bare actions; the tunnel carries no position, so neither
+// touches the play state.
+func TestNextAndPrevSendActions(t *testing.T) {
 	m, st, collect := makeModel(t)
-	st.SetVol(40)
-	m.key(kr('m'))
-	if c := last(collect()); c.Mid != 64 || c.Data != "0" || st.Snap().Vol != 0 {
-		t.Errorf("mute: last sent should be 64 0, vol 0; got vol %d", st.Snap().Vol)
+	m.key(kr('n'))
+	m.key(kr('p'))
+	if got := wire(collect()); !slices.Equal(got, []string{"NXT", "PRE"}) {
+		t.Errorf("n p sent %v, want [NXT PRE]", got)
 	}
-	m.key(kr('m'))
-	if c := last(collect()); c.Mid != 64 || c.Data != "40" {
-		t.Errorf("unmute should restore premute 40, got %+v", c)
-	}
-}
-
-func TestMuteWithNoHistoryUsesDefault(t *testing.T) {
-	m, st, collect := modelWith(protocol.NewState())                                // fresh: no premute
-	protocol.ApplyRecord(st, protocol.Record{"v": {"MID-Read:64 Data:0 Length:1"}}) // the device reads 0
-	m.key(kr('m'))
-	if c := last(collect()); c.Mid != 64 || c.Data != "30" {
-		t.Errorf("mute with no history should use default 30, got %+v", c)
+	if !st.Snap().Playing {
+		t.Error("next/prev must not flip the play state")
 	}
 }
 
-func TestBareEscIsInertAndDiagClosesOnAnyKey(t *testing.T) {
+// The mute is real (MUT in the MCU): the level stays where it is, the wire
+// says MUT:1 then MUT:0, and the notice line names each step.
+func TestMuteKeySendsTheRealMute(t *testing.T) {
+	m, st, collect := makeModel(t)
+	m.key(kr('m'))
+	if got := wire(collect()); !slices.Equal(got, []string{"MUT:1"}) {
+		t.Errorf("m sent %v, want [MUT:1]", got)
+	}
+	if s := st.Snap(); !s.Muted || s.Vol != 44 {
+		t.Errorf("after m: muted=%v vol=%d, want muted at the unchanged 44", s.Muted, s.Vol)
+	}
+	if m.notice != "muted" {
+		t.Errorf("notice = %q, want muted", m.notice)
+	}
+	st.ApplyMute(false) // a poll answered before the MUT landed: held off
+	if !st.Snap().Muted {
+		t.Error("the echo hold should keep a stale MUT:0 from unmuting")
+	}
+	m.key(kr('m'))
+	if got := wire(collect()); !slices.Equal(got, []string{"MUT:0"}) {
+		t.Errorf("second m sent %v, want [MUT:0]", got)
+	}
+	if st.Snap().Muted || m.notice != "unmuted" {
+		t.Errorf("after the second m: muted=%v notice=%q", st.Snap().Muted, m.notice)
+	}
+}
+
+func TestEscAndQBackOutOfAView(t *testing.T) {
 	m, _, _ := makeModel(t)
-	if m.key(ke(kEsc)) {
-		t.Error("bare esc should not quit")
-	}
-	if m.view != viewPlayer {
-		t.Error("bare esc on the player should leave the pane alone")
+	if m.key(ke(kEsc)) || m.view != viewPlayer {
+		t.Error("esc on the player should neither quit nor move")
 	}
 	m.key(kr('i'))
 	if m.view != viewDiag {
-		t.Error("i should open the diagnostics")
+		t.Fatal("i should open the diagnostics")
 	}
 	if m.key(kr('q')) {
-		t.Error("q in a view returns to the player (no quit)")
+		t.Error("q in a view returns to the player, it does not quit")
 	}
-	if m.view == viewDiag {
-		t.Error("diag should be closed")
+	if m.view != viewPlayer {
+		t.Error("q should close the diagnostics")
 	}
 }
 
-func TestVolumeArrowsStepAndFlash(t *testing.T) {
+// A volume key sends the new absolute level and names it on the notice line.
+func TestVolumeKeysSendTheNewLevel(t *testing.T) {
 	m, st, collect := makeModel(t)
-	st.SetVol(50)
 	m.key(ke(kUp))
-	if c := last(collect()); c.Mid != 64 || c.Data != "52" {
-		t.Errorf("up should step to 52, got %+v", c)
+	if got := wire(collect()); !slices.Equal(got, []string{"VOL:46"}) {
+		t.Errorf("↑ from 44 sent %v, want [VOL:46]", got)
+	}
+	if m.notice != "volume 46%" {
+		t.Errorf("notice = %q, want volume 46%%", m.notice)
 	}
 	m.key(kr('-'))
-	if c := last(collect()); c.Mid != 64 || c.Data != "50" {
-		t.Errorf("- should step to 50, got %+v", c)
+	if got := wire(collect()); !slices.Equal(got, []string{"VOL:44"}) {
+		t.Errorf("- sent %v, want [VOL:44]", got)
 	}
-}
-
-func TestTTogglesRemaining(t *testing.T) {
-	m, _, _ := makeModel(t)
-	if !m.showRemaining {
-		t.Fatal("showRemaining should start true")
-	}
-	m.key(kr('t'))
-	if m.showRemaining {
-		t.Error("t should toggle showRemaining")
+	// clamped at both ends: the level never leaves 0..100
+	st.SetVol(99)
+	m.key(kr('+'))
+	m.key(kr('+'))
+	st.SetVol(1)
+	m.key(ke(kDown))
+	if got := wire(collect()); !slices.Equal(got, []string{"VOL:100", "VOL:100", "VOL:0"}) {
+		t.Errorf("at the ends sent %v, want [VOL:100 VOL:100 VOL:0]", got)
 	}
 }
 
 func TestControllerInitialization(t *testing.T) {
-	m := newModel(protocol.NewState(), defaultCfg(), make(chan *protocol.Command, 1), nil)
-	if m.focus != 1 || m.view == viewDiag || !m.showRemaining || len(m.flash) != 0 || m.view != viewPlayer {
-		t.Errorf("init state wrong: %+v", m)
+	m := newModel(playingState(), defaultCfg(), nil)
+	if m.focus != 1 || m.view != viewPlayer || len(m.flash) != 0 || m.rows != 0 {
+		t.Errorf("init state wrong: focus=%d view=%d flash=%v rows=%d", m.focus, m.view, m.flash, m.rows)
+	}
+	// the window title rides every frame, so it is seeded before the first one
+	if want := GL["note"] + " De Música Ligera — Soda Stereo"; m.curTitle != want {
+		t.Errorf("curTitle = %q, want %q", m.curTitle, want)
 	}
 }
 
 func TestControllerDoActions(t *testing.T) {
-	m, st, collect := modelWith(protocol.NewState())
+	m, st, collect := modelWith(idleState())
 	m.do("next")
-	if c := collect(); len(c) != 1 || c[0].Data != "NEXT" {
-		t.Errorf("next: %+v", c)
-	}
 	m.do("prev")
-	if c := collect(); len(c) != 1 || c[0].Data != "PREV" {
-		t.Errorf("prev: %+v", c)
-	}
-	protocol.ApplyRecord(st, protocol.Record{"v": {"MID-Read:64 Data:50 Length:2"}}) // volume keys wait for a live read
-	st.SetVol(50)
 	m.do("volup")
-	if c := collect(); len(c) != 1 || c[0].Mid != 64 || c[0].Data != "52" {
-		t.Errorf("volup: %+v", c)
-	}
 	m.do("voldn")
-	if c := collect(); len(c) != 1 || c[0].Data != "50" {
-		t.Errorf("voldn: %+v", c)
+	m.do("toggle")
+	if got := wire(collect()); !slices.Equal(got, []string{"NXT", "PRE", "VOL:46", "VOL:44", "POP"}) {
+		t.Errorf("do sent %v", got)
+	}
+	if !st.Snap().Playing {
+		t.Error("toggle from idle should optimistically show playing")
+	}
+	// an action do() does not know sends nothing
+	m.do("rewind")
+	if got := collect(); len(got) != 0 {
+		t.Errorf("an unknown action sent %v", wire(got))
 	}
 }
 
 // ---- display helpers --------------------------------------------------------
-
-func TestFmtMs(t *testing.T) {
-	cases := map[int]string{0: "00:00", 211000: "03:31", -500: "00:00", 1000: "00:01", 60000: "01:00", 3661000: "61:01",
-		6000000: "100:00"} // >99 min widens via the Sprintf fallback, like %02d always did
-	for in, want := range cases {
-		if got := FmtMs(in); got != want {
-			t.Errorf("FmtMs(%d) = %q, want %q", in, got, want)
-		}
-	}
-}
 
 func TestClipEastAsianWidth(t *testing.T) {
 	if Clip("abc", 10) != "abc" {
@@ -269,159 +220,52 @@ func TestDispW(t *testing.T) {
 	}
 }
 
+// SourceName names what plays: the VND word in its display spelling (the
+// track's own service before the latest), and before any VND the input the
+// status reports. Unknown words show as the device sent them.
 func TestSourceName(t *testing.T) {
-	if SourceName(nil) != "" || SourceName(&protocol.Track{}) != "" || SourceName(&protocol.Track{CurrentSource: 0}) != "" {
-		t.Error("unknown source should be blank")
-	}
-	cases := []struct {
-		t    *protocol.Track
-		want string
-	}{
-		{&protocol.Track{PlayURL: "spotify:track:x"}, "Spotify"},
-		{&protocol.Track{PlayURL: "tidal:track:x"}, "TIDAL"},
-		{&protocol.Track{PlayURL: "airplay:x"}, "AirPlay"},
-		{&protocol.Track{CurrentSource: 1}, "AirPlay"},
-		{&protocol.Track{CurrentSource: 2}, "DLNA"},
-		{&protocol.Track{CurrentSource: 3}, "Bluetooth"},
-	}
-	for _, c := range cases {
-		if got := SourceName(c.t); got != c.want {
-			t.Errorf("SourceName(%v) = %q, want %q", c.t, got, c.want)
+	for word, want := range serviceNames {
+		for _, w := range []string{word, strings.ToUpper(word)} {
+			if got := SourceName(protocol.Snapshot{Service: w}); got != want {
+				t.Errorf("VND %q -> %q, want %q", w, got, want)
+			}
 		}
 	}
-}
-
-func TestQuality(t *testing.T) {
-	if got := Quality(&protocol.Track{MIME: "audio/ogg", SampleRate: 44100}); got != "audio/ogg · 44.1 kHz" {
-		t.Errorf("quality = %q", got)
+	cases := []struct {
+		name string
+		s    protocol.Snapshot
+		want string
+	}{
+		{"nothing named", protocol.Snapshot{}, ""},
+		{"an unknown VND word shows as sent", protocol.Snapshot{Service: "deezer"}, "deezer"},
+		{"the track's own service before the latest", protocol.Snapshot{Service: "tidal",
+			Track: &protocol.Track{TrackName: "x", Service: "spotify"}}, "Spotify"},
+		{"a track with no service falls back to the latest", protocol.Snapshot{Service: "tidal",
+			Track: &protocol.Track{TrackName: "x"}}, "TIDAL"},
+		{"a service beats the input", protocol.Snapshot{Service: "airplay", Source: "BT"}, "AirPlay"},
+		{"NET", protocol.Snapshot{Source: "NET"}, "Network"},
+		{"net, any case", protocol.Snapshot{Source: "net"}, "Network"},
+		{"BT", protocol.Snapshot{Source: "BT"}, "Bluetooth"},
+		{"LINE-IN", protocol.Snapshot{Source: "LINE-IN"}, "Line-In"},
+		{"USBPLAY", protocol.Snapshot{Source: "USBPLAY"}, "USB"},
+		{"USBDAC", protocol.Snapshot{Source: "USBDAC"}, "USB"},
+		{"an unknown input shows as sent", protocol.Snapshot{Source: "OPT"}, "OPT"},
 	}
-	if Quality(&protocol.Track{}) != "" {
-		t.Error("empty track should yield empty quality")
+	for _, c := range cases {
+		if got := SourceName(c.s); got != c.want {
+			t.Errorf("%s: SourceName = %q, want %q", c.name, got, c.want)
+		}
 	}
-	if got := Quality(&protocol.Track{SampleRate: 44100}); !strings.Contains(got, "44.1 kHz") {
-		t.Errorf("sample-rate only = %q", got)
+	// through State: the VND push names the track it arrives with, and every
+	// track after it
+	st := playingState()
+	st.ApplyVendor("tidal")
+	if got := SourceName(st.Snap()); got != "TIDAL" {
+		t.Errorf("after VND:tidal the source reads %q", got)
 	}
-	got := Quality(&protocol.Track{MIME: "audio/flac", SampleRate: 44100})
-	if !strings.Contains(got, "audio/flac") || !strings.Contains(got, "44.1 kHz") {
-		t.Errorf("both = %q", got)
-	}
-}
-
-// ---- source_name on a sanitized hostile track (moved from parsing tests) ----
-
-func TestSourceNameOnSanitizedTrack(t *testing.T) {
-	block := `MID-Read:42 Data:{"Window CONTENTS": {"PlayUrl": 7, "Current Source": 4}} Length:1`
-	tr, _ := protocol.ParseMB42(block)
-	if SourceName(tr) != "Spotify" {
-		t.Errorf("SourceName = %q, want Spotify", SourceName(tr))
-	}
-}
-
-// ---- preload ----------------------------------------------------------------
-
-func TestPreloadSnapshotIsPausedAndSanitized(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, &config.CachedSnapshot{
-		Track: &protocol.Track{TrackName: "x"},
-		Pos:   5000, Vol: 30, Playing: 0,
-	})
-	s := st.Snap()
-	if s.Playing != 2 {
-		t.Error("never resume a cached clock (playing should be 2)")
-	}
-	if s.Track == nil || s.Track.TrackName != "x" {
-		t.Errorf("track = %v", s.Track)
-	}
-	if s.Pos != 5000 || s.Vol != 30 {
-		t.Errorf("pos=%d vol=%d, want 5000/30", s.Pos, s.Vol)
-	}
-}
-
-// The snapshot cache is not device data at read time: a truncated, tampered or
-// foreign file reaches Preload straight from encoding/json, so the load boundary
-// owes it the same printable() stripping SanitizeTrack gives the device. An ESC
-// left in a cached title is charged 0 columns by the renderer but 1 by DispW,
-// so the now-playing line would size short and paint reverse-video to the border.
-func TestPreloadSnapshotStripsControlCharacters(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, &config.CachedSnapshot{
-		Track: &protocol.Track{TrackName: "a\x1b[7mb", Artist: "x\ny"},
-		Pos:   0, Vol: 30,
-	})
-	s := st.Snap()
-	if s.Track == nil {
-		t.Fatal("cached track should still preload")
-	}
-	if s.Track.TrackName != "a[7mb" || s.Track.Artist != "xy" {
-		t.Errorf("cached track not sanitized: name=%q artist=%q", s.Track.TrackName, s.Track.Artist)
-	}
-}
-
-// A cached track whose only content is control characters sanitizes down to
-// nothing, and an empty track must not be preloaded.
-func TestPreloadSnapshotControlOnlyTrackIsEmpty(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, &config.CachedSnapshot{Track: &protocol.Track{TrackName: "\x1b\x07"}})
-	if s := st.Snap(); s.Track != nil {
-		t.Errorf("control-only cached track should sanitize to empty, got %+v", s.Track)
-	}
-}
-
-func TestPreloadSnapshotEmptyValuesStayEmpty(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, &config.CachedSnapshot{Track: &protocol.Track{}})
-	s := st.Snap()
-	if s.Track != nil || s.Pos != 0 || s.Vol != 0 {
-		t.Errorf("empty preload should yield empty state: %+v", s)
-	}
-}
-
-func TestPreloadSnapshotNoneIsNoop(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, nil)
-	if s := st.Snap(); s.Track != nil || s.Pos != 0 {
-		t.Errorf("nil preload should be a no-op: %+v", s)
-	}
-}
-
-func TestPreloadSnapshotSeedsEQ(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, &config.CachedSnapshot{
-		Track: &protocol.Track{TrackName: "x"},
-		Pos:   1000, Vol: 30,
-		EQ: map[string]int{
-			"MXV": 100, "BAS": 3, "EQS": 1,
-			"ZZZ": 5,   // unknown code -> dropped
-			"MID": 999, // out of range -> clamped to the control's max (10)
-		},
-	})
-	if v, ok := st.EQValue("MXV"); !ok || v != 100 {
-		t.Errorf("MXV = %d,%v want 100,true", v, ok)
-	}
-	if v, ok := st.EQValue("BAS"); !ok || v != 3 {
-		t.Errorf("BAS = %d,%v want 3,true", v, ok)
-	}
-	if v, _ := st.EQValue("MID"); v != 10 {
-		t.Errorf("MID = %d, want clamped to 10", v)
-	}
-	if _, ok := st.EQValue("ZZZ"); ok {
-		t.Error("unknown EQ code should be dropped")
-	}
-	// preloaded values must NOT arm the echo hold: the device's seed overwrites
-	st.ApplyTunnel("BAS", -5)
-	if v, _ := st.EQValue("BAS"); v != -5 {
-		t.Errorf("device seed should overwrite preloaded value, got %d", v)
-	}
-}
-
-func TestPreloadSnapshotBasic(t *testing.T) {
-	st := protocol.NewState()
-	workers.PreloadSnapshot(st, &config.CachedSnapshot{
-		Track: &protocol.Track{TrackName: "Test"}, Pos: 1000, Vol: 50, Playing: 0,
-	})
-	s := st.Snap()
-	if s.Track == nil || s.Track.TrackName != "Test" || s.Pos != 1000 || s.Vol != 50 || s.Playing != 2 {
-		t.Errorf("preload basic wrong: %+v", s)
+	st.ApplyTrackField(protocol.FieldTitle, "Next")
+	if s := st.Snap(); s.Track.Service != "tidal" || SourceName(s) != "TIDAL" {
+		t.Errorf("the next track's service = %q (%q)", s.Track.Service, SourceName(s))
 	}
 }
 
@@ -442,88 +286,23 @@ func TestTranslateAllExpandsMultiRune(t *testing.T) {
 // paths deliver fast typing) must raise the volume twice, not be dropped — and
 // the same batch arriving as a bracketed paste behaves identically.
 func TestCoalescedRunesAreNotDropped(t *testing.T) {
-	m, st, collect := makeModel(t)
-	st.SetVol(50)
+	m, _, collect := makeModel(t)
 	m.Update(tea.KeyPressMsg{Code: '+', Text: "++"})
-	got := collect()
-	if len(got) == 0 || last(got).Mid != 64 || last(got).Data != "54" {
-		t.Errorf("++ should step volume twice 50->52->54, got %+v", got)
+	if got := wire(collect()); !slices.Equal(got, []string{"VOL:46", "VOL:48"}) {
+		t.Errorf("++ should step the volume twice 44->46->48, got %v", got)
 	}
 	// a batch containing 'q' still quits
 	if _, cmd := m.Update(tea.KeyPressMsg{Code: 'x', Text: "xq"}); cmd == nil {
 		t.Error("a batch containing q should still quit")
 	}
 	// pasted input drives the same dispatch
-	m2, st2, collect2 := makeModel(t)
-	st2.SetVol(50)
+	m2, _, collect2 := makeModel(t)
 	m2.Update(tea.PasteMsg{Content: "++"})
-	if got := collect2(); len(got) == 0 || last(got).Data != "54" {
-		t.Errorf("pasted ++ should step volume twice, got %+v", got)
+	if got := wire(collect2()); !slices.Equal(got, []string{"VOL:46", "VOL:48"}) {
+		t.Errorf("pasted ++ should step the volume twice, got %v", got)
 	}
-}
-
-// ---- diagnostics: on-demand resource stats ----------------------------------
-
-func TestStatsSignalFollowsDiagOverlay(t *testing.T) {
-	m, _, collect := makeModel(t)
-
-	// closed overlay: never asks the box for stats
-	for range 3 {
-		m.syncStats(true)
-	}
-	if c := collect(); len(c) != 0 {
-		t.Fatalf("no stats signal while diag closed, got %+v", c)
-	}
-
-	// opening it sends a single "on"
-	m.view = viewDiag
-	m.syncStats(true)
-	if c := collect(); len(c) != 1 || c[0].Mid != 90 || c[0].Data != "1" {
-		t.Fatalf("diag open should send 90 1, got %+v", c)
-	}
-
-	// it does not re-send every tick — only after the re-assert interval
-	// (statsTicks counts StatsReassertTicks decrements down to 0)
-	for range StatsReassertTicks {
-		m.syncStats(true)
-	}
-	if c := collect(); len(c) != 0 {
-		t.Errorf("should not re-assert before the interval, got %+v", c)
-	}
-	m.syncStats(true) // interval elapsed -> keep-alive re-assert (survives reconnect)
-	if c := collect(); len(c) != 1 || c[0].Data != "1" {
-		t.Errorf("should re-assert 90 1 after the interval, got %+v", c)
-	}
-
-	// closing it sends a single "off", then goes quiet
-	m.view = viewPlayer
-	m.syncStats(true)
-	if c := collect(); len(c) != 1 || c[0].Mid != 90 || c[0].Data != "0" {
-		t.Fatalf("diag close should send 90 0, got %+v", c)
-	}
-	m.syncStats(true)
-	if c := collect(); len(c) != 0 {
-		t.Errorf("no further signal once closed, got %+v", c)
-	}
-}
-
-// ---- diagnostics: the expanded readout --------------------------------------
-
-func TestDiagShowsExpandedFields(t *testing.T) {
-	st := protocol.NewState()
-	applyFixtureRecords(st, "device_record.txt")  // @@i: eth link + storage
-	applyFixtureRecords(st, "playing_record.txt") // @@s: temp / byte counters / pings
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 44, 100
-	m.view = viewDiag
-	out := m.viewContent()
-	for _, want := range []string{
-		"diagnostics", "link", "ethernet", "100 Mbit/s", "full duplex",
-		"address", "latency", "you", "±", "storage", "esc player",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("diag overlay missing %q", want)
-		}
+	if _, cmd := m2.Update(tea.PasteMsg{Content: "q"}); cmd == nil {
+		t.Error("a pasted q should quit")
 	}
 }
 
@@ -531,12 +310,8 @@ func TestDiagShowsExpandedFields(t *testing.T) {
 
 func TestDashboardDoesNotOverflowShortTerminal(t *testing.T) {
 	m, _, _ := makeModel(t)
-	m.cols = 80
-	m.rows = 12 // compact range (9..25); the body would otherwise exceed the frame
-	out := m.viewContent()
-	if n := len(strings.Split(out, "\n")); n > m.rows {
-		t.Errorf("rendered %d lines into a %d-row terminal — frame overflowed", n, m.rows)
-	}
+	m.rows, m.cols = 12, 80 // compact range (9..25); the body would otherwise exceed the frame
+	render(t, m)
 }
 
 // ---- Clip: width contract holds at degenerate widths ------------------------
@@ -557,6 +332,15 @@ func TestClipNeverExceedsWidth(t *testing.T) {
 	}
 	if got := Clip("abcdef", 1); got != "a" {
 		t.Errorf("Clip(abcdef,1)=%q, want a (no room for ellipsis)", got)
+	}
+	// the CJK-locale ellipsis "..." is 3 wide: below that, a hard cut
+	defer func(orig map[string]string) { GL = orig }(GL)
+	GL = glyphs(2)
+	if got := Clip("abcdef", 2); got != "ab" {
+		t.Errorf("ASCII-ellipsis Clip(abcdef,2) = %q, want ab", got)
+	}
+	if got := Clip("abcdef", 5); got != "ab..." {
+		t.Errorf("ASCII-ellipsis Clip(abcdef,5) = %q, want ab...", got)
 	}
 }
 
@@ -631,127 +415,6 @@ func TestMarqueeFitsAndScrolls(t *testing.T) {
 	}
 }
 
-// ---- latency rows -------------------------------------------------------------
-
-var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
-
-func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
-
-func TestLatencyRowRendersNumbers(t *testing.T) {
-	m, _, _ := modelWith(protocol.NewState())
-	m.sty = newTheme() // normally lazily set on first View()
-	ps := protocol.PingStat{Avg: 6.6, Jitter: 1.1, Peak: 48, OK: true}
-	row := stripANSI(m.latencyRow("gw", ps))
-	for _, want := range []string{"gw", "6.6 ms", "±1.1", "max 48"} {
-		if !strings.Contains(row, want) {
-			t.Errorf("latency row missing %q in %q", want, row)
-		}
-	}
-	// no block glyphs: the old per-row sparkline rendered as ragged boxes on fonts
-	// whose block elements don't fill the cell, so the row is plain text on purpose
-	if strings.ContainsAny(row, "▁▂▃▄▅▆▇█") {
-		t.Errorf("latency row should be plain text, got %q", row)
-	}
-}
-
-// The numeric fields are fixed-width, so the peak column starts at the same
-// display column across rows with differently-sized values — the three targets
-// must line up.
-func TestLatencyRowColumnsAlign(t *testing.T) {
-	m, _, _ := modelWith(protocol.NewState())
-	m.sty = newTheme() // normally lazily set on first View()
-	rows := []string{
-		stripANSI(m.latencyRow("you", protocol.PingStat{Avg: 1.2, Jitter: 0.3, Peak: 2.1, OK: true})),
-		stripANSI(m.latencyRow("gw", protocol.PingStat{Avg: 11, Jitter: 6.6, Peak: 31, OK: true})),
-		stripANSI(m.latencyRow("spotify", protocol.PingStat{Avg: 250, Jitter: 12, Peak: 900, OK: true})),
-	}
-	want := strings.Index(rows[0], "max ")
-	for _, r := range rows[1:] {
-		if got := strings.Index(r, "max "); got != want {
-			t.Errorf("peak column at %d, want %d: %q", got, want, r)
-		}
-	}
-	t.Logf("\n%s\n%s\n%s", rows[0], rows[1], rows[2])
-}
-
-func TestDiagLatencyBlockFullRender(t *testing.T) {
-	st := protocol.NewState()
-	applyFixtureRecords(st, "device_record.txt") // @@i: eth link
-	// feed several @@s with a gateway spike (48) amid a ~6ms baseline
-	base := "@@s\n5185 0.2 0.2 0.2 138000 221064 2 AR241CE_8530.23 Linux-5.15.137 50400 "
-	type s struct{ rx, tx, you, gw, net string }
-	for _, smp := range []s{
-		{"1000", "500", "8", "6", "24"}, {"2000", "700", "9", "6", "25"},
-		{"3000", "900", "31", "7", "26"}, {"4000", "1100", "10", "48", "29"},
-		{"5000", "1300", "8", "6", "25"}, {"6000", "1500", "8", "6", "25"},
-	} {
-		feed := base + smp.rx + " " + smp.tx + " - - " + smp.you + " " + smp.gw + " " + smp.net + "\n@@E\n"
-		for rec := range protocol.IterRecords(feeder(strings.Split(strings.TrimSuffix(feed, "\n"), "\n"))) {
-			protocol.ApplyRecord(st, rec)
-		}
-	}
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 44, 100
-	m.view = viewDiag
-	full := stripANSI(m.viewContent())
-	// the gateway row's peak-hold must have caught the 48ms spike
-	if !strings.Contains(full, "max 48") {
-		t.Error("gateway peak-hold should show the 48ms spike (max 48)")
-	}
-	// log the network→audio slice for eyeballing
-	lines := strings.SplitSeq(full, "\n")
-	for ln := range lines {
-		if strings.Contains(ln, "link") || strings.Contains(ln, "address") ||
-			strings.Contains(ln, "traffic") || strings.Contains(ln, "latency") ||
-			strings.Contains(ln, "you") || strings.Contains(ln, "gw ") || strings.Contains(ln, "spotify") {
-			t.Logf("|%s|", strings.TrimRight(ln, " "))
-		}
-	}
-}
-
-func TestDiagTagsDiscoveredHost(t *testing.T) {
-	st := protocol.NewState()
-	applyFixtureRecords(st, "device_record.txt")
-	cfg := defaultCfg()
-	cfg.Discovered = true
-	m := newModel(st, cfg, make(chan *protocol.Command, 8), nil)
-	m.rows, m.cols = 44, 100
-	m.view = viewDiag
-	if !strings.Contains(stripANSI(m.viewContent()), "mDNS") {
-		t.Error("a discovered host should be tagged · mDNS on the diag host line")
-	}
-}
-
-func TestDiagSilentToleratesIdleCadence(t *testing.T) {
-	st := protocol.NewState()
-	applyFixtureRecords(st, "playing_record.txt") // marks connected + stamps last_data
-	m, _, _ := modelWith(st)
-	m.sty = newTheme() // normally set on first View()
-	m.rows, m.cols = 44, 100
-	dData := st.DiagnosticView(time.Now()).LastData
-	snap := st.Snap()
-	if !snap.Connected || dData.IsZero() {
-		t.Fatal("setup: expected connected with a last_data stamp")
-	}
-	// a ~3s idle low-poll gap must still read healthy, not flash "LUCI silent"
-	idle := stripANSI(strings.Join(m.renderDiag(snap, dData.Add(3500*time.Millisecond), 96), "\n"))
-	if strings.Contains(idle, "LUCI silent") {
-		t.Errorf("3.5s idle-cadence gap should read connected, got header: %q", firstLine(idle))
-	}
-	// a gap beyond the watchdog's own SilentAfter should flag silence
-	stale := stripANSI(strings.Join(m.renderDiag(snap, dData.Add(workers.SilentAfter+time.Second), 96), "\n"))
-	if !strings.Contains(stale, "LUCI silent") {
-		t.Errorf("gap past SilentAfter should flag LUCI silent, got header: %q", firstLine(stale))
-	}
-}
-
-func firstLine(s string) string {
-	if before, _, ok := strings.Cut(s, "\n"); ok {
-		return before
-	}
-	return s
-}
-
 // Both startup problems must reach the user through State's single note slot:
 // a media-key failure must APPEND to a config warning, never replace it. (The
 // pty test in internal/e2e only exercises the media-key arm on a Mac that
@@ -774,29 +437,33 @@ func TestStartupNote(t *testing.T) {
 	}
 }
 
-// The diag overlay's error line must not present a recovered transient hiccup
-// as a live fault: transient notes render age-stamped and age out after
-// diagErrWindow; a fatal error is current state and always renders.
+// The diagnostics' error line must not present a recovered hiccup as a live
+// fault: a note renders age-stamped and ages out after diagErrWindow.
 func TestDiagErrLineAging(t *testing.T) {
 	now := time.Now()
 	W := 80
 
 	fresh := protocol.Snapshot{Error: "command not delivered", ErrorAt: now.Add(-3 * time.Second)}
-	if line, ok := diagErrLine(fresh, now, W); !ok || !strings.Contains(stripANSI(line), "s ago") {
-		t.Errorf("a fresh transient error should render age-stamped, got %q ok=%v", stripANSI(line), ok)
+	line, ok := diagErrLine(fresh, now, W)
+	if got := stripANSI(line); !ok || got != GL["warn"]+" command not delivered · 3.0s ago" {
+		t.Errorf("a fresh error should render age-stamped, got %q ok=%v", got, ok)
 	}
 
+	edge := protocol.Snapshot{Error: "x", ErrorAt: now.Add(-diagErrWindow)}
+	if _, ok := diagErrLine(edge, now, W); ok {
+		t.Error("an error exactly diagErrWindow old has aged out")
+	}
 	stale := protocol.Snapshot{Error: "command not delivered", ErrorAt: now.Add(-diagErrWindow - time.Second)}
 	if line, ok := diagErrLine(stale, now, W); ok {
-		t.Errorf("a transient error past diagErrWindow must age out of the overlay, got %q", stripANSI(line))
+		t.Errorf("an error past diagErrWindow must age out, got %q", stripANSI(line))
 	}
-
-	fatal := protocol.Snapshot{Error: "ssh authentication failed", ErrorAt: now.Add(-time.Hour), Fatal: true}
-	if line, ok := diagErrLine(fatal, now, W); !ok || strings.Contains(stripANSI(line), "ago") {
-		t.Errorf("a fatal error is current state: always shown, no age stamp; got %q ok=%v", stripANSI(line), ok)
-	}
-
 	if _, ok := diagErrLine(protocol.Snapshot{}, now, W); ok {
 		t.Error("no error should render no line")
+	}
+	// a long one is clipped to the row, the friendly form first
+	long := protocol.Snapshot{Error: "dial tcp: lookup lp10.local: no such host", ErrorAt: now}
+	line, _ = diagErrLine(long, now, 30)
+	if got := stripANSI(line); DispW(got) > 30 || !strings.HasPrefix(got, GL["warn"]+" can't find the device") {
+		t.Errorf("narrow error line = %q", got)
 	}
 }

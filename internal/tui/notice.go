@@ -1,13 +1,12 @@
 // The notice line: one row under the header, in every view, where transient
-// events print for a moment and fade — a volume step, the sleep timer, night
-// mode, an engine switch, the connection coming and going, and the summary
-// that greets a connect. One place to look, and no layout shifts: the row is
+// events print for a moment and fade — a volume step, the mute, the sleep
+// timer, the connection coming and going, and the summary that greets a
+// connect. One place to look, and no layout shifts: the row is
 // always there, blank when there is nothing to say.
 
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -18,7 +17,8 @@ const (
 	noticeFor        = 2 * time.Second // an ordinary event
 	noticeForSummary = 5 * time.Second // the connect summary: more to read
 	// startupSummaryWait bounds how long a fresh connection waits for the
-	// one-shot facts (@@c, @@d, @@o) before the summary prints with what it has.
+	// facts it names (the MCU build, the ZeroConf answer) before the summary
+	// prints with what it has.
 	startupSummaryWait = 3 * time.Second
 )
 
@@ -67,45 +67,29 @@ func (m *model) trackConnection(s protocol.Snapshot, now time.Time) {
 	if m.summaryDue.IsZero() || !s.Connected {
 		return
 	}
-	d := m.st.DiagnosticView(now)
-	// the facts a connect ships once: wait for the capability block unless the
-	// deadline passes first
-	if d.ConfInfo == nil && now.Before(m.summaryDue) {
+	d := m.st.DiagnosticView()
+	// wait for the facts the summary names unless the deadline passes first
+	if (d.MCU == "" || d.SpotifyZC == nil) && now.Before(m.summaryDue) {
 		return
 	}
 	m.summaryDue = time.Time{}
 	m.notify(startupSummary(d), noticeForSummary)
 }
 
-// startupSummary is the connect greeting: "connected · firmware AR241CE_8530.23.2
-// · Pro engine · 3 reconnects since Sep 23 17:18" — whatever of it is known. The
-// reconnect count names the time the live syslog begins: the file rotates at
-// 1 MiB, so a bare count would not say whether it covers minutes or days.
+// startupSummary is the connect greeting: "connected · firmware
+// AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31" — whatever of it is
+// known. The firmware is the LSSDP answer's, the MCU build the tunnel's VER,
+// the eSDK the Spotify engine's ZeroConf answer.
 func startupSummary(d protocol.DiagnosticSnapshot) string {
 	parts := []string{"connected"}
-	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
-	if id.fw != "" && id.fw != "—" {
-		parts = append(parts, "firmware "+id.fw)
+	if d.LSSDP != nil && d.LSSDP.FW != "" {
+		parts = append(parts, "firmware "+d.LSSDP.FW)
 	}
-	switch d.ConfInfo.Engine() {
-	case "spotifymusicpro":
-		parts = append(parts, "Pro engine")
-	case "newspotifyhifi":
-		parts = append(parts, "HiFi engine")
-	case "":
-		if d.ConfInfo != nil {
-			parts = append(parts, "no Spotify engine running")
-		}
+	if mcu := firstSeg(d.MCU, '-'); mcu != "" {
+		parts = append(parts, "MCU "+mcu)
 	}
-	if d.Ops != nil && d.Ops.ReconnectsOK {
-		where := "in the log"
-		if d.Ops.LogSinceOK {
-			where = "since " + d.Ops.LogSince.Format("Jan 2 15:04")
-		}
-		parts = append(parts, fmt.Sprintf("%d reconnect%s %s", d.Ops.Reconnects, plural(d.Ops.Reconnects), where))
-	}
-	if d.DevInfo != nil && d.DevInfo.Reboot == "cold_boot" && d.DevInfo.Net != "" {
-		parts = append(parts, "last boot was a power-on")
+	if d.SpotifyZC != nil && d.SpotifyZC.LibraryVersion != "" {
+		parts = append(parts, "Spotify eSDK "+firstSeg(d.SpotifyZC.LibraryVersion, '-'))
 	}
 	return strings.Join(parts, " · ")
 }

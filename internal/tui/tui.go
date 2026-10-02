@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -47,7 +46,7 @@ func Run(cfg config.Config) (int, error) {
 	st := protocol.NewState()
 	background := workers.StartRuntime(st, cfg)
 
-	m := newModel(st, cfg, background.Commands, background.EQCommands)
+	m := newModel(st, cfg, background.Commands)
 	m.baseline = sweep.Load(config.SweepPath(cfg)) // the last `lp10 sweep`, for the diagnostics' since-sweep row
 	// The alt screen and window title ride tea.View under bubbletea v2 (see
 	// model.View). The frame rate is capped well under the default 60: the
@@ -107,25 +106,13 @@ func Run(cfg config.Config) (int, error) {
 	close(stopSig)
 	<-sigDone
 	// Restore default signal dispositions BEFORE teardown: with the handler
-	// goroutine retired, a SIGINT during a slow background.Close (a wedged ssh
-	// child riding out the ~4s kill ladder) would otherwise land in the unread
-	// channel and be swallowed — leaving Ctrl-C unable to abort the teardown.
-	// The terminal is already restored (p.Run returned), and an orphaned child
-	// self-heals via fd-close → remote-loop EOF.
+	// goroutine retired, a SIGINT during a slow background.Close (the drain
+	// riding out its timeout on a dead link) would otherwise land in the
+	// unread channel and be swallowed — leaving Ctrl-C unable to abort the
+	// teardown. The terminal is already restored (p.Run returned).
 	signal.Stop(sigCh)
 	stopKeys()
 
-	// Night mode is session-scoped: put the device's multi-band DRC back to
-	// the value first read this process, if lp10 changed it. Queued ahead of
-	// Close, whose drain writes it before the ssh stdin closes (best-effort —
-	// a dead link can't carry it, and the device keeps whatever it has).
-	if orig, needed := st.NightRestore(); needed {
-		data := "0"
-		if orig {
-			data = "1"
-		}
-		nbSend(background.Commands, &protocol.Command{Mid: 91, Data: data, TS: time.Now()})
-	}
 	background.Close(workers.DrainTimeout)
 	fmt.Fprint(os.Stdout, "\x1b]0;\x07") // reset the terminal title
 

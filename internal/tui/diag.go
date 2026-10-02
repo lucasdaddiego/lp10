@@ -1,9 +1,14 @@
+// The diagnostics view: what the box says about itself without ssh — the
+// tunnel's link and player read-out, the LSSDP responder, the Spotify
+// engine's ZeroConf answer, the vendor's update verdict on request, what moved
+// since the last `lp10 sweep`, and the model's invariant hardware facts. Two
+// layouts by width: ruled two-column sections on a wide terminal, one stacked
+// column on a narrow one.
+
 package tui
 
 import (
-	"cmp"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,15 +18,15 @@ import (
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/sweep"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
-// diagCardsMinW is the inner width at/above which the diagnostics overlay uses the
-// two-column card grid; below it, the single-column stacked layout (which fits a
-// narrow terminal and degrades gracefully) is used instead.
+// diagCardsMinW is the inner width at/above which the diagnostics use the
+// two-column layout; below it, the single stacked column.
 const diagCardsMinW = 100
 
-// diagFooters is the overlay's bottom help line (both layouts), widest first:
+// diagFooters is the view's bottom help line (both layouts), widest first:
 // on a narrow terminal the keys give way to the fact beside them — how much of
 // the read-out is off-screen — rather than push it off the row (footerFit).
 var diagFooters = []string{
@@ -32,425 +37,39 @@ var diagFooters = []string{
 	"? help",
 }
 
-// ---- shared severity model -----------------------------------------------------
-//
-// Health thresholds, lower-is-better: sev(v, thr) reads 0 (good) below thr[0],
-// 1 (warn) below thr[1], 2 (bad) at/above. One table shared by both layouts so a
-// stacked gauge, a cards gauge, the vitals line, and the verdict rollup can never
-// disagree on where "warn" starts.
-var (
-	thrCPU    = [2]float64{60, 85} // % of all cores (1m load / NCPU)
-	thrMem    = [2]float64{70, 88} // % used
-	thrTemp   = [2]float64{60, 75} // °C SoC
-	thrData   = [2]float64{80, 92} // % of /lsync used
-	thrSignal = [2]float64{60, 72} // Wi-Fi signal as -dBm (-41 good, -72 warn)
+// thrRx is the seconds since the tunnel's last frame: a live box answers the
+// status poll every workers.StatusEvery, so a gap past one and a half polls is
+// a warn, and the worker gives up on the link at workers.SilentAfter.
+var thrRx = [2]float64{workers.StatusEvery.Seconds() * 1.75, workers.SilentAfter.Seconds()}
 
-	// thrRx is the seconds since the last framed record. While the diagnostics
-	// are open the player is hidden, so the loop ticks every 3 s, and every
-	// third tick also pings three targets for up to 1 s each: a gap of about
-	// 6.2 s is the loop's normal cadence, so the warn starts past it. The fault
-	// is where the watchdog gives up on the stream.
-	thrRx = [2]float64{6.5, workers.SilentAfter.Seconds()}
-)
-
+// sev reads a lower-is-better value against its thresholds: 0 (good) below
+// thr[0], 1 (warn) below thr[1], 2 (bad) at or above.
 func sev(v float64, thr [2]float64) int {
 	switch {
-	case v < thr[0]:
-		return 0
-	case v < thr[1]:
-		return 1
-	default:
+	case v >= thr[1]:
 		return 2
+	case v >= thr[0]:
+		return 1
 	}
+	return 0
 }
 
-// sevPens maps a severity to its pen: good (accent) · warn (amber) · bad (red).
-func (m *model) sevPens() [3]lipgloss.Style { return m.sty.sevs }
-
-// sevPen picks the pen for a value against its threshold pair.
 func (m *model) sevPen(v float64, thr [2]float64) lipgloss.Style { return m.sty.sevs[sev(v, thr)] }
 
-// ---- shared collectors (both layouts read the same derived state) --------------
+// lssdpFresh is how recent an LSSDP answer must be to count the device as
+// "up on the LAN" on the connecting screen: the probe runs every 5 s while
+// disconnected, so this spans a few missed probes.
+const lssdpFresh = 20 * time.Second
 
-// diagIdentity is the device section's readout, shared by both diagnostics
-// layouts (renderDiagStacked / renderDiagCards) so the two can't drift apart:
-// identity ONLY — what the box is, not how it's doing or how it's reached.
-// Wire facts live in the connection/network sections (host, mac) and runtime
-// state in resources (uptime). The first row of fields defaults to "—" (always
-// shown); the second row stays "" until the device reports it (regs 90/92),
-// and its rows render only then.
-type diagIdentity struct {
-	model, os, fw, build  string
-	name, serial, bt, mcu string
-}
+// ---- rows ---------------------------------------------------------------------
 
-// collectIdentity derives the identity strings from the sysinfo/devinfo/details
-// (any may be nil).
-func collectIdentity(si *protocol.SysInfo, dev *protocol.DevInfo, dt *protocol.DevDetails) diagIdentity {
-	d := diagIdentity{model: "—", os: "—", fw: "—", build: "—"}
-	if si != nil {
-		if si.FW != "" {
-			d.fw, d.model = si.FW, "Arylic "+firstSeg(si.FW, '_')
-		}
-		if si.OS != "" {
-			d.os = strings.Replace(si.OS, "-", " ", 1)
-			if si.NCPU != "" {
-				d.os += " · " + si.NCPU + " cores"
-			}
-		}
-	}
-	if dev != nil {
-		if dev.Platform != "" && d.model != "—" {
-			d.model += " · " + dev.Platform
-		}
-		if dev.Build != "" {
-			d.build = dev.Build
-			if dev.App != "" {
-				d.build += " · app " + dev.App
-			}
-			// The vendor's Rust app updates on its own schedule, apart from the
-			// firmware OTA (v32 landed five days after the 8530 bundle and brought
-			// presets), so its version is a drift signal in its own right.
-			if dev.VendorApp != "" {
-				d.build += " · vendor app v" + dev.VendorApp
-			}
-		}
-		d.name = dev.Name
-	}
-	if dt != nil {
-		d.serial, d.bt = dt.Serial, dt.BTMAC
-		if dt.MCU != "" {
-			d.mcu = "v" + dt.MCU
-		}
-		if dt.FW != "" {
-			d.fw = dt.FW // the fuller string — carries the trailing sub-version
-		}
-	}
-	return d
-}
-
-// hostReadout is the connection section's target line: how lp10 reaches the
-// device — the ssh user @ the configured host, upgraded to the resolved IP
-// once @@i reports it, tagged when mDNS discovery found the box.
-func (m *model) hostReadout(dev *protocol.DevInfo) string {
-	h := m.cfg.User + "@" + m.cfg.Host
-	if dev != nil && dev.IP != "" {
-		h = m.cfg.User + "@" + dev.IP
-	}
-	if m.cfg.Discovered {
-		h += " · mDNS"
-	}
-	return h
-}
-
-// sshReadout is the connection section's stream line: how fresh the framed
-// records are, plus the connect-attempt count.
-func (m *model) sshReadout(ls diagLinkStatus, att int) string {
-	tail := m.sty.pens().txt.render(fmt.Sprintf(" · %d %s", att, ls.attWord))
-	if ls.rxTxt == "—" { // nothing framed yet — say so instead of "rx — ago"
-		return m.sty.pens().dim.render("no data yet") + tail
-	}
-	return m.sty.pens().txt.render("rx ") + ls.rxPen.Render(ls.rxTxt) + m.sty.pens().txt.render(" ago") + tail
-}
-
-// tunnelReadout is the connection section's :2018 line (the EQ / Max-Vol
-// control tunnel): the port and its live/down state.
-func (m *model) tunnelReadout(ls diagLinkStatus) string {
-	return m.sty.pens().txt.render(":2018 · ") + ls.tunPen.Render(ls.tunTxt)
-}
-
-// errReadout renders the interface error/drop counters as session deltas:
-// calm dim zeros, amber the moment a counter grows while connected.
-func (m *model) errReadout(ns protocol.NetStat) string {
-	cell := func(label string, v int64) string {
-		pen := m.sty.sDim
-		if v > 0 {
-			pen = stWarn
-		}
-		return m.sty.pens().dim.render(label+" ") + pen.Render(strconv.FormatInt(v, 10))
-	}
-	sep := m.sty.pens().dmr.render(" · ")
-	return cell("rx", ns.RxErrs) + sep + cell("tx", ns.TxErrs) + sep + cell("drop", ns.Drops) +
-		m.sty.pens().dmr.render(" · session")
-}
-
-// multiroomReadout renders the group state: "solo", or the linked device count.
-func (m *model) multiroomReadout(mr *protocol.Multiroom) string {
-	if mr.Devices == 0 {
-		return m.sty.pens().txt.render("solo")
-	}
-	word := "devices"
-	if mr.Devices == 1 {
-		word = "device"
-	}
-	return m.sty.pens().acc.render(fmt.Sprintf("linked · %d %s", mr.Devices, word))
-}
-
-// diagVitals is the parsed live-numeric readout shared by both layouts: raw
-// numbers only — each layout formats its own labels and detail strings.
-type diagVitals struct {
-	haveCPU bool
-	cpuFrac float64  // 1m load / cores
-	loads   []string // the raw loadavg triplet, for the detail strings
-
-	haveMem          bool
-	memUf            float64 // fraction used
-	availKB, totalKB int
-
-	haveTemp bool
-	tempC    int
-
-	haveData       bool
-	dataUf         float64 // fraction of /lsync used
-	usedKB, dataKB int
-
-	haveBuf bool
-	bufFill float64 // ALSA ring fill fraction
-	bufSev  int     // inverted health: a FULL ring is healthy
-
-	playing bool // ALSA reports RUNNING — gates the buffer's health meaning
-
-	levelDesync bool // softvol out of step with the reported volume (State's tracker)
-
-	// onWifi: the box is on its radio. Not a fault in general, but on this
-	// product the aml_w1 firmware wedge (RX ok, TX dead until a power-cycle)
-	// only ever triggered off the wire, so the wire is the healthy state.
-	onWifi bool
-	// the Spotify engine's own reconnect rate from the syslog digest (per hour
-	// over the log's window); haveReconnect gates it.
-	reconnectRate float64
-	haveReconnect bool
-}
-
-// collectVitals parses the @@s/@@i numerics both layouts gauge (either source may
-// be nil; the have* flags gate each reading).
-func collectVitals(si *protocol.SysInfo, dev *protocol.DevInfo) diagVitals {
-	var v diagVitals
-	if si != nil {
-		v.loads = strings.Fields(si.Load)
-		nc, _ := strconv.Atoi(si.NCPU)
-		if nc < 1 {
-			nc = 1
-		}
-		if len(v.loads) >= 1 {
-			if l1, err := strconv.ParseFloat(v.loads[0], 64); err == nil {
-				v.cpuFrac, v.haveCPU = l1/float64(nc), true
-			}
-		}
-		av, e1 := strconv.Atoi(si.Avail)
-		tot, e2 := strconv.Atoi(si.Total)
-		if e1 == nil && e2 == nil && tot > 0 {
-			v.memUf, v.availKB, v.totalKB, v.haveMem = float64(tot-av)/float64(tot), av, tot, true
-		}
-		if mc, err := strconv.Atoi(si.TempmC); err == nil {
-			v.tempC, v.haveTemp = mc/1000, true
-		}
-		if si.BufAvail != "" && si.BufSize != "" {
-			if a, e1 := strconv.Atoi(si.BufAvail); e1 == nil {
-				if bs, e2 := strconv.Atoi(si.BufSize); e2 == nil && bs > 0 {
-					v.bufFill, v.haveBuf = max(float64(bs-a)/float64(bs), 0), true
-					switch { // buffer health is inverted: a FULL ring is healthy
-					case v.bufFill >= 0.5:
-						v.bufSev = 0
-					case v.bufFill >= 0.25:
-						v.bufSev = 1
-					default:
-						v.bufSev = 2
-					}
-				}
-			}
-		}
-		v.playing = si.PcmState == "RUNNING"
-	}
-	if dev != nil {
-		u, e1 := strconv.Atoi(dev.DataUsed)
-		tt, e2 := strconv.Atoi(dev.DataTotal)
-		if e1 == nil && e2 == nil && tt > 0 {
-			v.dataUf, v.usedKB, v.dataKB, v.haveData = float64(u)/float64(tt), u, tt, true
-		}
-	}
-	return v
-}
-
-// diagLinkStatus is lp10's own link readout — ssh stream freshness, the attempt
-// count's noun, and the :2018 tunnel state — shared verbatim by both layouts.
-type diagLinkStatus struct {
-	rxTxt   string
-	rxPen   lipgloss.Style
-	attWord string
-	tunTxt  string
-	tunPen  lipgloss.Style
-}
-
-func (m *model) linkStatus(lastRx, now time.Time, att int, eqConn bool) diagLinkStatus {
-	ls := diagLinkStatus{rxTxt: "—", rxPen: m.sty.sDim, attWord: "attempts", tunTxt: "down", tunPen: stRed}
-	if !lastRx.IsZero() {
-		secs := now.Sub(lastRx).Seconds()
-		ls.rxTxt, ls.rxPen = fmt.Sprintf("%.1fs", secs), m.sevPen(secs, thrRx)
-	}
-	if att == 1 {
-		ls.attWord = "attempt"
-	}
-	if eqConn {
-		ls.tunTxt, ls.tunPen = "live", m.sty.sAcc
-	}
-	return ls
-}
-
-// diagStatus is the connection light + clock on the masthead's right. The
-// silence window matches the watchdog's threshold (not a tighter one): the
-// device's idle loop legitimately drops to a ~3s poll cadence, so a shorter
-// window would flash "LUCI silent" between healthy low-poll frames.
-func (m *model) diagStatus(connected bool, dData, now time.Time) (hr string, hrW int, silent bool) {
-	clock := now.Format("15:04")
-	switch {
-	case !connected:
-		return stWarn.Render("● disconnected"), DispW("● disconnected"), false
-	case !dData.IsZero() && now.Sub(dData) > workers.SilentAfter:
-		return stWarn.Render("● LUCI silent · " + clock), DispW("● LUCI silent · " + clock), true
-	default:
-		return m.sty.pens().acc.render("●") + m.sty.pens().dim.render(" "+clock), DispW("● " + clock), false
-	}
-}
-
-// diagErrLine renders the overlay's bottom error line (prettified, not the raw
-// ssh dump — the sections above already carry the state), or ok=false when
-// there is nothing current to show. A fatal error always shows: it IS present
-// state, latched until data flows again. A transient note is history the moment
-// it is recorded, so it shows age-stamped for diagErrWindow and then leaves —
-// a recovered hiccup must not sit under a healthy masthead reading as a live
-// fault.
-func diagErrLine(s protocol.Snapshot, now time.Time, W int) (string, bool) {
-	switch {
-	case s.Error == "":
-		return "", false
-	case s.Fatal:
-		return stWarn.Render(Clip(GL["warn"]+" "+friendlyError(s.Error), W)), true
-	case now.Sub(s.ErrorAt) < diagErrWindow:
-		age := fmt.Sprintf(" · %.1fs ago", now.Sub(s.ErrorAt).Seconds())
-		return stWarn.Render(Clip(GL["warn"]+" "+friendlyError(s.Error)+age, W)), true
-	default:
-		return "", false
-	}
-}
-
-// wifiWarning is the network section's note when the box is on its radio: the
-// SDIO Wi-Fi firmware on this product can wedge RX-ok / TX-dead on a link
-// event and never recover until a power-cycle — the cause of every stream drop
-// before this box went on the wire — so being off the wire is worth a warn.
-func wifiWarning() string {
-	return stWarn.Render(GL["warn"] + " on wi-fi · the radio firmware can wedge — wire it")
-}
-
-// wifiBand renders the " · ch N · 2.4|5 GHz" suffix from the @@i freq (MHz), or
-// "" when the frequency is unknown.
-func wifiBand(freq string) string {
-	f, err := strconv.Atoi(freq)
-	if err != nil || f <= 0 {
-		return ""
-	}
-	b := " · 2.4 GHz"
-	if f >= 5000 {
-		b = " · 5 GHz"
-	}
-	return fmt.Sprintf(" · ch %d%s", freqToChan(f), b)
-}
-
-// ethDetail renders the " · N Mbit/s · full duplex" suffix from the @@i link fields.
-func ethDetail(speed, duplex string) string {
-	detail := ""
-	if sp, err := strconv.Atoi(speed); err == nil && sp > 0 {
-		detail += fmt.Sprintf(" · %d Mbit/s", sp)
-	}
-	if duplex != "" {
-		detail += " · " + duplex + " duplex"
-	}
-	return detail
-}
-
-// diagFormat is the source-stream descriptor for the audio section — "Ogg ·
-// 44.1 kHz · 2 ch" — or "—" when nothing is playing.
-func diagFormat(tr *protocol.Track) string {
-	if tr == nil {
-		return "—"
-	}
-	var ps []string
-	if q := Quality(tr); q != "" {
-		ps = append(ps, q)
-	}
-	if ch := tr.ChannelCount; ch > 0 {
-		ps = append(ps, fmt.Sprintf("%d ch", ch))
-	}
-	if len(ps) == 0 {
-		return "—"
-	}
-	return strings.Join(ps, " · ")
-}
-
-// bufMeter picks the buffer gauge's pen + detail word, shared by both layouts:
-// the ring is a health signal only WHILE PLAYING ("NN% full", severity-
-// coloured); an empty ring on an idle device is normal ("idle", neutral).
-func (m *model) bufMeter(vit diagVitals) (lipgloss.Style, string) {
-	if vit.playing {
-		return m.sevPens()[vit.bufSev], "full"
-	}
-	return m.sty.sDim, "idle"
-}
-
-// dacReadout is the audio section's output line — the DAC's actual rate /
-// format / channels, tagged live while ALSA reports RUNNING — or "" until @@s
-// carries a rate.
-func (m *model) dacReadout(si *protocol.SysInfo, playing bool) string {
-	if si == nil || si.DacRate == "" {
-		return ""
-	}
-	rate := si.DacRate
-	if hz, err := strconv.Atoi(si.DacRate); err == nil {
-		rate = fmtKHz(hz)
-	}
-	parts := []string{rate}
-	if si.DacFmt != "" {
-		parts = append(parts, si.DacFmt)
-	}
-	if si.DacCh != "" {
-		parts = append(parts, si.DacCh+"ch")
-	}
-	out := m.sty.pens().txt.render(strings.Join(parts, " · "))
-	if playing {
-		out += m.sty.pens().acc.render(" ● live")
-	}
-	return out
-}
-
-// tasksReadout is the resources section's scheduler line from /proc's
-// running/total pair, or "" when the sample lacks one.
-func (m *model) tasksReadout(si *protocol.SysInfo) string {
-	if si == nil || si.Procs == "" {
-		return ""
-	}
-	run, tot, ok := strings.Cut(si.Procs, "/")
-	if !ok {
-		return ""
-	}
-	return m.sty.pens().txt.render(run) + m.sty.pens().dim.render(" running · ") +
-		m.sty.pens().txt.render(tot) + m.sty.pens().dim.render(" total")
-}
-
-// latencyPeakPen flags a genuine spike (peak well past the average), not
-// baseline wobble.
-func (m *model) latencyPeakPen(ps protocol.PingStat) lipgloss.Style {
-	if ps.Peak > ps.Avg*2 && ps.Peak-ps.Avg > 10 {
-		return stWarn
-	}
-	return m.sty.sDmr
-}
-
-// kv is one labelled fact; presentKVs keeps the ones the device has reported
-// (empty values are the "not read yet" sentinel for the optional identity rows).
+// kv is one label/value row.
 type kv struct{ k, v string }
 
+// presentKVs drops the rows with no value, so a fact not read yet leaves no
+// empty label behind.
 func presentKVs(facts []kv) []kv {
-	out := make([]kv, 0, len(facts))
+	out := facts[:0:0]
 	for _, f := range facts {
 		if f.v != "" {
 			out = append(out, f)
@@ -459,105 +78,84 @@ func presentKVs(facts []kv) []kv {
 	return out
 }
 
-// latTarget is one responding ping target: its row label and stats.
-type latTarget struct {
-	name string
-	ps   protocol.PingStat
+// audioFacts is the player as the tunnel reports it: the source, the play
+// state, the volume, the output cap and the EQ.
+func (m *model) audioFacts(d protocol.DiagnosticSnapshot) []kv {
+	s := d.Snapshot
+	if !s.Connected {
+		return []kv{{"source", "— (the tunnel is down)"}}
+	}
+	state := "idle"
+	switch {
+	case s.Playing:
+		state = "playing"
+	case s.Track != nil:
+		state = "paused"
+	}
+	if title := trackTitleOf(s.Track); title != "" {
+		state += " · " + title
+	} else if s.Playing {
+		state += " · " + untitledHint
+	}
+	vol := fmt.Sprintf("%d%%", s.Vol)
+	if s.Muted {
+		vol += " · muted (in the MCU)"
+	}
+	_, eq := m.st.EQView()
+	facts := []kv{
+		{"source", SourceName(s)},
+		{"state", state},
+		{"volume", vol},
+	}
+	if v, ok := eq["MXV"]; ok {
+		facts = append(facts, kv{"max vol", strconv.Itoa(v) + "%"})
+	}
+	if v, ok := eq["EQE"]; ok {
+		word := "off"
+		if v == 1 {
+			word = "on"
+			if p, ok := eq["EQS"]; ok {
+				if names := m.st.EQPresets(); p >= 0 && p < len(names) && names[p] != "" {
+					word += " · " + names[p]
+				}
+			}
+		}
+		facts = append(facts, kv{"eq", word})
+	}
+	return presentKVs(facts)
 }
 
-// latencyTargets returns the responding ping targets in alphabetical name order
-// (row order matches the a-z ordering of every other diag item, not hop order).
-func (m *model) latencyTargets(netv protocol.NetStat) []latTarget {
-	names := [3]string{"you", "gw", pingLabel(m.cfg.PingHost)}
-	out := make([]latTarget, 0, 3)
-	for i, ps := range netv.Ping {
-		if ps.OK {
-			out = append(out, latTarget{names[i], ps})
-		}
+// trackTitleOf is trackTitle for a track that may be nil.
+func trackTitleOf(t *protocol.Track) string {
+	if t == nil {
+		return ""
 	}
-	slices.SortFunc(out, func(a, b latTarget) int { return strings.Compare(a.name, b.name) })
+	return trackTitle(t)
+}
+
+// tunnelReadout is the link row: "live · :2018 · last frame 0.8s ago" or
+// "down" with the attempts so far.
+func (m *model) tunnelReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
+	ps := m.sty.pens()
+	s := d.Snapshot
+	if !s.Connected {
+		txt := "down"
+		if s.Attempts > 1 {
+			txt += fmt.Sprintf(" · %d attempts", s.Attempts)
+		}
+		return ps.warn.render(txt)
+	}
+	out := ps.acc.render("live") + ps.dim.render(" · :"+strconv.Itoa(tunnel.Port))
+	if !d.LastRx.IsZero() {
+		secs := now.Sub(d.LastRx).Seconds()
+		out += ps.dim.render(" · last frame ") + stylePen(m.sevPen(secs, thrRx)).render(fmt.Sprintf("%.1fs", secs)) +
+			ps.dim.render(" ago")
+	}
 	return out
 }
 
-// ---- narrow-layout composition ------------------------------------------------
-
-func (m *model) diagStackedAudioRows(d protocol.DiagnosticSnapshot, v diagVitals, w, gaugeW int) []string {
-	t := m.sty
-	var rows []string
-	bufPen, bufDetail := m.bufMeter(v)
-	if v.haveBuf {
-		rows = append(rows, m.diagGauge("buffer", t.gaugeBar(v.bufFill, gaugeW, bufPen),
-			bufPen.Render(fmt.Sprintf("%d%%", int(v.bufFill*100+0.5))), "   "+bufDetail, w))
-	}
-	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
-		rows = append(rows, m.diagLine("dac", dac))
-	}
-	if lv := m.levelReadout(d); lv != "" {
-		rows = append(rows, m.diagLine("level", lv))
-	}
-	if nr := m.nightReadout(d.Snapshot); nr != "" {
-		rows = append(rows, m.diagLine("night", nr))
-	}
-	return append(rows, m.diagLine("stream", t.pens().txt.render(diagFormat(d.Snapshot.Track))))
-}
-
-// levelReadout is the diag audio row for the real output level — the ALSA
-// softvol the app holds at vol−1 — against the volume the device reports.
-// In step: a dim "softvol 74 · vol 75". Out of step on two consecutive
-// samples (the room went quiet, or loud, while the volume display didn't):
-// "softvol 59 ≠ vol 75" in the warn colour plus the fix, which is any volume
-// nudge (the app rewrites the softvol on every volume change). "" until a
-// sample has arrived.
-func (m *model) levelReadout(d protocol.DiagnosticSnapshot) string {
-	if !d.SoftvolOK {
-		return ""
-	}
-	ps := m.sty.pens()
-	if d.LevelDesync {
-		return ps.warn.render(fmt.Sprintf("softvol %d ≠ vol %d", d.Softvol, d.Snapshot.Vol)) + ps.dim.render(" · +/− resyncs")
-	}
-	return ps.dim.render(fmt.Sprintf("softvol %d · vol %d", d.Softvol, d.Snapshot.Vol))
-}
-
-// nightReadout is the diag audio row for night mode — the device's multi-band
-// DRC enable as last read back — or "" before the device has reported it.
-func (m *model) nightReadout(s protocol.Snapshot) string {
-	if !s.NightKnown {
-		return ""
-	}
-	ps := m.sty.pens()
-	if s.Night {
-		return ps.acc.render("on") + ps.dim.render(" · multi-band DRC · d toggles")
-	}
-	return ps.dim.render("off · multi-band DRC · d toggles")
-}
-
-func (m *model) diagStackedConnectionRows(d protocol.DiagnosticSnapshot, now time.Time) []string {
-	status := m.linkStatus(d.LastRx, now, d.ConnectAttempts, d.EQConnected)
-	rows := []string{m.diagLine("host", m.sty.pens().txt.render(m.hostReadout(d.DevInfo)))}
-	if lr := m.lssdpReadout(d, now); lr != "" {
-		rows = append(rows, m.diagLine("lssdp", lr))
-	}
-	if zr := m.zcReadout(d, now); zr != "" {
-		rows = append(rows, m.diagLine("spotify", zr))
-	}
-	if rc := m.reconnectReadout(d.Ops, d.OpsAt); rc != "" {
-		rows = append(rows, m.diagLine("engine", rc))
-	}
-	return append(rows,
-		m.diagLine("ssh", m.sshReadout(status, d.ConnectAttempts)),
-		m.diagLine("tunnel", m.tunnelReadout(status)),
-	)
-}
-
-// lssdpFresh is how recent an LSSDP answer must be to count the device as
-// "up" in the connecting copy — a few probe periods, so one lost datagram
-// doesn't flip the message.
-const lssdpFresh = 20 * time.Second
-
-// lssdpReadout is the connection row for the device's UDP:1800 responder —
-// the one liveness signal that needs neither ssh nor the tunnel, so it reads
-// right when both are down: "answered 3s ago · S · ETH0" (accent) or, after
+// lssdpReadout is the row for the device's own UDP:1800 responder — the
+// tunnel-free liveness signal: "answered 3s ago · S · eth0" (accent) or, after
 // an unanswered probe, "no answer · probed 4s ago" (warn). "" until the first
 // probe has run.
 func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
@@ -585,18 +183,13 @@ func (m *model) lssdpReadout(d protocol.DiagnosticSnapshot, now time.Time) strin
 	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
 }
 
-// zcReadout is the row for the Spotify engine's ZeroConf endpoint — the other
-// ssh-free signal: "answered 4s ago · :9095" (accent), plus "signed in as x"
-// on the rare answer that names a user, or after a miss "no answer · :9095 ·
-// probed 12s ago" / "not advertised · probed 12s ago" (warn: the engine is not
-// up, whatever the env flag says). "" until the first probe has run. Shared by
-// the diag connection block and the services pane's engine section.
-//
-// Deliberately terse. The eSDK build already sits in the services card, and an
-// empty activeUser is NOT "nobody signed in": the Pro engine leaves it empty
-// while it is playing a session, so the field can only ever add a fact, never
-// assert an absence. Both were tried and clipped the row on a two-column
-// terminal for nothing.
+// zcReadout is the row for the Spotify engine's ZeroConf endpoint: "answered
+// 4s ago · :9095" (accent), plus "signed in as x" on the rare answer that
+// names a user, or after a miss "no answer · :9095 · probed 12s ago" / "not
+// advertised · probed 12s ago" (warn: the engine is not up). "" until the
+// first probe has run. An empty activeUser is NOT "nobody signed in": the Pro
+// engine leaves it empty while it plays a session, so the field can only ever
+// add a fact, never assert an absence.
 func (m *model) zcReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
 	if d.ZCProbeAt.IsZero() {
 		return ""
@@ -629,6 +222,16 @@ func (m *model) zcReadout(d protocol.DiagnosticSnapshot, now time.Time) string {
 	return ps.acc.render(facts[0]) + ps.dim.render(" · "+strings.Join(facts[1:], " · "))
 }
 
+// connectionRows are the three ways lp10 reaches the box, each styled.
+func (m *model) connectionRows(d protocol.DiagnosticSnapshot, now time.Time) []kv {
+	return presentKVs([]kv{
+		{"tunnel", m.tunnelReadout(d, now)},
+		{"host", m.sty.pens().txt.render(m.cfg.Host)},
+		{"lssdp", m.lssdpReadout(d, now)},
+		{"spotify", m.zcReadout(d, now)},
+	})
+}
+
 // fmtAgeShort renders a duration as "0.6s" / "12s" / "3m" / "2h".
 func fmtAgeShort(d time.Duration) string {
 	switch {
@@ -644,39 +247,49 @@ func fmtAgeShort(d time.Duration) string {
 	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
-// identityFacts is the present-only identity list both diag layouts render, so
-// the stacked and cards views can't drift apart.
-func identityFacts(d protocol.DiagnosticSnapshot, base *sweep.Report, now time.Time) []kv {
-	id := collectIdentity(d.SysInfo, d.DevInfo, d.Details)
+// eSDK is the Spotify engine's build from its ZeroConf answer, "" until one.
+func eSDK(d protocol.DiagnosticSnapshot) string {
+	if d.SpotifyZC == nil {
+		return ""
+	}
+	return d.SpotifyZC.LibraryVersion
+}
+
+// deviceFacts is the identity list both layouts render: the firmware (the
+// LSSDP answer — the one place the box names its build without ssh), the MCU
+// build (the tunnel's VER), the Spotify eSDK (ZeroConf), what moved since the
+// last sweep, and the vendor's verdict when u has asked.
+func (m *model) deviceFacts(d protocol.DiagnosticSnapshot, now time.Time) []kv {
+	fw := ""
+	if d.LSSDP != nil {
+		fw = d.LSSDP.FW
+	}
 	return presentKVs([]kv{
-		{"boot", bootFact(d, now)},
-		{"bt", id.bt},
-		{"build", id.build},
-		{"firmware", id.fw},
-		{"mcu", id.mcu},
-		{"model", id.model},
-		{"name", id.name},
-		{"os", id.os},
-		{"serial", id.serial},
-		{"sweep", sweepDeltaFact(id, d.DevInfo, base)},
-		{"update", boxUpdateFact(d, now)},
+		{"firmware", fw},
+		{"mcu", d.MCU},
+		{"eSDK", eSDK(d)},
+		{"sweep", sweepDeltaFact(fw, d.MCU, eSDK(d), m.baseline)},
 		{"vendor", otaFact(d, now)},
 	})
 }
 
 // sweepDeltaFact compares the live identity with the last `lp10 sweep`'s
-// baseline: the firmware build, the MCU and the vendor app — the three things
-// an update moves. "" without a baseline or before the identity has arrived;
-// otherwise what changed, or that nothing did, dated to when the oldest of the
-// compared values was read: a baseline is merged fact by fact, so after a
-// sweep whose ssh failed these values are an earlier sweep's (Carried).
-func sweepDeltaFact(id diagIdentity, dev *protocol.DevInfo, base *sweep.Report) string {
+// baseline: the firmware build, the MCU build and the Spotify eSDK — what an
+// update moves that the box still reports without ssh. "" without a baseline
+// or before any of them has been read live; otherwise what changed, or that
+// nothing did, dated to when the oldest of the compared values was read: a
+// baseline is merged fact by fact, so a value can be an earlier sweep's
+// (Carried).
+func sweepDeltaFact(fw, mcu, sdk string, base *sweep.Report) string {
 	if base == nil {
 		return ""
 	}
 	var changes []string
 	var read time.Time // the oldest read among the compared values
-	compared := func(key string) {
+	compare := func(key, label, was, now string) {
+		if was == "" || now == "" {
+			return
+		}
 		at, ok := base.Carried[key]
 		if !ok {
 			at = base.At
@@ -684,25 +297,13 @@ func sweepDeltaFact(id diagIdentity, dev *protocol.DevInfo, base *sweep.Report) 
 		if read.IsZero() || at.Before(read) {
 			read = at
 		}
-	}
-	if fw := firmwareBuildOf(id.fw); fw != "" && base.Build != "" {
-		compared("identity")
-		if fw != base.Build {
-			changes = append(changes, "firmware "+base.Build+" → "+fw)
+		if was != now {
+			changes = append(changes, label+" "+was+" → "+now)
 		}
 	}
-	if mcu := strings.TrimPrefix(id.mcu, "v"); mcu != "" && mcu != "—" && base.MCU != "" {
-		compared("mcu")
-		if mcu != base.MCU {
-			changes = append(changes, "mcu "+base.MCU+" → "+mcu)
-		}
-	}
-	if dev != nil && dev.VendorApp != "" && base.VendorApp != "" {
-		compared("vendorApp")
-		if dev.VendorApp != base.VendorApp {
-			changes = append(changes, "vendor app "+base.VendorApp+" → "+dev.VendorApp)
-		}
-	}
+	compare("lssdp", "firmware", base.LSSDP.FW, fw)
+	compare("tunnel.ver", "mcu", base.Tunnel.MCU, firstSeg(mcu, '-')) // the sweep keeps VER's version field
+	compare("zeroconf", "eSDK", base.ZeroConf.LibraryVersion, sdk)
 	if read.IsZero() {
 		return ""
 	}
@@ -713,61 +314,9 @@ func sweepDeltaFact(id diagIdentity, dev *protocol.DevInfo, base *sweep.Report) 
 	return strings.Join(changes, " · ") + " · since " + when
 }
 
-// firmwareBuildOf cuts a full firmware string ("AR241CE_8530.23.2", or the
-// card's "—") down to the build the sweep records ("AR241CE_8530").
-func firmwareBuildOf(fw string) string {
-	if fw == "" || fw == "—" {
-		return ""
-	}
-	before, _, _ := strings.Cut(fw, ".")
-	return before
-}
-
-// bootFact turns the kernel's reboot reason and the uptime into the sentence
-// the logs never write: "power-on (cold boot) · Sep 4 14:55 · 8d 0h 20m ago".
-// A cold boot is the bootloader finding no reboot reason — the mains went
-// away — where a software reboot / OTA leaves its own word. "" until the loop
-// has shipped the reason.
-func bootFact(d protocol.DiagnosticSnapshot, now time.Time) string {
-	if d.DevInfo == nil || d.DevInfo.Reboot == "" {
-		return ""
-	}
-	s := "software reboot (" + d.DevInfo.Reboot + ")"
-	if d.DevInfo.Reboot == "cold_boot" {
-		s = "power-on (cold boot)"
-	}
-	if d.SysInfo != nil {
-		if secs, err := strconv.ParseFloat(strings.TrimSpace(d.SysInfo.Up), 64); err == nil && secs >= 0 {
-			at := now.Add(-time.Duration(secs * float64(time.Second)))
-			s += " · " + at.Format("Jan 2 15:04") + " · " + fmtUptime(d.SysInfo.Up) + " ago"
-		}
-	}
-	return s
-}
-
-// boxUpdateFact is the firmware verdict the box fetched itself — its ota
-// daemon asks the vendor manifest every 4 h, the MCU hears the answer as a
-// MsgBox-223 report, and the vendor app logs that report, which the loop's @@o
-// digest carries — so the overlay says whether the build is current without
-// lp10 making a request of its own. "" until a digest with a report has
-// arrived (a box rebooted within the last 4 h has none yet).
-func boxUpdateFact(d protocol.DiagnosticSnapshot, now time.Time) string {
-	if d.Ops == nil || !d.Ops.OTAOK {
-		return ""
-	}
-	s := d.Ops.OTAText
-	if d.Ops.OTAUpToDate {
-		s = "up to date"
-	}
-	if !d.Ops.OTAAt.IsZero() {
-		s += " · the box asked " + fmtAgeShort(now.Sub(d.Ops.OTAAt)) + " ago"
-	}
-	return s + " · it asks every 4 h"
-}
-
 // otaFact is the device card's vendor line: "" until u has asked, "checking…"
 // while the vendor is being asked, then the verdict with its age — "up to
-// date", "AR241CE_9xxx available", or why there is none.
+// date", "AR241CP_9xxx available", or why there is none.
 func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 	if d.OTA == nil {
 		if d.OTAPending {
@@ -787,237 +336,115 @@ func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 	return "update available" + age
 }
 
-// diagStackedDeviceRows pairs the identity facts two to a row, in order — but
-// a fact too long for its half of the row gets the whole row. The
-// sentence-length facts (how the box came up and when, the build with the
-// vendor app beside it, what moved since the last sweep, the update verdicts)
-// carry their point at the end, which a half-width cell would clip away.
-func (m *model) diagStackedDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, w int) []string {
-	facts := identityFacts(d, m.baseline, now)
-	left, right := w/2-gridLabW, w-w/2-gridLabW // each cell's room for its value
-	rows := make([]string, 0, len(facts))
-	for i := 0; i < len(facts); {
-		f := facts[i]
-		switch {
-		case DispW(f.v) > left:
-			rows = append(rows, m.cellKV(f.k, f.v, w))
-			i++
-		case i+1 < len(facts) && DispW(facts[i+1].v) <= right:
-			rows = append(rows, m.gridRow(f.k, f.v, facts[i+1].k, facts[i+1].v, w))
-			i += 2
-		default: // no partner: the next fact is too long to share a row, or there is none
-			rows = append(rows, m.gridRow(f.k, f.v, "", "", w))
-			i++
-		}
-	}
-	return rows
+// confHardware is the invariant hardware reference for the LP10 (the one model
+// this tool targets), alphabetical by label, encoding the teardown's findings:
+// a line-level streamer, no power amp, optical S/PDIF up to 24-bit/192 kHz. The
+// DAC is the front-panel MCU itself — an MVSilicon BP10xx Bluetooth-audio SoC
+// running in I2S-in mode, which also hosts every tone / EQ-preset /
+// virtual-bass / balance / max-volume stage and the volume and mute (the
+// tunnel's controls); the firmware's device tree declares a Wolfson WM8904 at
+// I2C 0x1a, but nothing answers there.
+var confHardware = []kv{
+	{"dac", "MVSilicon BP10xx MCU · I2S in · tone/EQ/balance on-chip"},
+	{"line in", "3.5 mm aux · ADC unidentified (WM8904 declared, absent)"},
+	{"line out", "3.5 mm · 1 Vrms (no power amp)"},
+	{"optical", "S/PDIF TOSLINK ≤ 24-bit/192 kHz"},
+	{"radio", "dual-band 802.11ac · BT 5.0"},
+	{"soc", "Amlogic A113L · 2× Cortex-A35"},
 }
 
-func (m *model) diagStackedHardwareRows(w int) []string {
-	rows := make([]string, 0, len(confHardware))
-	for _, item := range confHardware {
-		rows = append(rows, m.diagLine(item.k,
-			m.sty.pens().txt.render(Clip(item.v, max(1, w-diagLabelW)))))
-	}
-	return rows
-}
-
-func (m *model) diagStackedSignalRow(d protocol.DiagnosticSnapshot, w, gaugeW int) (string, bool) {
-	dev, si := d.DevInfo, d.SysInfo
-	if dev == nil || dev.Net != "wifi" || si == nil {
-		return "", false
-	}
-	dbm, err := strconv.Atoi(si.SignalDBm)
-	if err != nil {
-		return "", false
-	}
-	pen := m.sevPen(float64(-dbm), thrSignal)
-	detail := ""
-	if dev.Rate != "" {
-		detail = dev.Rate + " Mbit/s"
-	}
-	if link, e := strconv.Atoi(si.LinkQ); e == nil && link > 0 {
-		if detail != "" {
-			detail += "  · "
-		}
-		detail += fmt.Sprintf("link %d/70", link)
-	}
-	if detail != "" {
-		detail = "   " + detail
-	}
-	value := fmt.Sprintf("%d dBm", dbm)
-	return m.diagGauge("signal", m.sty.gaugeBar(float64(dbm+90)/60, gaugeW, pen),
-		pen.Render(value), detail, w), true
-}
-
-func (m *model) diagStackedNetworkRows(d protocol.DiagnosticSnapshot, w, gaugeW int) []string {
-	t, dev, netv := m.sty, d.DevInfo, d.Net
-	haveDev := dev != nil && (dev.IP != "" || dev.Net != "")
-	var rows []string
-	if haveDev {
-		rows = append(rows, m.diagLine("address", t.pens().txt.render(orDash(dev.IP))+t.pens().dim.render(" · gw "+orDash(dev.Gateway))))
-		if dev.DNS != "" {
-			rows = append(rows, m.diagLine("dns", t.pens().txt.render(dev.DNS)))
-		}
-	}
-	if netv.ErrsOK {
-		rows = append(rows, m.diagLine("errors", m.errReadout(netv)))
-	}
-	if haveDev {
-		label := "latency"
-		for _, target := range m.latencyTargets(netv) {
-			rows = append(rows, m.diagLine(label, m.latencyRow(target.name, target.ps)))
-			label = ""
-		}
-		if dev.Net == "wifi" {
-			rows = append(rows, m.diagLine("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+
-				t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))),
-				m.diagLine("radio", wifiWarning()))
-		} else {
-			rows = append(rows, m.diagLine("link", t.pens().bri.render("ethernet")+
-				t.pens().dim.render(ethDetail(dev.Speed, dev.Duplex))))
-		}
-		if dev.MAC != "" {
-			rows = append(rows, m.diagLine("mac", t.pens().txt.render(dev.MAC)))
-		}
-	}
-	if d.Multiroom != nil {
-		rows = append(rows, m.diagLine("multiroom", m.multiroomReadout(d.Multiroom)))
-	}
-	if signal, ok := m.diagStackedSignalRow(d, w, gaugeW); ok {
-		rows = append(rows, signal)
-	}
-	if haveDev && netv.RatesOK {
-		rows = append(rows, m.diagLine("traffic", t.pens().dim.render("rx ")+t.pens().txt.render(fmtRate(netv.RxRate))+
-			t.pens().dim.render(" · tx ")+t.pens().txt.render(fmtRate(netv.TxRate))))
-	}
-	return rows
-}
-
-func (m *model) diagStackedResourceRows(d protocol.DiagnosticSnapshot, v diagVitals, w, gaugeW int) []string {
-	t := m.sty
-	var rows []string
-	if v.haveCPU {
-		pen := m.sevPen(v.cpuFrac*100, thrCPU)
-		detail := "   1m " + v.loads[0]
-		if len(v.loads) >= 3 {
-			detail += " · 5m " + v.loads[1] + " · 15m " + v.loads[2]
-		}
-		rows = append(rows, m.diagGauge("cpu", t.gaugeBar(v.cpuFrac, gaugeW, pen),
-			pen.Render(fmt.Sprintf("%d%%", int(v.cpuFrac*100+0.5))), detail, w))
-	}
-	if v.haveMem {
-		pen := m.sevPen(v.memUf*100, thrMem)
-		rows = append(rows, m.diagGauge("memory", t.gaugeBar(v.memUf, gaugeW, pen),
-			pen.Render(fmt.Sprintf("%d%%", int(v.memUf*100+0.5))),
-			fmt.Sprintf("   %d / %d MB free", v.availKB/1024, v.totalKB/1024), w))
-	}
-	if v.haveData {
-		pen := m.sevPen(v.dataUf*100, thrData)
-		rows = append(rows, m.diagGauge("storage", t.gaugeBar(v.dataUf, gaugeW, pen),
-			pen.Render(fmt.Sprintf("%d%%", int(v.dataUf*100+0.5))),
-			fmt.Sprintf("   %d / %d MB used · /lsync", v.usedKB/1024, v.dataKB/1024), w))
-	}
-	if tasks := m.tasksReadout(d.SysInfo); tasks != "" {
-		rows = append(rows, m.diagLine("tasks", tasks))
-	}
-	if v.haveTemp {
-		pen := m.sevPen(float64(v.tempC), thrTemp)
-		rows = append(rows, m.diagGauge("temp", t.gaugeBar(float64(v.tempC)/85, gaugeW, pen),
-			pen.Render(fmt.Sprintf("%d °C", v.tempC)), "   SoC", w))
-	}
-	if d.SysInfo != nil {
-		if up := fmtUptime(d.SysInfo.Up); up != "—" {
-			rows = append(rows, m.diagLine("uptime", t.pens().txt.render(up)))
-		}
-	}
-	return rows
-}
-
-func (m *model) appendDiagStackedSection(lines []string, title string, rows []string, w int) []string {
-	lines = append(lines, m.dividerRow(title, w))
-	// Clip every row to the body width — the stacked counterpart of the cards
-	// section() clip: one long device-supplied value (an SSID, the configured
-	// host, an IPv6 address) must degrade to a clipped row, not size contentW
-	// past the terminal and wrap every overlay line.
-	for _, row := range rows {
-		lines = append(lines, clipStyled(row, w))
-	}
-	return lines
-}
-
-func (m *model) diagStackedContent(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w, gaugeW int) []string {
-	lines := []string{m.diagMasthead(d, v, now, w), ""}
-	lines = m.appendDiagStackedSection(lines, "audio", m.diagStackedAudioRows(d, v, w, gaugeW), w)
-	lines = m.appendDiagStackedSection(lines, "connection", m.diagStackedConnectionRows(d, now), w)
-	lines = m.appendDiagStackedSection(lines, "device", m.diagStackedDeviceRows(d, now, w), w)
-	lines = m.appendDiagStackedSection(lines, "hardware", m.diagStackedHardwareRows(w), w)
-	lines = m.appendDiagStackedSection(lines, "network", m.diagStackedNetworkRows(d, w, gaugeW), w)
-	lines = m.appendDiagStackedSection(lines, "resources", m.diagStackedResourceRows(d, v, w, gaugeW), w)
-	lines = m.appendDiagStackedSection(lines, "services", m.serviceStripFor(d.ConfInfo, now, w), w)
-	return lines
-}
-
-// ---- wide-layout composition --------------------------------------------------
-
-const (
-	diagCardsGutter = 4
-	diagCardsGaugeW = 12
-)
-
+// diagSection is one titled block of rows.
 type diagSection struct {
 	title string
-	rows  []string
+	rows  []kv
 }
 
-// diagCardFmt owns the repeated row primitives for the wide layout. Keeping
-// clipping and label/gauge arithmetic here makes the section collectors about
-// diagnostics content rather than terminal mechanics.
-type diagCardFmt struct {
-	m     *model
-	inner int
-}
-
-func (f diagCardFmt) plain(label, value string, pen lipgloss.Style) string {
-	t := f.m.sty
-	return t.pens().dim.render(label) + labelGap(label, diagLabelW) +
-		pen.Render(Clip(value, max(1, f.inner-diagLabelW)))
-}
-
-func (f diagCardFmt) styled(label, value string) string {
-	return f.m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + value
-}
-
-func (f diagCardFmt) gauge(label, value string, frac float64, pen lipgloss.Style, detail string) string {
-	t := f.m.sty
-	out := t.pens().dim.render(label) + labelGap(label, diagLabelW) +
-		t.gaugeBar(frac, diagCardsGaugeW, pen) + "  " + pen.Render(value)
-	if detail != "" {
-		if d := Clip(detail, f.inner-(diagLabelW+diagCardsGaugeW+2+DispW(value))-1); d != "" {
-			out += " " + t.pens().dmr.render(d)
+// diagSections are the read-out's sections, alphabetical, the empty ones
+// dropped. The connection rows arrive styled; the others are plain text.
+func (m *model) diagSections(d protocol.DiagnosticSnapshot, now time.Time) []diagSection {
+	all := []diagSection{
+		{"audio", m.audioFacts(d)},
+		{"connection", m.connectionRows(d, now)},
+		{"device", m.deviceFacts(d, now)},
+		{"hardware", confHardware},
+	}
+	out := all[:0:0]
+	for _, sec := range all {
+		if len(sec.rows) > 0 {
+			out = append(out, sec)
 		}
 	}
 	return out
 }
 
-func (f diagCardFmt) section(sec diagSection, w int) []string {
-	t := f.m.sty
+// diagRow renders one label/value row into w columns: the dim label in its
+// fixed column, then the value — plain text in the body pen, or kept as it is
+// when it arrives styled — clipped so a long value (a host name, a title)
+// degrades to a clipped row instead of wrapping the frame.
+func (m *model) diagRow(f kv, w int) string {
+	ps := m.sty.pens()
+	v := f.v
+	if !strings.Contains(v, "\x1b") { // plain text; a styled value keeps its pens
+		v = ps.txt.render(v)
+	}
+	return clipStyled(ps.dim.render(f.k)+labelGap(f.k, diagLabelW)+v, w)
+}
+
+// sectionRows renders one section: a rule with its title, then the rows.
+func (m *model) sectionRows(sec diagSection, w int) []string {
+	t := m.sty
 	fill := max(w-3-DispW(sec.title), 0) // "─ " + title + " "
-	head := t.pens().dmr.render("─ ") + t.sAcc.Bold(true).Render(sec.title) +
-		t.pens().dmr.render(" "+strings.Repeat("─", fill))
-	out := make([]string, 0, len(sec.rows)+1)
-	out = append(out, head)
-	for _, row := range sec.rows {
-		out = append(out, "  "+clipStyled(row, w-2))
+	out := []string{t.pens().dmr.render("─ ") + t.sAcc.Bold(true).Render(sec.title) +
+		t.pens().dmr.render(" "+strings.Repeat("─", fill))}
+	for _, f := range sec.rows {
+		out = append(out, "  "+m.diagRow(f, w-2))
 	}
 	return out
+}
+
+// sectionsHeight is how many rows the sections take in one column, a blank
+// row between each.
+func sectionsHeight(secs []diagSection) int {
+	h := 0
+	for i, sec := range secs {
+		if i > 0 {
+			h++
+		}
+		h += 1 + len(sec.rows)
+	}
+	return h
+}
+
+// splitSections picks where the left column ends so the two columns come out
+// as close in height as the section boundaries allow.
+func splitSections(secs []diagSection) int {
+	split, best := 0, 1<<30
+	for i := 0; i <= len(secs); i++ {
+		delta := sectionsHeight(secs[:i]) - sectionsHeight(secs[i:])
+		if dist := max(delta, -delta); dist < best {
+			split, best = i, dist
+		}
+	}
+	return split
+}
+
+// column renders sections one under another, a blank row between each.
+func (m *model) column(secs []diagSection, w int) []string {
+	var rows []string
+	for i, sec := range secs {
+		if i > 0 {
+			rows = append(rows, "")
+		}
+		rows = append(rows, m.sectionRows(sec, w)...)
+	}
+	return rows
 }
 
 // diagVerdict is the health rollup with its reasons: the worst severity across
-// the live signals, and — so the masthead can say WHY it is amber or red rather
-// than leave the reader hunting through the sections — the signals that put it
-// there, worst first, each named the way its own row names it.
-func diagVerdict(v diagVitals, lastRx, now time.Time) (worst int, why []string) {
+// the live signals, and the signals that put it there, worst first — so the
+// masthead says WHY it is amber or red rather than leave the reader hunting
+// through the sections.
+func diagVerdict(d protocol.DiagnosticSnapshot, now time.Time) (worst int, why []string) {
 	type cause struct {
 		sev  int
 		text string
@@ -1029,32 +456,14 @@ func diagVerdict(v diagVitals, lastRx, now time.Time) (worst int, why []string) 
 		}
 		worst = max(worst, sv)
 	}
-	if v.haveCPU {
-		add(sev(v.cpuFrac*100, thrCPU), fmt.Sprintf("cpu %d%%", int(v.cpuFrac*100+0.5)))
+	if !d.LastRx.IsZero() {
+		add(sev(now.Sub(d.LastRx).Seconds(), thrRx), "tunnel quiet")
 	}
-	if v.haveMem {
-		add(sev(v.memUf*100, thrMem), fmt.Sprintf("memory %d%%", int(v.memUf*100+0.5)))
+	if !d.LSSDPProbeAt.IsZero() && d.LSSDP == nil {
+		add(1, "lssdp not answering")
 	}
-	if v.haveTemp {
-		add(sev(float64(v.tempC), thrTemp), fmt.Sprintf("temp %d °C", v.tempC))
-	}
-	if v.haveData {
-		add(sev(v.dataUf*100, thrData), fmt.Sprintf("storage %d%%", int(v.dataUf*100+0.5)))
-	}
-	if v.haveBuf && v.playing {
-		add(v.bufSev, fmt.Sprintf("buffer %d%%", int(v.bufFill*100+0.5)))
-	}
-	if !lastRx.IsZero() {
-		add(sev(now.Sub(lastRx).Seconds(), thrRx), "ssh stream quiet")
-	}
-	if v.levelDesync {
-		add(1, "output level off the reported volume") // the room isn't at the volume every display claims
-	}
-	if v.onWifi {
-		add(1, "on wi-fi") // the radio is where the known firmware wedge lives
-	}
-	if v.haveReconnect && v.reconnectRate >= reconnectWarnPerHour {
-		add(1, fmt.Sprintf("engine reconnects %.1f/h", v.reconnectRate)) // the engine keeps losing and re-making its Spotify session
+	if !d.ZCProbeAt.IsZero() && d.SpotifyZC == nil {
+		add(1, "spotify engine not answering")
 	}
 	// worst first, then in signal order; at most two are named
 	for sv := 2; sv >= 1 && len(why) < 2; sv-- {
@@ -1067,45 +476,19 @@ func diagVerdict(v diagVitals, lastRx, now time.Time) (worst int, why []string) 
 	return worst, why
 }
 
-// withOpsVitals folds the health inputs collectVitals cannot see — they come
-// from the @@i medium and the @@o digest, not the stats line — into v.
-func withOpsVitals(v diagVitals, d protocol.DiagnosticSnapshot, now time.Time) diagVitals {
-	v.levelDesync = d.LevelDesync
-	v.onWifi = d.DevInfo != nil && d.DevInfo.Net == "wifi"
-	v.reconnectRate, v.haveReconnect = reconnectRate(d.Ops, d.OpsAt)
-	return v
-}
-
-// reconnectRate is the engine's reconnects per hour over the syslog's window,
-// false until the window is at least half an hour (a fresh log would otherwise
-// turn two events into a storm). The window ends at the digest's read time
-// (at): the count is a snapshot taken then, so dividing it by a window that
-// runs on to now would decay the rate for as long as the view stays open — or
-// lift a window too short at the read past the half-hour guard with no new
-// data.
-func reconnectRate(ops *protocol.DevOps, at time.Time) (float64, bool) {
-	if ops == nil || !ops.ReconnectsOK || !ops.LogSinceOK {
-		return 0, false
-	}
-	win := at.Sub(ops.LogSince)
-	if win < 30*time.Minute {
-		return 0, false
-	}
-	return float64(ops.Reconnects) / win.Hours(), true
-}
-
-// diagMasthead is the top line of both diagnostics layouts: the title, the
-// health verdict with the signals behind it (while connected and the stream
-// is not silent), and the connection light + clock. The stacked layout is the
-// one an 80-column terminal gets, so it needs the verdict as much as the cards
-// do — a box at 95 % cpu must not read as fine there.
-func (m *model) diagMasthead(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, w int) string {
+// diagMasthead is the top line of both layouts: the title, the health verdict
+// with the signals behind it (while connected), and the connection light +
+// clock.
+func (m *model) diagMasthead(d protocol.DiagnosticSnapshot, now time.Time, w int) string {
 	t := m.sty
-	hr, hrW, silent := m.diagStatus(d.Snapshot.Connected, d.LastData, now)
+	hr, hrW := t.pens().acc.render("●")+t.pens().dim.render(" "+now.Format("15:04")), DispW("● 15:04")
+	if !d.Snapshot.Connected {
+		hr, hrW = stWarn.Render("● disconnected"), DispW("● disconnected")
+	}
 	left, leftW := t.sAcc.Bold(true).Render("diagnostics"), DispW("diagnostics")
-	if d.Snapshot.Connected && !silent {
+	if d.Snapshot.Connected {
 		word, pen := "healthy", t.sAcc
-		worst, why := diagVerdict(v, d.LastRx, now)
+		worst, why := diagVerdict(d, now)
 		switch worst {
 		case 1:
 			word, pen = "warn", stWarn
@@ -1116,7 +499,6 @@ func (m *model) diagMasthead(d protocol.DiagnosticSnapshot, v diagVitals, now ti
 		left += "   " + pen.Render(verdict)
 		leftW += 3 + DispW(verdict)
 		if len(why) > 0 {
-			// the reason, so the verdict explains itself: "● warn · engine reconnects 2.2/h"
 			reason := " · " + strings.Join(why, " · ")
 			if room := w - leftW - hrW - 2; DispW(reason) > room {
 				reason = Clip(reason, max(room, 0))
@@ -1128,16 +510,78 @@ func (m *model) diagMasthead(d protocol.DiagnosticSnapshot, v diagVitals, now ti
 	return between(left, leftW, hr, hrW, w)
 }
 
-// diagScrollBy moves the diagnostics read-out by n rows (negative = up); the
-// render clamps it to what is actually off-screen, so over-scrolling is inert.
+// diagErrLine renders the view's bottom error line, or ok=false when there is
+// nothing current to show. A note is history the moment it is recorded, so it
+// shows age-stamped for diagErrWindow and then leaves — a recovered hiccup must
+// not sit under a healthy masthead reading as a live fault.
+func diagErrLine(s protocol.Snapshot, now time.Time, W int) (string, bool) {
+	if s.Error == "" || now.Sub(s.ErrorAt) >= diagErrWindow {
+		return "", false
+	}
+	age := fmt.Sprintf(" · %.1fs ago", now.Sub(s.ErrorAt).Seconds())
+	return stWarn.Render(Clip(GL["warn"]+" "+friendlyError(s.Error)+age, W)), true
+}
+
+// ---- the two layouts ------------------------------------------------------------
+
+// renderDiagnostic picks the layout by width: two ruled columns on a wide
+// terminal, one stacked column when narrow. Either scrolls when it is taller
+// than the frame, and the footer says how much is off-screen.
+func (m *model) renderDiagnostic(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
+	t := m.sty
+	secs := m.diagSections(d, now)
+	head := []string{m.diagMasthead(d, now, W), t.pens().dmr.render(strings.Repeat("━", W))}
+	var body []string
+	if W >= diagCardsMinW {
+		colW := (W - diagCardsGutter) / 2
+		rightW := W - diagCardsGutter - colW // absorbs the odd column
+		split := splitSections(secs)
+		left, right := m.column(secs[:split], colW), m.column(secs[split:], rightW)
+		gut := spaces(diagCardsGutter)
+		for i := range max(len(left), len(right)) {
+			l, r := spaces(colW), spaces(rightW)
+			if i < len(left) {
+				l = padVis(left[i], colW)
+			}
+			if i < len(right) {
+				r = padVis(right[i], rightW)
+			}
+			body = append(body, l+gut+r)
+		}
+	} else {
+		body = m.column(secs, W)
+	}
+
+	var tail []string
+	if line, ok := diagErrLine(d.Snapshot, now, W); ok {
+		tail = append(tail, line, "")
+	}
+	body, hint := m.diagWindow(body, m.bodyRows()-len(head)-len(tail)-1, "↑↓ scroll")
+	right := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") +
+		t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
+	rightW := DispW("● good   ● warn   ● fault")
+	if hint != "" {
+		right, rightW = t.pens().dim.render(hint), DispW(hint)
+	}
+	tail = append(tail, m.footerFit(diagFooters, right, rightW, W))
+	return frameBody(append(head, body...), tail, m.bodyRows(), false)
+}
+
+// diagCardsGutter is the blank columns between the wide layout's two columns.
+const diagCardsGutter = 4
+
+// diagScrollBy moves the read-out by n rows (negative = up); the render clamps
+// it to what is actually off-screen, so over-scrolling is inert.
 func (m *model) diagScrollBy(n int) {
 	m.diagScroll = max(m.diagScroll+n, 0)
 }
 
+// diagPage is one page of the read-out for ←→.
+func (m *model) diagPage() int { return max(m.bodyRows()-4, 1) }
+
 // diagWindow cuts the scrollable rows to the room, honouring and clamping the
 // scroll offset, and returns the rows plus a hint for the footer when there is
-// more above or below ("" when everything fits). keys names what scrolls the
-// view: the diagnostics' ↑↓, or ←→ in the services pane, where ↑↓ select.
+// more above or below ("" when everything fits). keys names what scrolls.
 func (m *model) diagWindow(rows []string, room int, keys string) ([]string, string) {
 	if room <= 0 {
 		return nil, ""
@@ -1161,489 +605,18 @@ func (m *model) diagWindow(rows []string, room int, keys string) ([]string, stri
 	return rows[m.diagScroll : m.diagScroll+room], hint
 }
 
-func (m *model) diagCardDeviceRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
-	facts := identityFacts(d, m.baseline, now)
-	rows := make([]string, 0, len(facts))
-	for _, fact := range facts {
-		rows = append(rows, f.plain(fact.k, fact.v, m.sty.sTxt))
+// plural is "s" for any count but one.
+func plural(n int) string {
+	if n == 1 {
+		return ""
 	}
-	return rows
-}
-
-func (m *model) diagCardConnectionRows(d protocol.DiagnosticSnapshot, now time.Time, f diagCardFmt) []string {
-	ls := m.linkStatus(d.LastRx, now, d.ConnectAttempts, d.EQConnected)
-	rows := []string{f.plain("host", m.hostReadout(d.DevInfo), m.sty.sTxt)}
-	if lr := m.lssdpReadout(d, now); lr != "" {
-		rows = append(rows, f.styled("lssdp", lr))
-	}
-	if zr := m.zcReadout(d, now); zr != "" {
-		rows = append(rows, f.styled("spotify", zr))
-	}
-	if rc := m.reconnectReadout(d.Ops, d.OpsAt); rc != "" {
-		rows = append(rows, f.styled("engine", rc))
-	}
-	return append(rows,
-		f.styled("ssh", m.sshReadout(ls, d.ConnectAttempts)),
-		f.styled("tunnel", m.tunnelReadout(ls)),
-	)
-}
-
-func (m *model) diagCardSignalRow(d protocol.DiagnosticSnapshot, f diagCardFmt) (string, bool) {
-	dev, si := d.DevInfo, d.SysInfo
-	if dev == nil || dev.Net != "wifi" || si == nil {
-		return "", false
-	}
-	dbm, err := strconv.Atoi(si.SignalDBm)
-	if err != nil {
-		return "", false
-	}
-	pen := m.sevPen(float64(-dbm), thrSignal)
-	detail := ""
-	if noise, e := strconv.Atoi(si.NoiseDBm); e == nil && noise < 0 {
-		detail = fmt.Sprintf("snr %d dB", dbm-noise)
-	} else if link, e := strconv.Atoi(si.LinkQ); e == nil && link > 0 {
-		detail = fmt.Sprintf("link %d/70", link)
-	}
-	return f.gauge("signal", fmt.Sprintf("%d dBm", dbm), float64(dbm+90)/60, pen, detail), true
-}
-
-func (m *model) diagCardNetworkRows(d protocol.DiagnosticSnapshot, f diagCardFmt) []string {
-	t, dev, netv := m.sty, d.DevInfo, d.Net
-	haveDev := dev != nil && (dev.IP != "" || dev.Net != "")
-	var rows []string
-	if haveDev {
-		rows = append(rows, f.styled("address", t.pens().txt.render(orDash(dev.IP))+t.pens().dim.render(" · gw "+orDash(dev.Gateway))))
-		if dev.DNS != "" {
-			rows = append(rows, f.plain("dns", dev.DNS, t.sTxt))
-		}
-	}
-	if netv.ErrsOK {
-		rows = append(rows, f.styled("errors", m.errReadout(netv)))
-	}
-	if haveDev {
-		if dev.Net == "wifi" {
-			rows = append(rows, f.styled("link", t.pens().bri.render("wi-fi")+t.pens().dim.render(" · ")+t.pens().txt.render(orDash(dev.SSID))+t.pens().dim.render(wifiBand(dev.Freq))),
-				f.styled("radio", wifiWarning()))
-		} else {
-			rows = append(rows, f.styled("link", t.pens().bri.render("ethernet")+t.pens().dim.render(ethDetail(dev.Speed, dev.Duplex))))
-		}
-		if dev.MAC != "" {
-			rows = append(rows, f.plain("mac", dev.MAC, t.sTxt))
-		}
-	}
-	if d.Multiroom != nil {
-		rows = append(rows, f.styled("multiroom", m.multiroomReadout(d.Multiroom)))
-	}
-	if haveDev && dev.Net == "wifi" {
-		if dev.Rate != "" {
-			rows = append(rows, f.plain("rate", dev.Rate+" Mbit/s", t.sTxt))
-		}
-		if signal, ok := m.diagCardSignalRow(d, f); ok {
-			rows = append(rows, signal)
-		}
-	}
-	if haveDev && netv.RatesOK {
-		rows = append(rows, f.styled("traffic", t.pens().dim.render("rx ")+t.pens().txt.render(fmtRate(netv.RxRate))+
-			t.pens().dim.render(" · tx ")+t.pens().txt.render(fmtRate(netv.TxRate))))
-	}
-	return rows
-}
-
-func (m *model) diagCardLatencyRows(d protocol.DiagnosticSnapshot) []string {
-	if d.DevInfo == nil || (d.DevInfo.IP == "" && d.DevInfo.Net == "") {
-		return nil
-	}
-	targets := m.latencyTargets(d.Net)
-	rows := make([]string, 0, len(targets))
-	for _, target := range targets {
-		rows = append(rows, m.latencyRow(target.name, target.ps))
-	}
-	return rows
-}
-
-func (m *model) diagCardHardwareRows(f diagCardFmt) []string {
-	rows := make([]string, 0, len(confHardware))
-	for _, item := range confHardware {
-		rows = append(rows, f.plain(item.k, item.v, m.sty.sTxt))
-	}
-	return rows
-}
-
-func (m *model) diagCardAudioRows(d protocol.DiagnosticSnapshot, v diagVitals, f diagCardFmt) []string {
-	var rows []string
-	bufPen, bufDetail := m.bufMeter(v)
-	if v.haveBuf {
-		rows = append(rows, f.gauge("buffer", fmt.Sprintf("%d%%", int(v.bufFill*100+0.5)), v.bufFill, bufPen, bufDetail))
-	}
-	if dac := m.dacReadout(d.SysInfo, v.playing); dac != "" {
-		rows = append(rows, f.styled("dac", dac))
-	}
-	if lv := m.levelReadout(d); lv != "" {
-		rows = append(rows, f.styled("level", lv))
-	}
-	if nr := m.nightReadout(d.Snapshot); nr != "" {
-		rows = append(rows, f.styled("night", nr))
-	}
-	return append(rows, f.plain("stream", diagFormat(d.Snapshot.Track), m.sty.sTxt))
-}
-
-func (m *model) diagCardResourceRows(d protocol.DiagnosticSnapshot, v diagVitals, f diagCardFmt) []string {
-	var rows []string
-	if v.haveCPU {
-		detail := "1m " + v.loads[0]
-		if d.SysInfo.CpuKHz != "" {
-			if khz, err := strconv.Atoi(d.SysInfo.CpuKHz); err == nil {
-				detail += fmt.Sprintf(" · %d MHz", khz/1000)
-			}
-		}
-		rows = append(rows, f.gauge("cpu", fmt.Sprintf("%d%%", int(v.cpuFrac*100+0.5)),
-			v.cpuFrac, m.sevPen(v.cpuFrac*100, thrCPU), detail))
-	}
-	if v.haveMem {
-		detail := fmt.Sprintf("%d/%d MB free", v.availKB/1024, v.totalKB/1024)
-		rows = append(rows, f.gauge("memory", fmt.Sprintf("%d%%", int(v.memUf*100+0.5)),
-			v.memUf, m.sevPen(v.memUf*100, thrMem), detail))
-	}
-	if v.haveData {
-		detail := fmt.Sprintf("%d/%d MB /lsync", v.usedKB/1024, v.dataKB/1024)
-		rows = append(rows, f.gauge("storage", fmt.Sprintf("%d%%", int(v.dataUf*100+0.5)),
-			v.dataUf, m.sevPen(v.dataUf*100, thrData), detail))
-	}
-	if tasks := m.tasksReadout(d.SysInfo); tasks != "" {
-		rows = append(rows, f.styled("tasks", tasks))
-	}
-	if v.haveTemp {
-		rows = append(rows, f.gauge("temp", fmt.Sprintf("%d °C", v.tempC), float64(v.tempC)/85,
-			m.sevPen(float64(v.tempC), thrTemp), "SoC"))
-	}
-	if d.SysInfo != nil {
-		if up := fmtUptime(d.SysInfo.Up); up != "—" {
-			rows = append(rows, f.plain("uptime", up, m.sty.sTxt))
-		}
-	}
-	return rows
-}
-
-func (m *model) diagCardSections(d protocol.DiagnosticSnapshot, v diagVitals, now time.Time, f diagCardFmt) []diagSection {
-	candidates := []diagSection{
-		{"audio", m.diagCardAudioRows(d, v, f)},
-		{"connection", m.diagCardConnectionRows(d, now, f)},
-		{"device", m.diagCardDeviceRows(d, now, f)},
-		{"hardware", m.diagCardHardwareRows(f)},
-		{"latency", m.diagCardLatencyRows(d)},
-		{"network", m.diagCardNetworkRows(d, f)},
-		{"resources", m.diagCardResourceRows(d, v, f)},
-		{"services", m.serviceStripFor(d.ConfInfo, now, f.inner)},
-	}
-	sections := make([]diagSection, 0, len(candidates))
-	for _, section := range candidates {
-		if len(section.rows) > 0 {
-			sections = append(sections, section)
-		}
-	}
-	return sections
-}
-
-func diagSectionsHeight(sections []diagSection) int {
-	height := 0
-	for i, section := range sections {
-		if i > 0 {
-			height++
-		}
-		height += 1 + len(section.rows)
-	}
-	return height
-}
-
-func splitDiagSections(sections []diagSection) int {
-	split, best := 0, 1<<30
-	for i := 0; i <= len(sections); i++ {
-		delta := diagSectionsHeight(sections[:i]) - diagSectionsHeight(sections[i:])
-		if distance := max(delta, -delta); distance < best {
-			split, best = i, distance
-		}
-	}
-	return split
-}
-
-func diagColumn(f diagCardFmt, sections []diagSection, w int) []string {
-	var rows []string
-	for i, section := range sections {
-		if i > 0 {
-			rows = append(rows, "")
-		}
-		rows = append(rows, f.section(section, w)...)
-	}
-	return rows
-}
-
-// ---- the two layouts ------------------------------------------------------------
-
-// renderDiagnostic picks the diagnostics layout by width: a two-column card
-// grid on a wide terminal (filling the space and surfacing the audio-chain
-// metrics), the stacked single-column read-out when narrow.
-func (m *model) renderDiagnostic(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
-	if W >= diagCardsMinW {
-		return m.renderDiagCardsSnapshot(d, now, W)
-	}
-	return m.renderDiagStackedSnapshot(d, now, W)
-}
-
-func (m *model) renderDiagStackedSnapshot(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
-	t := m.sty
-	s := d.Snapshot
-	gaugeW := max(min(20, W-52), 8) // leaves room for label/value/detail
-	vit := withOpsVitals(collectVitals(d.SysInfo, d.DevInfo), d, now)
-	L := m.diagStackedContent(d, vit, now, W, gaugeW)
-
-	// footer (and any device error) pins to the bottom; the gap fills the frame
-	var tail []string
-	if line, ok := diagErrLine(s, now, W); ok {
-		tail = append(tail, line, "")
-	}
-	tail = append(tail, "") // the footer, once the window says what is off-screen
-
-	// on a too-short pane the read-out scrolls; the footer says how much is off-screen
-	L, hint := m.diagWindow(L, m.bodyRows()-len(tail), "↑↓ scroll")
-	tail[len(tail)-1] = m.footerFit(diagFooters, t.pens().dim.render(hint), DispW(hint), W)
-	return frameBody(L, tail, m.bodyRows(), false) // top-aligned: read-out hugs the top, footer stays pinned below
-}
-
-// renderDiagCards is the wide diagnostics layout: a minimal masthead — the
-// title, a health VERDICT (the worst-of rollup of the live signals), and the
-// clock — over a heavy rule, then the detail in two boxless, ruled columns.
-// The sections run in alphabetical order, flowing down the left column and
-// continuing down the right, with the split chosen to balance the two heights.
-// No card boxes — the section rule + a left gutter of aligned labels carry the
-// structure, so it reads faster and sits a couple lines shorter than the old
-// 7-card grid.
-func (m *model) renderDiagCardsSnapshot(d protocol.DiagnosticSnapshot, now time.Time, W int) []string {
-	t := m.sty
-	s := d.Snapshot
-	vit := withOpsVitals(collectVitals(d.SysInfo, d.DevInfo), d, now)
-	colW := (W - diagCardsGutter) / 2
-	rightW := W - diagCardsGutter - colW // absorbs the odd column
-	format := diagCardFmt{m: m, inner: colW - 2}
-	sections := m.diagCardSections(d, vit, now, format)
-	split := splitDiagSections(sections)
-	left2 := diagColumn(format, sections[:split], colW)
-	right2 := diagColumn(format, sections[split:], rightW)
-	masthead := m.diagMasthead(d, vit, now, W)
-
-	// ---- compose: the status line, a heavy rule, then the zipped columns ----
-	head := []string{masthead, t.pens().dmr.render(strings.Repeat("━", W))}
-	gut := strings.Repeat(" ", diagCardsGutter)
-	blankR := strings.Repeat(" ", rightW)
-	var body []string
-	for i := 0; i < max(len(left2), len(right2)); i++ {
-		l := strings.Repeat(" ", colW)
-		if i < len(left2) {
-			l = padVis(left2[i], colW)
-		}
-		r := blankR
-		if i < len(right2) {
-			r = padVis(right2[i], rightW)
-		}
-		body = append(body, l+gut+r)
-	}
-
-	// footer + a small colour legend so the verdict hues decode at a glance;
-	// when the columns are taller than the frame they scroll (↑↓ / ←→) and the
-	// legend gives way to how much is off-screen.
-	var tail []string
-	if line, ok := diagErrLine(s, now, W); ok {
-		tail = append(tail, line, "")
-	}
-	body, hint := m.diagWindow(body, m.bodyRows()-len(head)-len(tail)-1, "↑↓ scroll")
-	right := t.pens().acc.render("●") + t.pens().dmr.render(" good   ") + stWarn.Render("●") + t.pens().dmr.render(" warn   ") + stRed.Render("●") + t.pens().dmr.render(" fault")
-	rightW2 := DispW("● good   ● warn   ● fault")
-	if hint != "" {
-		right, rightW2 = t.pens().dim.render(hint), DispW(hint)
-	}
-	tail = append(tail, m.footerFit(diagFooters, right, rightW2, W))
-	return frameBody(append(head, body...), tail, m.bodyRows(), false)
-}
-
-// diagPage is one page of the diagnostics read-out for ←→.
-func (m *model) diagPage() int { return max(m.bodyRows()-4, 1) }
-
-// ---- device capabilities + hardware (shown in the diagnostics overlay) -------
-//
-// "What can this box do, and what is it" — surfaced inside the `?` overlay rather
-// than a separate view, so the device identity is never shown twice. The
-// streaming-capability matrix is read live from the device (the one-shot @@c block
-// — running daemons via pidof, env-gated features via getenv — exposed by
-// ConfView); the hardware list encodes the model's verified, invariant facts (see
-// docs/TEARDOWN.md). @@c rides the connect unconditionally, so the matrix is
-// already in hand whenever the overlay opens.
-
-// confServices is the capability matrix for the diagnostics strip. svcRows (the
-// services pane) is the single source of truth for which services exist and what
-// they are called — keeping a second list here meant two places to edit and a
-// guaranteed drift. Only the ORDER differs: the pane is a control surface and
-// orders by what you reach for, while every diag section reads a-z.
-//
-// LibreWireless reference-image baggage that this box doesn't actually offer
-// (Roon / Alexa / Matter / QPlay — installed but env-gated off, not on Arylic's
-// spec sheet; see teardown §12/§8.4) is absent from svcRows and so from here.
-var confServices = alphabetical(svcRows)
-
-func alphabetical(rows []svcDef) []svcDef {
-	out := slices.Clone(rows)
-	slices.SortFunc(out, func(a, b svcDef) int { return strings.Compare(a.label, b.label) })
-	return out
-}
-
-// confHardware is the invariant hardware reference for the LP10 (the one model
-// this tool targets), alphabetical by label, encoding the teardown's findings
-// as corrected by the 2026-08-22 live probes: a line-level streamer, no power
-// amp, optical S/PDIF up to 24-bit/192 kHz. The DAC is the front-panel MCU
-// itself — an MVSilicon BP10xx Bluetooth-audio SoC running in I2S-in mode,
-// which also hosts every tone / EQ-preset / virtual-bass / balance / max-volume
-// stage (the :2018 tunnel's controls); the firmware's device tree declares a
-// Wolfson WM8904 at I2C 0x1a, but nothing answers there and its mixer
-// controls are inert. The audio-chain and compute facts only — live
-// memory/link usage is the resources/network cards' job, so nothing here
-// repeats a live gauge.
-var confHardware = []struct{ k, v string }{
-	{"dac", "MVSilicon BP10xx MCU · I2S in · tone/EQ/balance on-chip"},
-	{"line in", "3.5 mm aux · ADC unidentified (WM8904 declared, absent)"},
-	{"line out", "3.5 mm · 1 Vrms (no power amp)"},
-	{"optical", "S/PDIF TOSLINK ≤ 24-bit/192 kHz"},
-	{"radio", "dual-band 802.11ac · BT 5.0"},
-	{"soc", "Amlogic A113L · 2× Cortex-A35"},
-}
-
-// serviceStripFor renders the capability matrix as dense grouped
-// rows — "on  ● a ● b …" / "off ○ c ○ d …" — plus the env-gating note. A group
-// that outgrows the column WRAPS onto aligned continuation rows (flowGroup)
-// rather than clipping, so no service is ever hidden and the dots keep their
-// colours at any width. Degrades to a "reading…" line until @@c arrives.
-func (m *model) serviceStripFor(cv *protocol.ConfInfo, now time.Time, w int) []string {
-	if cv == nil {
-		return []string{clipStyled(m.sty.pens().dmr.render("reading from device…"), w)}
-	}
-	var on, off, unread []string
-	for _, sv := range confServices {
-		// A service whose configured flag and running state disagree gets the warn
-		// hue rather than being quietly filed under on or off: that mismatch is the
-		// fault the device's own web page structurally cannot show, since it reads
-		// the flag and never looks for the daemon. Only where the flag is actually
-		// consulted, though — see svcFlagNote: a gateDaemon row's init script never
-		// reads its flag, so the two disagreeing there means nothing. Spotify's
-		// flags are a pair naming an engine, so its mismatch is engineMismatch.
-		mark := sv.gate != gateDaemon && cv.Divergent(sv.id) ||
-			sv.gate == gateEngine && m.engineMismatch(cv, now) != ""
-		switch cv.Svc[sv.id] {
-		case "on":
-			dot, name := m.sty.pens().acc.render("●"), m.sty.pens().txt.render(sv.label)
-			if mark {
-				dot, name = m.sty.sevs[1].Render("◍"), m.sty.sevs[1].Render(sv.label)
-			}
-			on = append(on, dot+" "+name)
-		case "off":
-			dot, name := m.sty.pens().dmr.render("○"), m.sty.pens().dim.render(sv.label)
-			if mark {
-				dot, name = m.sty.sevs[1].Render("◌"), m.sty.sevs[1].Render(sv.label)
-			}
-			off = append(off, dot+" "+name)
-		default:
-			// Unread: the loop could not tell. Filed under off it would claim a
-			// state nobody reported — the services pane shows "—" for it — so it
-			// gets its own group, in the dimmest pen.
-			unread = append(unread, m.sty.pens().dmr.render("○ "+sv.label))
-		}
-	}
-	rows := m.flowGroup("on", on, w)
-	rows = append(rows, m.flowGroup("off", off, w)...)
-	rows = append(rows, m.flowGroup("?", unread, w)...)
-	rows = append(rows, m.flowGroup("lan", m.exposedItems(cv), w)...) // ≤3 chars: the group label column is 4 wide
-	rows = append(rows, m.flowGroup("via", m.engineItems(cv), w)...)
-	rows = append(rows, m.sty.pens().dmr.render("env-gated · c to switch them here"))
-	// Budget every row to w (visible cols) — after the wrap this only bites on a
-	// single item wider than the whole column, or the note at a tiny width.
-	for i, r := range rows {
-		rows[i] = clipStyled(r, w)
-	}
-	return rows
-}
-
-// confExposed are the unauthenticated listeners the loop checks (key = the
-// @@c id), with the port and whether reaching it is a security concern —
-// telnet and adb hand out a root shell to anyone on the LAN; the web config
-// page and the :2018 control tunnel are the vendor's design (no credentials
-// either, but they're what the app uses).
-var confExposed = []struct {
-	id, label string
-	risky     bool
-}{
-	{"telnet", "telnet :23", true},
-	{"adb", "adb :5555", true},
-	{"web", "web :80", false},
-	{"control", "control :2018", false},
-}
-
-// exposedItems renders the listening unauthenticated ports for the "lan"
-// group (what the LAN can reach without credentials): risky ones in the warn colour, the by-design ones dim. Nothing is
-// listed for a loop that didn't report them (older loop / unreadable
-// /proc/net/tcp), so the group row disappears rather than claiming "closed".
-func (m *model) exposedItems(cv *protocol.ConfInfo) []string {
-	ps := m.sty.pens()
-	var items []string
-	for _, e := range confExposed {
-		if cv.Svc[e.id] != "on" {
-			continue
-		}
-		if e.risky {
-			items = append(items, ps.warn.render("●")+" "+ps.warn.render(e.label))
-		} else {
-			items = append(items, ps.dmr.render("●")+" "+ps.dim.render(e.label))
-		}
-	}
-	return items
-}
-
-// flowGroup flows one service group into rows at most w wide, separated by
-// single spaces (the ● / ○ dots already separate the items visually). The
-// 4-column group label heads the first row — "on  " / "off " keep the dots
-// aligned across groups — and continuation rows indent to sit under the items.
-func (m *model) flowGroup(label string, items []string, w int) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	const indent = 4
-	var out []string
-	line, lineW := m.sty.pens().dim.render(label)+strings.Repeat(" ", indent-len(label)), indent
-	for _, it := range items {
-		itW := lipgloss.Width(it)
-		if lineW > indent && lineW+1+itW > w { // +1: the separating space
-			out = append(out, line)
-			line, lineW = strings.Repeat(" ", indent), indent
-		}
-		if lineW > indent {
-			line, lineW = line+" ", lineW+1
-		}
-		line, lineW = line+it, lineW+itW
-	}
-	return append(out, line)
-}
-
-// ---- row primitives & formatters -----------------------------------------------
-
-// fmtKHz renders a sample rate in kHz: "44.1 kHz", "48 kHz", "96 kHz".
-func fmtKHz(hz int) string {
-	if hz%1000 == 0 {
-		return strconv.Itoa(hz/1000) + " kHz"
-	}
-	return strconv.FormatFloat(float64(hz)/1000, 'f', 1, 64) + " kHz"
+	return "s"
 }
 
 // clipStyled clips an already-styled string to display width w, keeping the
 // styling: ansi.Truncate cuts between escape sequences (measuring width the way
 // lipgloss does, so it agrees with padVis) and every segment left of the cut
-// keeps its colour. It used to strip-and-re-dim instead, which flattened a
-// clipped services/eq row to a uniform grey the moment a larger font cost the
-// column a couple of cells.
+// keeps its colour.
 func clipStyled(styled string, w int) string {
 	if lipgloss.Width(styled) <= w {
 		return styled
@@ -1659,9 +632,9 @@ func clipStyled(styled string, w int) string {
 
 // footerFit lays a view's key hint beside its fact on the footer row, the fact
 // right-aligned (fact is styled; factW is its visible width). The fact is what
-// the row is for — how old the tail is, how much is off-screen — so it keeps
-// its place and the keys give way: the widest of hints (widest first) that
-// still fits beside it, or none. Only a fact wider than the row is clipped.
+// the row is for — how much is off-screen — so it keeps its place and the
+// keys give way: the widest of hints (widest first) that still fits beside it,
+// or none. Only a fact wider than the row is clipped.
 func (m *model) footerFit(hints []string, fact string, factW, W int) string {
 	if factW >= W {
 		return clipStyled(fact, W)
@@ -1674,171 +647,20 @@ func (m *model) footerFit(hints []string, fact string, factW, W int) string {
 	return spaces(W-factW) + fact
 }
 
-// gridRow renders a two-column "label value | label value" row, exactly W wide.
-func (m *model) gridRow(k1, v1, k2, v2 string, W int) string {
-	half := W / 2
-	return m.cellKV(k1, v1, half) + m.cellKV(k2, v2, W-half)
+// diagLabelW is the dim label column shared by every diagnostics row.
+const diagLabelW = 10
+
+// labelGap is the space run after a fixed-width label: the column width minus
+// the label's display width, floored at 0 so a label wider than its column can
+// never produce a negative (panicking) repeat count.
+func labelGap(label string, col int) string {
+	return strings.Repeat(" ", max(0, col-DispW(label)))
 }
 
-func (m *model) cellKV(k, v string, w int) string {
-	vv := Clip(v, w-gridLabW)
-	out := m.sty.pens().dim.render(k) + labelGap(k, gridLabW) + m.sty.pens().txt.render(vv)
-	if vis := gridLabW + DispW(vv); vis < w {
-		out += strings.Repeat(" ", w-vis)
-	}
-	return out
-}
-
-// diagLine renders "label  value" with a fixed dim label column.
-func (m *model) diagLine(label, value string) string {
-	return m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + value
-}
-
-// diagGauge renders "label  [gauge]  value detail", clipping the dim detail to the
-// body width w so a long detail (e.g. the cpu load triplet at a narrow terminal)
-// can't size the row past the frame — the stacked counterpart to the cards'
-// diagCardFmt.gauge detail clip. Pass detail="" for a gauge with no trailing note.
-func (m *model) diagGauge(label, gauge, value, detail string, w int) string {
-	row := m.sty.pens().dim.render(label) + labelGap(label, diagLabelW) + gauge + "  " + value
-	if detail != "" {
-		row += m.sty.pens().dmr.render(Clip(detail, w-lipgloss.Width(row))) // Clip("",<=0)→""
-	}
-	return clipStyled(row, w) // never exceed the body width (a no-op when it fits)
-}
-
-func freqToChan(mhz int) int {
-	switch {
-	case mhz == 2484:
-		return 14
-	case mhz >= 2412 && mhz <= 2472:
-		return (mhz-2412)/5 + 1
-	case mhz >= 5000:
-		return (mhz - 5000) / 5
-	}
-	return 0
-}
-
-// fmtRate renders a bytes/sec throughput in the largest unit that keeps it ≥1.
-func fmtRate(bps float64) string {
-	switch {
-	case bps >= 1<<20:
-		return fmt.Sprintf("%.1f MB/s", bps/(1<<20))
-	case bps >= 1<<10:
-		return fmt.Sprintf("%.0f KB/s", bps/(1<<10))
-	default:
-		return fmt.Sprintf("%.0f B/s", bps)
-	}
-}
-
-// fmtLatencyMs renders a millisecond latency with one decimal under 10ms (sub-ms
-// LAN hops would otherwise round to a meaningless "0"), whole numbers above.
-// (Distinct from FmtMs(int), which formats a track position as MM:SS.)
-func fmtLatencyMs(ms float64) string {
-	if ms < 10 {
-		return fmt.Sprintf("%.1f", ms)
-	}
-	return fmt.Sprintf("%.0f", ms)
-}
-
-// latencyRow renders one target — name, average, jitter, and the window peak
-// (amber once a real spike has landed, so an intermittent glitch is visible
-// after the fact). The fields are fixed-width so the columns line up across the
-// three rows. Plain text on purpose: the earlier per-row sparkline rendered as
-// ragged block glyphs on fonts whose block elements don't fill the cell.
-func (m *model) latencyRow(name string, ps protocol.PingStat) string {
-	t := m.sty
-	return t.pens().dim.render(padDisp(Clip(name, latNameW), latNameW)) +
-		t.pens().txt.render(rpadDisp(fmtLatencyMs(ps.Avg), latAvgW)+latAvgUnit) + " " +
-		t.pens().dmr.render(padDisp("±"+fmtLatencyMs(ps.Jitter), latJitW)) + " " +
-		m.latencyPeakPen(ps).Render("max "+fmtLatencyMs(ps.Peak))
-}
-
-// pingLabel shortens the configured internet target for the latency row: an IP
-// is shown whole, a hostname collapses to its second-level domain
-// (apresolve.spotify.com → spotify).
-func pingLabel(host string) string {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return "net"
-	}
-	parts := strings.Split(host, ".")
-	if _, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
-		return host // numeric final label → an IPv4 address; show it whole
-	}
-	if len(parts) >= 2 {
-		return parts[len(parts)-2]
-	}
-	return host
-}
-
-func fmtUptime(up string) string {
-	secs, err := strconv.ParseFloat(strings.TrimSpace(up), 64)
-	if err != nil || secs < 0 {
-		return "—"
-	}
-	s := int(secs)
-	switch d, h, mn := s/86400, s%86400/3600, s%3600/60; {
-	case d > 0:
-		return fmt.Sprintf("%dd %dh %dm", d, h, mn)
-	case h > 0:
-		return fmt.Sprintf("%dh %dm", h, mn)
-	default:
-		return fmt.Sprintf("%dm", mn)
-	}
-}
-
-const (
-	// diagLabelW is the dim label column shared by every diagnostics row (see
-	// diagLine / diagGauge): the label, left-padded to this width, then the value.
-	diagLabelW = 10
-
-	// gridLabW is the label column of one cell in the stacked layout's
-	// two-to-a-row grid (see cellKV).
-	gridLabW = 9
-
-	// The latency row's fixed fields, in render order (see latencyRow).
-	latNameW   = 8     // target name (left-padded)
-	latAvgW    = 4     // average ms (right-aligned), before its unit
-	latAvgUnit = " ms" // the avg field's trailing unit
-	latJitW    = 5     // ±jitter
-)
-
-func orDash(s string) string { return cmp.Or(s, "—") }
-
+// firstSeg is s up to the first sep ("29-1d316f0c-10" → "29"), or s whole.
 func firstSeg(s string, sep byte) string {
 	if before, _, ok := strings.Cut(s, string(sep)); ok {
 		return before
 	}
 	return s
-}
-
-// labelGap is the space run after a fixed-width diagnostics label: the column
-// width minus the label's display width, floored at 0 so a label wider than its
-// column can never produce a negative (panicking) repeat count.
-func labelGap(label string, col int) string {
-	return strings.Repeat(" ", max(0, col-DispW(label)))
-}
-
-// engineItems is the Spotify engine readout for the capability strip: which of
-// the two engines is live and its Spotify eSDK build. It earns a line because
-// the two are not interchangeable — the eSDK version is what decides whether
-// lossless can arrive at all, and the older one cannot, whatever its name says.
-func (m *model) engineItems(cv *protocol.ConfInfo) []string {
-	eng := cv.Engine()
-	if eng == "" {
-		return nil
-	}
-	t := m.sty.pens()
-	label := eng
-	switch eng {
-	case "newspotifyhifi":
-		label = "spotify · legacy · Ogg/AAC"
-	case "spotifymusicpro":
-		label = "spotify · new · FLAC"
-	}
-	items := []string{t.dim.render(label)}
-	if sdk := cv.SDK(); sdk != "" {
-		items = append(items, t.dmr.render("eSDK "+sdk))
-	}
-	return items
 }

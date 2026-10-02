@@ -52,27 +52,19 @@ func TestCov_LoadDerivesBaseFromHome(t *testing.T) {
 }
 
 // TestCov_ApplyTOMLAllKeys drives every recognized key through applyTOML,
-// including the string fields (user, name) the Load-based tests never set, and
-// vol_step as an int64.
+// with vol_step as an int64, and checks a clean set makes no complaint.
 func TestCov_ApplyTOMLAllKeys(t *testing.T) {
-	cfg := Config{
-		Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep,
-		PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode,
-	}
-	applyTOML(&cfg, map[string]any{
-		"host":      "10.0.0.1",
-		"user":      "pi",
-		"name":      "Kitchen",
-		"ping_host": "example.com",
-		"discover":  false,
-		"art":       false,
-		"art_mode":  "kitty",
-		"vol_step":  int64(7),
+	cfg := Config{Host: defHost, Name: DefaultName, VolStep: defVolStep, Discover: true, Theme: defTheme}
+	complaints := applyTOML(&cfg, map[string]any{
+		"host":     "10.0.0.1",
+		"name":     "Kitchen",
+		"discover": false,
+		"theme":    "light",
+		"vol_step": int64(7),
 	})
-	if cfg.Host != "10.0.0.1" || cfg.User != "pi" || cfg.Name != "Kitchen" ||
-		cfg.PingHost != "example.com" || cfg.Discover || cfg.Art ||
-		cfg.ArtMode != "kitty" || cfg.VolStep != 7 {
-		t.Fatalf("applyTOML did not apply every key: %+v", cfg)
+	want := Config{Host: "10.0.0.1", Name: "Kitchen", VolStep: 7, Discover: false, Theme: "light"}
+	if cfg != want || len(complaints) != 0 {
+		t.Fatalf("applyTOML = %+v (complaints %q), want every key applied: %+v", cfg, complaints, want)
 	}
 }
 
@@ -96,17 +88,28 @@ func TestCov_ApplyTOMLRejectsFloatAtIntBoundary(t *testing.T) {
 }
 
 // TestCov_ApplyTOMLRejectsBadValues exercises the rejecting (false) branches:
-// an invalid art_mode keeps the default, a non-integral float and an
-// out-of-range float are ignored, and a wrong-typed string field is ignored.
+// an invalid theme and a wrong-typed one keep the default, a non-integral
+// float and an out-of-range float are ignored, and a wrong-typed string field
+// is ignored.
 func TestCov_ApplyTOMLRejectsBadValues(t *testing.T) {
-	cfg := Config{ArtMode: defArtMode, VolStep: defVolStep, Host: defHost}
-	applyTOML(&cfg, map[string]any{
-		"art_mode": "sixel",      // not in artModes -> ignored
+	cfg := Config{Theme: defTheme, VolStep: defVolStep, Host: defHost, Name: DefaultName}
+	complaints := applyTOML(&cfg, map[string]any{
+		"theme":    "sixel",      // not in themes -> ignored
 		"vol_step": float64(2.5), // non-integral float -> ignored
 		"host":     int64(123),   // wrong type for a string field -> ignored
+		"name":     true,         // wrong type for a string field -> ignored
 	})
-	if cfg.ArtMode != defArtMode {
-		t.Errorf("invalid art_mode should be ignored, got %q", cfg.ArtMode)
+	if cfg.Theme != defTheme {
+		t.Errorf("invalid theme should be ignored, got %q", cfg.Theme)
+	}
+	if cfg.Name != DefaultName {
+		t.Errorf("wrong-typed name should be ignored, got %q", cfg.Name)
+	}
+	if len(complaints) != 4 {
+		t.Errorf("complaints = %q, want one per bad value", complaints)
+	}
+	if applyTOML(&cfg, map[string]any{"theme": int64(1)}); cfg.Theme != defTheme {
+		t.Errorf("wrong-typed theme should be ignored, got %q", cfg.Theme)
 	}
 	if cfg.VolStep != defVolStep {
 		t.Errorf("non-integral float vol_step should be ignored, got %d", cfg.VolStep)
@@ -139,23 +142,23 @@ func TestCov_StateDirDerivesFromHome(t *testing.T) {
 	}
 }
 
-// TestCov_PremuteAndSnapshotPaths covers the non-empty (StateDir != "") return
-// of PremutePath and SnapshotPath.
-func TestCov_PremuteAndSnapshotPaths(t *testing.T) {
+// TestCov_SnapshotAndSweepPaths covers the non-empty (StateDir != "") return
+// of SnapshotPath and SweepPath.
+func TestCov_SnapshotAndSweepPaths(t *testing.T) {
 	d := t.TempDir()
 	t.Setenv("LP10_STATE_DIR", d)
 	cfg := Config{Host: "lp10.local"}
-	if got, want := PremutePath(cfg), filepath.Join(d, "premute-lp10.local"); got != want {
-		t.Errorf("PremutePath = %q, want %q", got, want)
+	if got, want := SweepPath(cfg), filepath.Join(d, "sweep-lp10.local.json"); got != want {
+		t.Errorf("SweepPath = %q, want %q", got, want)
 	}
 	if got, want := SnapshotPath(cfg), filepath.Join(d, "snapshot-lp10.local.json"); got != want {
 		t.Errorf("SnapshotPath = %q, want %q", got, want)
 	}
 }
 
-// TestCov_PathsEmptyWithoutStateDir covers the "" returns of PremutePath,
-// SnapshotPath and ArtCacheDir when StateDir cannot be created (its target's
-// parent is a regular file).
+// TestCov_PathsEmptyWithoutStateDir covers the "" returns of SnapshotPath and
+// SweepPath when StateDir cannot be created (its target's parent is a regular
+// file).
 func TestCov_PathsEmptyWithoutStateDir(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocker")
 	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
@@ -163,40 +166,11 @@ func TestCov_PathsEmptyWithoutStateDir(t *testing.T) {
 	}
 	t.Setenv("LP10_STATE_DIR", filepath.Join(blocker, "sub"))
 	cfg := Config{Host: "h"}
-	if got := PremutePath(cfg); got != "" {
-		t.Errorf("PremutePath = %q, want empty", got)
-	}
 	if got := SnapshotPath(cfg); got != "" {
 		t.Errorf("SnapshotPath = %q, want empty", got)
 	}
-	if got := ArtCacheDir(); got != "" {
-		t.Errorf("ArtCacheDir = %q, want empty", got)
-	}
-}
-
-// TestCov_ArtCacheDirMkdirFails covers ArtCacheDir's own MkdirAll-failure
-// return: the state dir exists, but a regular file named "art" inside it blocks
-// creating the art subdirectory.
-func TestCov_ArtCacheDirMkdirFails(t *testing.T) {
-	d := t.TempDir()
-	if err := os.WriteFile(filepath.Join(d, "art"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("LP10_STATE_DIR", d)
-	if got := ArtCacheDir(); got != "" {
-		t.Errorf("ArtCacheDir = %q, want empty when <state>/art is a file", got)
-	}
-}
-
-// TestCov_LoadPremuteNonNumeric covers the Atoi-failure branch: non-numeric
-// file content defaults to 30.
-func TestCov_LoadPremuteNonNumeric(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "premute")
-	if err := os.WriteFile(p, []byte("not-a-number"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if got := LoadPremute(p); got != 30 {
-		t.Errorf("non-numeric premute should default to 30, got %d", got)
+	if got := SweepPath(cfg); got != "" {
+		t.Errorf("SweepPath = %q, want empty", got)
 	}
 }
 
@@ -212,22 +186,27 @@ func TestCov_LoadSnapshotInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestCov_LoadSnapshotTrackVariants covers the typed decoder's accepting paths:
-// a snapshot with no "track" key and one with an explicit null track both
-// round-trip.
-func TestCov_LoadSnapshotTrackVariants(t *testing.T) {
+// TestCov_LoadSnapshotVariants covers the typed decoder's accepting paths: a
+// snapshot with no "eq" key, one with an explicit null eq, and an empty object
+// all load.
+func TestCov_LoadSnapshotVariants(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-
-	if err := os.WriteFile(p, []byte(`{"vol":12}`), 0o600); err != nil {
+	for raw, vol := range map[string]int{`{"vol":12}`: 12, `{"vol":3,"eq":null}`: 3, `{}`: 0} {
+		if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := LoadSnapshot(p); got == nil || got.Vol != vol || len(got.EQ) != 0 {
+			t.Errorf("LoadSnapshot(%s) = %+v, want vol %d and no EQ", raw, got, vol)
+		}
+	}
+	if got := LoadSnapshot(filepath.Join(t.TempDir(), "null.json")); got != nil {
+		t.Errorf("a missing file loaded as %+v", got)
+	}
+	if err := os.WriteFile(p, []byte(`null`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := LoadSnapshot(p); got == nil || got.Vol != 12 {
-		t.Errorf("snapshot without a track key should round-trip, got %v", got)
-	}
-
-	SaveSnapshot(p, CachedSnapshot{Track: nil, Vol: 3})
-	if got := LoadSnapshot(p); got == nil || got.Track != nil || got.Vol != 3 {
-		t.Error("snapshot with an explicit null track should be accepted")
+	if got := LoadSnapshot(p); got != nil {
+		t.Errorf("a JSON null root loaded as %+v", got)
 	}
 }
 

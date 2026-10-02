@@ -1,11 +1,10 @@
 // The Spotify ZeroConf worker: the engine's own unauthenticated HTTP endpoint,
 // found over mDNS (_spotify-connect._tcp) and read with one GET. Like the LSSDP
-// probe it needs neither ssh nor the tunnel, so it keeps answering "is Spotify
-// actually up, on which eSDK, signed in as whom" while the box's sshd is
-// refusing lp10 — and it is the only surface that reports the signed-in user
-// at all. The port comes from the SRV record every time the endpoint is
-// (re)found: it is per engine (the new one answers on 9095, the legacy one on
-// 9096), so switching engines in the services pane moves it.
+// probe it needs no tunnel, so it keeps answering "is Spotify actually up, on
+// which eSDK, signed in as whom" while :2018 is down — and it is the only
+// surface that reports the signed-in user and the eSDK build at all. The port
+// comes from the SRV record every time the endpoint is (re)found: it is per
+// engine (the Pro engine answers on 9095, the legacy HiFi one on 9096).
 
 package workers
 
@@ -26,7 +25,7 @@ const (
 	zcProbeTimeout   = 2 * time.Second
 	zcDisconnected   = 10 * time.Second
 	zcConnected      = 30 * time.Second
-	zcFirstProbeLag  = time.Second // let ssh, the tunnel and LSSDP go first at startup
+	zcFirstProbeLag  = time.Second // let the tunnel and LSSDP go first at startup
 )
 
 // zcTarget is the worker's target: the configured host (endpoint found over
@@ -93,9 +92,11 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 			}
 			return
 		}
-		st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: info.StatusString, ActiveUser: info.ActiveUser}, port)
+		st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: info.StatusString, ActiveUser: info.ActiveUser,
+			LibraryVersion: info.LibraryVersion}, port)
 	}
 	wait := zcFirstProbeLag
+	asked := false // a probe has run: the first one always does (see lssdpWorker)
 	for !control.stop.IsSet() && ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
@@ -105,10 +106,11 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 		if control.stop.IsSet() {
 			return
 		}
-		if st.Snap().Connected && !st.ProbeWanted() {
+		if asked && st.Snap().Connected && !st.ProbeWanted() {
 			wait = probeQuietPoll // see lssdpWorker: nobody is looking
 			continue
 		}
+		asked = true
 		fence(st, control, "zeroconf worker", probe) // it parses what the LAN answers
 		if st.Snap().Connected {
 			wait = zcConnected

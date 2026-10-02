@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,12 +12,12 @@ var livePresets = []string{"Flat", "Classical", "Pop", "Jazz", "Rock", "Vocal"}
 
 func TestPresetRowNamesAndHighlight(t *testing.T) {
 	m, st, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
 	const w = 70
+	eqs := eqSpecIndex("EQS")
 	st.SetEQPresets(livePresets)
 	st.ApplyTunnel("EQS", 4) // Rock
 	_, vals := st.EQView()
-	row := m.eqSliderRow(eqOrder[1], vals, false, w)
+	row := m.eqSliderRow(eqs, vals, false, w)
 	plain := stripANSI(row)
 	if !strings.HasPrefix(plain, "Preset") {
 		t.Errorf("row = %q, want the Preset label", plain)
@@ -29,106 +30,106 @@ func TestPresetRowNamesAndHighlight(t *testing.T) {
 	if got := DispW(plain); got != w {
 		t.Errorf("row width = %d, want %d", got, w)
 	}
-	// the selected name is styled differently from its neighbours
-	if !strings.Contains(row, "Rock") || strings.Index(row, "Rock") == strings.Index(plain, "Rock") {
-		// styled output carries escapes before Rock; a bare match at the same
-		// offset would mean it was rendered like plain filler
-		t.Errorf("Rock should carry its own styling: %q", row)
+	// the selected name is lit in the accent; its neighbours are dim
+	ps := m.sty.pens()
+	if !strings.Contains(row, ps.acc.render("Rock")) || !strings.Contains(row, ps.dmr.render("Jazz")) {
+		t.Errorf("Rock should carry the accent, Jazz the dim pen: %q", row)
+	}
+	// focused, the current one is bold
+	if row := m.eqSliderRow(eqs, vals, true, w); !strings.Contains(row, ps.accB.render("Rock")) {
+		t.Errorf("focused row should light Rock bold: %q", row)
 	}
 	// unknown value: every name dim, nothing lit, still full width
-	mu, su, _ := modelWith(protocol.NewState())
-	mu.sty = newTheme()
-	su.SetEQPresets(livePresets)
-	if got := stripANSI(mu.eqSliderRow(eqOrder[1], map[string]int{}, true, w)); DispW(got) != w || !strings.Contains(got, "Flat") {
+	if got := stripANSI(m.eqSliderRow(eqs, map[string]int{}, true, w)); DispW(got) != w || !strings.Contains(got, "Flat") {
 		t.Errorf("unknown-value row = %q", got)
 	}
 	// no PEQ list yet: the index shows as "preset N"; no list and no value: "—"
 	m2, _, _ := modelWith(protocol.NewState())
-	m2.sty = newTheme()
-	if got := stripANSI(m2.eqSliderRow(eqOrder[1], map[string]int{"EQS": 2}, false, w)); !strings.Contains(got, "preset 2") {
+	if got := stripANSI(m2.eqSliderRow(eqs, map[string]int{"EQS": 2}, false, w)); !strings.Contains(got, "preset 2") {
 		t.Errorf("nameless row = %q, want 'preset 2'", got)
 	}
-	if got := stripANSI(m2.eqSliderRow(eqOrder[1], map[string]int{}, false, w)); !strings.Contains(got, "—") || DispW(got) != w {
+	if got := stripANSI(m2.eqSliderRow(eqs, map[string]int{}, false, w)); !strings.Contains(got, "—") || DispW(got) != w {
 		t.Errorf("empty row = %q", got)
 	}
 	// a narrow row clips the list instead of overflowing
-	if got := stripANSI(m.eqSliderRow(eqOrder[1], vals, false, 24)); DispW(got) != 24 {
-		t.Errorf("narrow row width = %d, want 24: %q", DispW(got), got)
+	for _, nw := range []int{24, 20, sliderLabelW + sliderValW + 1} {
+		if got := stripANSI(m.eqSliderRow(eqs, vals, false, nw)); DispW(got) != nw {
+			t.Errorf("narrow row width = %d, want %d: %q", DispW(got), nw, got)
+		}
 	}
 }
 
 func TestPresetKeysStepAndWrap(t *testing.T) {
-	m, st, eqcmds := eqModel(t)
+	m, st, collect := eqModel(t)
 	st.SetEQPresets(livePresets)
 	m.key(kr('e'))
 	m.eqFocus = 1 // Preset
 	if m.eqSpec().Code != "EQS" {
 		t.Fatalf("slot 1 is %s, want EQS", m.eqSpec().Code)
 	}
-	m.key(ke(kRight)) // 0 -> 1
-	if cmd := <-eqcmds; cmd.Code != "EQS" || cmd.Val != 1 {
-		t.Errorf("right: %+v, want EQS 1", cmd)
-	}
+	m.key(ke(kRight))                      // 0 -> 1
 	st.PreloadEQ(map[string]int{"EQS": 5}) // last named (PreloadEQ sidesteps the echo hold)
 	m.key(ke(kRight))                      // stays at the last named preset
-	if cmd := <-eqcmds; cmd.Val != 5 {
-		t.Errorf("right at the end: val=%d, want 5", cmd.Val)
-	}
-	m.key(ke(kEnter)) // enter steps to the next, wrapping to 0
-	if cmd := <-eqcmds; cmd.Val != 0 {
-		t.Errorf("enter at the end: val=%d, want wrap to 0", cmd.Val)
-	}
-	m.key(ke(kLeft)) // 0 -> clamp 0
-	if cmd := <-eqcmds; cmd.Val != 0 {
-		t.Errorf("left at 0: val=%d, want 0", cmd.Val)
+	m.key(ke(kEnter))                      // enter steps to the next, wrapping to 0
+	m.key(ke(kLeft))                       // 0 -> clamp 0
+	if got := wire(collect()); !slices.Equal(got, []string{"EQS:1", "EQS:5", "EQS:0", "EQS:0"}) {
+		t.Errorf("preset keys sent %v, want [EQS:1 EQS:5 EQS:0 EQS:0]", got)
 	}
 	// before the PEQ list arrives the spec bound applies, not the list length
 	st2 := protocol.NewState()
+	connect(st2)
 	st2.ApplyTunnel("EQS", 7)
-	m2, _, c2 := modelWith(st2)
-	m2.eqcmds = eqcmds
-	_ = c2
+	m2, _, collect2 := modelWith(st2)
 	m2.key(kr('e'))
 	m2.eqFocus = 1
 	m2.key(ke(kRight))
-	if cmd := <-eqcmds; cmd.Val != 8 {
-		t.Errorf("no list: val=%d, want 8", cmd.Val)
+	m2.key(ke(kEnter))
+	if got := wire(collect2()); !slices.Equal(got, []string{"EQS:8", "EQS:9"}) {
+		t.Errorf("no list: sent %v, want [EQS:8 EQS:9]", got)
+	}
+	// a readback past the list (another client set it) steps back to 0
+	st.PreloadEQ(map[string]int{"EQS": 9})
+	m.key(ke(kEnter))
+	if got := wire(collect()); !slices.Equal(got, []string{"EQS:0"}) {
+		t.Errorf("enter past the list sent %v, want [EQS:0]", got)
 	}
 }
 
 func TestBalanceRowAndSummary(t *testing.T) {
 	m, st, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
+	bal := eqSpecIndex("BAL")
 	for v, want := range map[int]string{-20: "L20", 0: "0", 35: "R35", -100: "L100"} {
-		if got := stripANSI(m.eqSliderRow(eqOrder[7], map[string]int{"BAL": v}, true, 60)); !strings.Contains(got, want) || !strings.HasPrefix(got, "Balance") {
+		if got := stripANSI(m.eqSliderRow(bal, map[string]int{"BAL": v}, true, 60)); !strings.HasSuffix(got, want) || !strings.HasPrefix(got, "Balance") {
 			t.Errorf("BAL %d row = %q, want %q", v, got, want)
 		}
 	}
 	st.PreloadEQ(map[string]int{"EQE": 1, "EQS": 3, "BAL": -10})
 	st.SetEQPresets(livePresets)
 	m.view = viewEQ
-	view := stripANSI(strings.Join(m.renderEQ(200), "\n"))
+	m.rows = 40
+	view := m.renderEQ(200)
+	assertWithin(t, "renderEQ", view, 200)
+	plain := stripANSI(strings.Join(view, "\n"))
 	for _, want := range []string{"● on", "Jazz", "L10"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("equalizer view %q lacks %q", view, want)
+		if !strings.Contains(plain, want) {
+			t.Errorf("equalizer view %q lacks %q", plain, want)
 		}
 	}
 }
 
 // The equalizer view explains the focused control under the sliders: the EQ
 // switch's note says the tone sliders stay live, the preset's that it is heard
-// only while EQ is on.
-func TestEQFooterHintsForEnableAndPreset(t *testing.T) {
+// only while EQ is on, Max volume's that a low cap is what feels stuck.
+func TestEQNotesForTheFocusedControl(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
 	m.rows, m.cols = 30, 106
 	m.view = viewEQ
-	m.eqFocus = 0
-	if got := stripANSI(strings.Join(m.renderEQ(100), "\n")); !strings.Contains(got, "live either way") {
-		t.Errorf("EQE note missing:\n%s", got)
-	}
-	m.eqFocus = 1
-	if got := stripANSI(strings.Join(m.renderEQ(100), "\n")); !strings.Contains(got, "heard only while EQ is on") {
-		t.Errorf("EQS note missing:\n%s", got)
+	for focus, want := range map[int]string{0: "live either way", 1: "heard only while EQ is on", len(eqOrder) - 1: "stuck near the top"} {
+		m.eqFocus = focus
+		body := m.renderEQ(100)
+		assertWithin(t, "renderEQ", body, 100)
+		if got := stripANSI(strings.Join(body, "\n")); !strings.Contains(got, want) {
+			t.Errorf("focus %d note missing %q:\n%s", focus, want, got)
+		}
 	}
 }

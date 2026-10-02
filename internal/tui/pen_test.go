@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"image/color"
 	"math"
 	"strings"
 	"testing"
@@ -82,24 +81,6 @@ func TestPenMatchesStyleRender(t *testing.T) {
 	}
 }
 
-// The ambient tint's cached cells must match rendering its styles directly.
-func TestAmbientTintCellsMatchStyles(t *testing.T) {
-	th := newTheme()
-	at := th.tint(color.RGBA{R: 200, G: 80, B: 40, A: 0xff})
-	at.ensure()
-	if got, want := at.mHead, at.head.Render("●"); got != want {
-		t.Errorf("amb head %q != %q", got, want)
-	}
-	if got, want := at.framePen.render("│"), at.frame.Render("│"); got != want {
-		t.Errorf("amb frame %q != %q", got, want)
-	}
-	for i := range at.fill {
-		if got, want := at.mFill[i], at.fill[i].Render("━"); got != want {
-			t.Errorf("amb fill[%d] %q != %q", i, got, want)
-		}
-	}
-}
-
 // refLineMeter is the ORIGINAL meter implementation — one Style.Render per cell
 // — kept as the independent reference the cached-cell paths are pinned against.
 func refLineMeter(th *theme, frac float64, cells int, fill []lipgloss.Style, head lipgloss.Style) string {
@@ -122,21 +103,15 @@ func refLineMeter(th *theme, frac float64, cells int, fill []lipgloss.Style, hea
 	return b.String()
 }
 
-// lineMeter (cached cells) and the ambient-tinted seek meter must both equal
-// the per-cell-Render reference — the cached paths can never drift from what a
-// fresh render would paint.
+// lineMeter (cached cells) must equal the per-cell-Render reference — the
+// cached path can never drift from what a fresh render would paint.
 func TestLineMeterMatchesPerCellReference(t *testing.T) {
-	th := newTheme()
-	at := th.tint(color.RGBA{R: 200, G: 80, B: 40, A: 0xff})
-	at.ensure()
-	for _, cells := range []int{0, 1, 2, 5, 24, 60} {
-		for _, frac := range []float64{0, 0.01, 0.42, 0.99, 1} {
-			if got, want := th.lineMeter(frac, cells), refLineMeter(th, frac, cells, th.fill, th.head); got != want {
-				t.Errorf("lineMeter(%v,%d) diverged from the per-cell reference", frac, cells)
-			}
-			amb := lineMeterCells(frac, cells, at.mFill, at.mHead, th.pens().mTrack)
-			if want := refLineMeter(th, frac, cells, at.fill, at.head); amb != want {
-				t.Errorf("ambient meter(%v,%d) diverged from the per-cell reference", frac, cells)
+	for _, th := range []*theme{newThemeFor(true), newThemeFor(false)} {
+		for _, cells := range []int{0, 1, 2, 5, 24, 60} {
+			for _, frac := range []float64{-0.5, 0, 0.01, 0.42, 0.99, 1, 1.5} {
+				if got, want := th.lineMeter(frac, cells), refLineMeter(th, frac, cells, th.fill, th.head); got != want {
+					t.Errorf("lineMeter(%v,%d) diverged from the per-cell reference", frac, cells)
+				}
 			}
 		}
 	}

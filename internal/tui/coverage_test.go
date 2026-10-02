@@ -2,7 +2,8 @@ package tui
 
 import (
 	"image/color"
-	"maps"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,107 +12,41 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
-	"github.com/lucasdaddiego/lp10/internal/workers"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
 )
 
 // ============================================================================
 // Pure display/formatting helpers — called directly, every branch.
 // ============================================================================
 
-func TestCov_freqToChan(t *testing.T) {
-	cases := map[int]int{2484: 14, 2412: 1, 2437: 6, 5180: 36, 0: 0}
-	for in, want := range cases {
-		if got := freqToChan(in); got != want {
-			t.Errorf("freqToChan(%d) = %d, want %d", in, got, want)
-		}
-	}
-}
-
-func TestCov_pingLabel(t *testing.T) {
-	cases := map[string]string{
-		"":                       "net",
-		"1.2.3.4":                "1.2.3.4",
-		"apresolve.spotify.com":  "spotify",
-		"spotify.com":            "spotify",
-		"localhost":              "localhost",
-		"  apresolve.tidal.com ": "tidal",
-	}
-	for in, want := range cases {
-		if got := pingLabel(in); got != want {
-			t.Errorf("pingLabel(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestCov_fmtRate(t *testing.T) {
-	cases := map[float64]string{
-		512:     "512 B/s",
-		2048:    "2 KB/s",
-		3 << 20: "3.0 MB/s",
-	}
-	for in, want := range cases {
-		if got := fmtRate(in); got != want {
-			t.Errorf("fmtRate(%v) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestCov_fmtKHz(t *testing.T) {
-	if got := fmtKHz(44100); got != "44.1 kHz" {
-		t.Errorf("fmtKHz(44100) = %q, want 44.1 kHz", got)
-	}
-	if got := fmtKHz(48000); got != "48 kHz" {
-		t.Errorf("fmtKHz(48000) = %q, want 48 kHz", got)
-	}
-}
-
-func TestCov_fmtUptime(t *testing.T) {
-	cases := map[string]string{
-		"":      "—",
-		"abc":   "—",
-		"-5":    "—",
-		"30":    "0m",
-		"3700":  "1h 1m",
-		"90061": "1d 1h 1m",
-	}
-	for in, want := range cases {
-		if got := fmtUptime(in); got != want {
-			t.Errorf("fmtUptime(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestCov_fmtLatencyMs(t *testing.T) {
-	if got := fmtLatencyMs(5.5); got != "5.5" {
-		t.Errorf("fmtLatencyMs(5.5) = %q, want 5.5", got)
-	}
-	if got := fmtLatencyMs(25.4); got != "25" {
-		t.Errorf("fmtLatencyMs(25.4) = %q, want 25", got)
-	}
-}
-
-func TestCov_orDashFirstSegToneStr(t *testing.T) {
-	if orDash("") != "—" || orDash("x") != "x" {
-		t.Error("orDash wrong")
-	}
-	if firstSeg("AR241CE_8530", '_') != "AR241CE" {
+func TestCov_firstSegToneStrBalStrPresetName(t *testing.T) {
+	if firstSeg("29-1d316f0c-10", '-') != "29" {
 		t.Error("firstSeg with sep wrong")
 	}
-	if firstSeg("nosep", '_') != "nosep" {
+	if firstSeg("nosep", '-') != "nosep" {
 		t.Error("firstSeg without sep should pass through")
 	}
 	if toneStr(0) != "0" || toneStr(3) != "+3" || toneStr(-6) != "-6" {
 		t.Errorf("toneStr wrong: %q %q %q", toneStr(0), toneStr(3), toneStr(-6))
 	}
+	if balStr(0) != "0" || balStr(-20) != "L20" || balStr(35) != "R35" {
+		t.Errorf("balStr wrong: %q %q %q", balStr(0), balStr(-20), balStr(35))
+	}
+	names := []string{"Flat", "", "Pop"}
+	for idx, want := range map[int]string{0: "Flat", 1: "preset 1", 2: "Pop", 3: "preset 3", -1: "preset -1"} {
+		if got := presetName(names, idx); got != want {
+			t.Errorf("presetName(%d) = %q, want %q", idx, got, want)
+		}
+	}
+	if plural(1) != "" || plural(0) != "s" || plural(2) != "s" {
+		t.Error("plural wrong")
+	}
+	if btoi(true) != 1 || btoi(false) != 0 {
+		t.Error("btoi wrong")
+	}
 }
 
 func TestCov_padHelpers(t *testing.T) {
-	if got := rpadDisp("ab", 5); got != "   ab" {
-		t.Errorf("rpadDisp(ab,5) = %q", got)
-	}
-	if got := rpadDisp("abcde", 3); got != "abcde" {
-		t.Errorf("rpadDisp wide no-op = %q", got)
-	}
 	if got := padDisp("ab", 5); got != "ab   " {
 		t.Errorf("padDisp(ab,5) = %q", got)
 	}
@@ -166,18 +101,6 @@ func TestCov_dispWindowEdges(t *testing.T) {
 	}
 }
 
-func TestCov_sourceNameSources(t *testing.T) {
-	cases := []struct {
-		src  int
-		want string
-	}{{4, "Spotify"}, {5, "Line-In"}, {6, "USB"}, {7, "Source 7"}}
-	for _, c := range cases {
-		if got := SourceName(&protocol.Track{CurrentSource: c.src}); got != c.want {
-			t.Errorf("SourceName(src %d) = %q, want %q", c.src, got, c.want)
-		}
-	}
-}
-
 func TestCov_glyphsAndDetectAmb(t *testing.T) {
 	// glyphs(2) is the ASCII fallback set (CJK locale / ambiguous-wide terminal).
 	if g := glyphs(2); g["play"] != ">" || g["note"] != "*" || g["ell"] != "..." {
@@ -185,6 +108,19 @@ func TestCov_glyphsAndDetectAmb(t *testing.T) {
 	}
 	if g := glyphs(1); g["play"] != "▶" || g["note"] != "♪" {
 		t.Errorf("glyphs(1) unicode set wrong: %v", g["play"])
+	}
+	// every glyph has a fallback, and every fallback is pure ASCII
+	one, two := glyphs(1), glyphs(2)
+	for k := range one {
+		fb, ok := two[k]
+		if !ok {
+			t.Errorf("glyph %q has no ASCII fallback", k)
+		}
+		for _, r := range fb {
+			if r > 0x7e {
+				t.Errorf("fallback for %q is not ASCII: %q", k, fb)
+			}
+		}
 	}
 
 	// detectAmb: CJK locales -> 2, everything else -> 1, with LC_ALL > LC_CTYPE > LANG.
@@ -204,6 +140,14 @@ func TestCov_glyphsAndDetectAmb(t *testing.T) {
 		t.Setenv("LANG", "en_US.UTF-8")
 		if got := detectAmb(); got != 1 {
 			t.Errorf("detectAmb(en) = %d, want 1", got)
+		}
+	})
+	t.Run("unset", func(t *testing.T) {
+		t.Setenv("LC_ALL", "")
+		t.Setenv("LC_CTYPE", "")
+		t.Setenv("LANG", "C")
+		if got := detectAmb(); got != 1 {
+			t.Errorf("detectAmb(C) = %d, want 1", got)
 		}
 	})
 	t.Run("lc_all_precedence", func(t *testing.T) {
@@ -274,22 +218,50 @@ func TestCov_hslRGBAllArms(t *testing.T) {
 	}
 }
 
+func TestCov_writeDecAndStylePen(t *testing.T) {
+	for _, v := range []uint8{0, 7, 42, 100, 255} {
+		var b strings.Builder
+		writeDec(&b, v)
+		if got, want := b.String(), strconv.Itoa(int(v)); got != want {
+			t.Errorf("writeDec(%d) = %q, want %q", v, got, want)
+		}
+	}
+	// an empty painted line needs no reset
+	var b strings.Builder
+	paintEndLine(&b)
+	if b.Len() != 0 {
+		t.Error("paintEndLine on an empty line should write nothing")
+	}
+	// an unstyled style flattens to an empty pen that renders text as is
+	if p := stylePen(lipgloss.NewStyle()); p.render("x") != "x" {
+		t.Errorf("unstyled pen renders %q", p.render("x"))
+	}
+}
+
 // ============================================================================
 // friendlyError — every mapped case
 // ============================================================================
 
+// friendlyError condenses a raw dial error to a calm, actionable line; an
+// error it does not recognise passes through unchanged.
 func TestCov_friendlyErrorAllCases(t *testing.T) {
+	const (
+		host    = "can't find the device — are you on the home network?"
+		route   = "no route to the device — check the network"
+		refused = "the device refused the connection on :2018"
+		timeout = "connection timed out — the device may be off or away"
+	)
 	cases := map[string]string{
-		"ssh: Could not resolve hostname x":      "can't find the device — are you on the home network?",
-		"getaddrinfo: Name or service not known": "can't find the device — are you on the home network?",
-		"No route to host":                       "no route to the device — check the network",
-		"network is unreachable":                 "no route to the device — check the network",
-		"Connection refused":                     "the device refused the connection",
-		"Operation timed out":                    "connection timed out — the device may be off or away",
-		"i/o timeout":                            "connection timed out — the device may be off or away",
-		"Permission denied (publickey).":         "ssh authentication failed",
-		"ssh: some other failure":                "some other failure", // prefix strip
-		"a plain message with no markers":        "a plain message with no markers",
+		"cannot reach :2018: dial tcp: lookup lp10.local: no such host": host,
+		"Could not resolve hostname x":                                  host,
+		"dial tcp 192.0.2.13:2018: connect: no route to host":           route,
+		"dial tcp: connect: network is unreachable":                     route,
+		"dial tcp 192.0.2.13:2018: connect: Connection refused":         refused,
+		"dial tcp 192.0.2.13:2018: i/o timeout":                         timeout,
+		"Operation timed out":                                           timeout,
+		"connected, but no answer for 6s":                               timeout,
+		"command not delivered":                                         "command not delivered",
+		"":                                                              "",
 	}
 	for in, want := range cases {
 		if got := friendlyError(in); got != want {
@@ -315,7 +287,7 @@ func TestCov_translateEveryType(t *testing.T) {
 		{tea.Key{Code: tea.KeyUp}, kUp},
 		{tea.Key{Code: tea.KeyDown}, kDown},
 		{tea.Key{Code: tea.KeyTab}, kTab},
-		{tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}, kTab}, // v2: shift+tab is KeyTab + ModShift; same toggle
+		{tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}, kTab}, // v2: shift+tab is KeyTab + ModShift; same step
 		{tea.Key{Code: tea.KeySpace, Text: " "}, kRune},
 		{tea.Key{Code: 'a', Mod: tea.ModCtrl}, kOther}, // modified rune: unmapped
 	}
@@ -357,6 +329,7 @@ func TestCov_translateKittyShiftedPrintables(t *testing.T) {
 		{tea.Key{Code: '-', Text: "_", Mod: tea.ModShift}, '_'},
 		{tea.Key{Code: 'q', Text: "Q", Mod: tea.ModShift}, 'Q'},
 		{tea.Key{Code: 'q', Text: "Q", Mod: tea.ModCapsLock}, 'Q'},
+		{tea.Key{Code: 's', Text: "S", Mod: tea.ModShift}, 'S'},
 		{tea.Key{Code: 'm', Text: "m"}, 'm'}, // plain, for symmetry
 	}
 	for _, c := range cases {
@@ -381,49 +354,21 @@ func TestCov_translateKittyShiftedPrintables(t *testing.T) {
 }
 
 // ============================================================================
-// key dispatch — rune keys and pane-specific directionals/enter
+// key dispatch — rune keys and view-specific directionals/enter
 // ============================================================================
 
 func TestCov_KeyRunes(t *testing.T) {
-	m, st, collect := makeModel(t)
-	st.SetVol(50)
-	collect()
-
-	// space -> toggle (playing fixture -> PAUSE)
-	m.key(kr(' '))
-	if c := last(collect()); c.Mid != 40 || c.Data != "PAUSE" {
-		t.Errorf("space -> %+v, want 40 PAUSE", c)
+	m, _, collect := makeModel(t)
+	for _, r := range " np=+-_" {
+		m.key(kr(r))
 	}
-	m.key(kr('n'))
-	if last(collect()).Data != "NEXT" {
-		t.Error("n should next")
+	if got := wire(collect()); !slices.Equal(got, []string{"POP", "NXT", "PRE", "VOL:46", "VOL:48", "VOL:46", "VOL:44"}) {
+		t.Errorf("space n p = + - _ sent %v", got)
 	}
-	m.key(kr('p'))
-	if last(collect()).Data != "PREV" {
-		t.Error("p should prev")
-	}
-	st.SetVol(50)
-	collect()
-	m.key(kr('='))
-	if last(collect()).Data != "52" {
-		t.Error("= should volup")
-	}
-	m.key(kr('+'))
-	if last(collect()).Data != "54" {
-		t.Error("+ should volup")
-	}
-	m.key(kr('-'))
-	if last(collect()).Data != "52" {
-		t.Error("- should voldn")
-	}
-	m.key(kr('_'))
-	if last(collect()).Data != "50" {
-		t.Error("_ should voldn")
-	}
-	// e focuses the EQ pane
+	// e opens the equalizer
 	m.key(kr('e'))
 	if m.view != viewEQ {
-		t.Error("e should focus EQ pane")
+		t.Error("e should open the equalizer")
 	}
 	// an unmapped rune is a no-op
 	if m.key(kr('z')) {
@@ -436,51 +381,64 @@ func TestCov_KeyRunes(t *testing.T) {
 	if !m.key(kr('Q')) {
 		t.Error("Q should quit")
 	}
+	if got := collect(); len(got) != 0 {
+		t.Errorf("view keys sent %v", wire(got))
+	}
 }
 
-func TestCov_KeyPanes(t *testing.T) {
-	m, _, _ := makeModel(t)
+func TestCov_KeyViews(t *testing.T) {
+	m, st, _ := makeModel(t)
 
-	// EQ pane: up/down move the band selection, left/right adjust, enter toggles
-	m.view = viewEQ
-	m.eqFocus = 1 // TRE (ranged)
+	// equalizer: up/down move the control selection, left/right adjust, enter toggles
+	st.ApplyTunnel("EQE", 0) // toggling needs a known value
+	st.ApplyTunnel("TRE", 0)
+	m.setView(viewEQ)
+	m.eqFocus = 2 // TRE (ranged)
 	m.key(ke(kUp))
-	if m.eqFocus != 0 {
-		t.Errorf("EQ up: eqFocus = %d, want 0", m.eqFocus)
+	if m.eqFocus != 1 {
+		t.Errorf("EQ up: eqFocus = %d, want 1", m.eqFocus)
 	}
 	m.key(ke(kDown))
-	if m.eqFocus != 1 {
-		t.Errorf("EQ down: eqFocus = %d, want 1", m.eqFocus)
+	if m.eqFocus != 2 {
+		t.Errorf("EQ down: eqFocus = %d, want 2", m.eqFocus)
 	}
-	m.key(ke(kLeft))           // eqAdjust(-1)
-	m.key(ke(kRight))          // eqAdjust(+1)
-	m.eqFocus = 0              // EQE (toggle)
-	m.st.ApplyTunnel("EQE", 0) // toggling needs a known value (unknown is a no-op)
-	before, _ := m.st.EQValue("EQE")
-	m.key(ke(kEnter)) // toggle EQE
-	after, _ := m.st.EQValue("EQE")
-	if before == after {
-		t.Error("enter in EQ pane should toggle the focused band")
+	m.key(ke(kRight))
+	m.key(ke(kLeft))
+	m.eqFocus = 0 // EQE (toggle)
+	m.key(ke(kEnter))
+	if v, _ := st.EQValue("EQE"); v != 1 {
+		t.Error("enter on the EQ switch should toggle it")
+	}
+	// a key the equalizer does not claim falls through to playback
+	if m.eqKey(kr('x')) {
+		t.Error("eqKey should not claim a rune")
 	}
 
-	// shift+tab also switches panes (it folds into kTab at translate)
+	// shift+tab also steps the views (it folds into kTab at translate)
 	p := m.view
 	m.key(translate(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
 	if m.view == p {
-		t.Error("shift+tab should switch panes")
+		t.Error("shift+tab should step the views")
 	}
 
-	// now-playing pane: up/down adjust volume
+	// player: up/down adjust the volume
 	m.view = viewPlayer
-	m.st.SetVol(50)
 	m.key(ke(kUp))
-	if v := m.st.Snap().Vol; v != 52 {
-		t.Errorf("now-pane up: vol = %d, want 52", v)
+	if v := st.Snap().Vol; v != 46 {
+		t.Errorf("player up: vol = %d, want 46", v)
 	}
 	m.key(ke(kDown))
-	if v := m.st.Snap().Vol; v != 50 {
-		t.Errorf("now-pane down: vol = %d, want 50", v)
+	if v := st.Snap().Vol; v != 44 {
+		t.Errorf("player down: vol = %d, want 44", v)
 	}
+	if m.playerKey(kr('x')) {
+		t.Error("playerKey should not claim a rune")
+	}
+	if m.scrollKey(ke(kEnter)) {
+		t.Error("scrollKey should not claim enter")
+	}
+	// the playback keys ignore non-rune events
+	m.playbackKey(ke(kEnter))
 }
 
 // ============================================================================
@@ -495,10 +453,14 @@ func TestCov_UpdateMessages(t *testing.T) {
 		t.Errorf("WindowSizeMsg: %dx%d, want 100x40", m.cols, m.rows)
 	}
 
-	// logicMsg advances the marquee and reschedules
+	// logicMsg advances the marquee, refreshes the title and reschedules
 	scroll := m.scroll
+	m.curTitle = ""
 	if _, cmd := m.Update(logicMsg{}); cmd == nil || m.scroll != scroll+1 {
 		t.Error("logicMsg should advance scroll and reschedule")
+	}
+	if m.curTitle == "" {
+		t.Error("logicMsg should recompute the window title")
 	}
 
 	// frameMsg with the search figure live while disconnected advances the frame
@@ -512,9 +474,8 @@ func TestCov_UpdateMessages(t *testing.T) {
 		t.Errorf("search frame %d -> %d, want +1", f, d.frame)
 	}
 
-	// a bracketed paste drives the hotkeys ('t' flips the remaining-time toggle)
-	rem := m.showRemaining
-	if _, _ = m.Update(tea.PasteMsg{Content: "t"}); m.showRemaining == rem {
+	// a bracketed paste drives the hotkeys ('2' opens the equalizer)
+	if _, _ = m.Update(tea.PasteMsg{Content: "2"}); m.view != viewEQ {
 		t.Error("PasteMsg should dispatch its runes as keys")
 	}
 
@@ -522,41 +483,47 @@ func TestCov_UpdateMessages(t *testing.T) {
 	if _, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}); cmd == nil || !m.interrupted {
 		t.Error("ctrl-c should set interrupted and quit")
 	}
+
+	// a plain key press that does not quit returns no command
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: '1', Text: "1"}); cmd != nil {
+		t.Error("a view key should return no command")
+	}
+
+	// the View carries the alt screen and the window title
+	v := m.View()
+	if !v.AltScreen || v.WindowTitle != m.curTitle {
+		t.Errorf("View: alt=%v title=%q, want the alt screen and %q", v.AltScreen, v.WindowTitle, m.curTitle)
+	}
+}
+
+// The terminal's background answer picks the palette (theme = auto).
+func TestCov_UpdateBackgroundColor(t *testing.T) {
+	m, _, _ := makeModel(t)
+	m.Update(tea.BackgroundColorMsg{Color: color.White})
+	if m.bgDark == nil || *m.bgDark || m.themeDark {
+		t.Error("a white background should select the light palette")
+	}
+	m.Update(tea.BackgroundColorMsg{Color: color.Black})
+	if !m.themeDark {
+		t.Error("a black background should select the dark palette again")
+	}
 }
 
 // ============================================================================
-// controller methods: do RESUME, eqCur, eqToggleFocused no-op
+// controller methods
 // ============================================================================
-
-func TestCov_doResumeAndUnmute(t *testing.T) {
-	// a fresh state is paused (playing == 2), so a toggle RESUMEs (the other arm)
-	m, _, collect := modelWith(protocol.NewState())
-	m.do("toggle")
-	if c := last(collect()); c.Data != "RESUME" {
-		t.Errorf("toggle from paused -> %+v, want RESUME", c)
-	}
-
-	// unmute from a non-zero premute restores it
-	m2, st2, collect2 := makeModel(t)
-	st2.SetVol(40)
-	m2.do("mute") // vol>0 -> 0
-	if last(collect2()).Data != "0" {
-		t.Error("mute should silence")
-	}
-	m2.do("mute") // vol==0, premute 40 -> restore
-	if c := last(collect2()); c.Data != "40" {
-		t.Errorf("unmute -> %+v, want 40", c)
-	}
-}
 
 func TestCov_eqToggleNoop(t *testing.T) {
-	m, st, _ := modelWith(protocol.NewState())
+	m, st, collect := modelWith(protocol.NewState())
 	// eqToggleFocused is a no-op on a ranged control
 	st.ApplyTunnel("TRE", 3)
-	m.view, m.eqFocus = viewEQ, 1 // TRE (ranged)
+	m.view, m.eqFocus = viewEQ, 2 // TRE (ranged)
 	m.eqToggleFocused()
 	if nv, _ := st.EQValue("TRE"); nv != 3 {
-		t.Error("eqToggleFocused on a ranged band must be a no-op")
+		t.Error("eqToggleFocused on a ranged control must be a no-op")
+	}
+	if got := collect(); len(got) != 0 {
+		t.Errorf("a ranged enter sent %v", wire(got))
 	}
 }
 
@@ -574,8 +541,13 @@ func TestCov_computeTitle(t *testing.T) {
 	}
 	// a track title is "♪ Name — Artist"
 	mp, _, _ := makeModel(t)
-	if got := mp.computeTitle(mp.st.Snap()); !strings.Contains(got, "De Música Ligera") {
+	if got := mp.computeTitle(mp.st.Snap()); got != GL["note"]+" De Música Ligera — Soda Stereo" {
 		t.Errorf("computeTitle(track) = %q", got)
+	}
+	// playing without a title: the device name, not a guess
+	mu, _, _ := modelWith(untitledState())
+	if got := mu.computeTitle(mu.st.Snap()); got != defaultCfg().Name {
+		t.Errorf("computeTitle(untitled) = %q, want the device name", got)
 	}
 }
 
@@ -588,11 +560,15 @@ func TestCov_InitTicksCellPixel(t *testing.T) {
 	if m.Init() == nil {
 		t.Error("Init should return a batched command")
 	}
+	m.cfg.Theme = "dark" // a fixed theme asks the terminal nothing
+	if m.Init() == nil {
+		t.Error("Init with a fixed theme still starts the ticks")
+	}
 	// the tick commands sleep their interval then yield the right message type
 	if _, ok := logicTick()().(logicMsg); !ok {
 		t.Error("logicTick cmd should yield a logicMsg")
 	}
-	if _, ok := frameTick(framePlaying)().(frameMsg); !ok {
+	if _, ok := frameTick(time.Millisecond)().(frameMsg); !ok {
 		t.Error("frameTick cmd should yield a frameMsg")
 	}
 	// cellPixelSize: no tty in tests -> (0,0); just exercise it without panicking
@@ -602,69 +578,7 @@ func TestCov_InitTicksCellPixel(t *testing.T) {
 }
 
 // ============================================================================
-// detectKittyGraphics — environment fingerprints
-// ============================================================================
-
-func TestCov_detectKittyGraphics(t *testing.T) {
-	clear := func(t *testing.T) {
-		for _, k := range []string{"TMUX", "TERM", "KITTY_WINDOW_ID", "GHOSTTY_RESOURCES_DIR", "GHOSTTY_BIN_DIR", "TERM_PROGRAM"} {
-			t.Setenv(k, "")
-		}
-	}
-	t.Run("tmux_forces_false", func(t *testing.T) {
-		clear(t)
-		t.Setenv("TMUX", "/tmp/tmux-1/default")
-		t.Setenv("KITTY_WINDOW_ID", "1") // present but ignored under tmux
-		if detectKittyGraphics() {
-			t.Error("under TMUX should be false")
-		}
-	})
-	t.Run("screen_term_false", func(t *testing.T) {
-		clear(t)
-		t.Setenv("TERM", "screen-256color")
-		if detectKittyGraphics() {
-			t.Error("screen TERM should be false")
-		}
-	})
-	t.Run("ghostty_bin_dir_true", func(t *testing.T) {
-		clear(t)
-		t.Setenv("GHOSTTY_BIN_DIR", "/Applications/Ghostty.app")
-		if !detectKittyGraphics() {
-			t.Error("GHOSTTY_BIN_DIR should be true")
-		}
-	})
-	t.Run("kitty_window_id_true", func(t *testing.T) {
-		clear(t)
-		t.Setenv("KITTY_WINDOW_ID", "1")
-		if !detectKittyGraphics() {
-			t.Error("KITTY_WINDOW_ID should be true")
-		}
-	})
-	t.Run("term_program_kitty_true", func(t *testing.T) {
-		clear(t)
-		t.Setenv("TERM_PROGRAM", "kitty")
-		if !detectKittyGraphics() {
-			t.Error("TERM_PROGRAM=kitty should be true")
-		}
-	})
-	t.Run("term_xterm_kitty_true", func(t *testing.T) {
-		clear(t)
-		t.Setenv("TERM", "xterm-kitty")
-		if !detectKittyGraphics() {
-			t.Error("TERM=xterm-kitty should be true")
-		}
-	})
-	t.Run("plain_xterm_false", func(t *testing.T) {
-		clear(t)
-		t.Setenv("TERM", "xterm-256color")
-		if detectKittyGraphics() {
-			t.Error("plain xterm should be false")
-		}
-	})
-}
-
-// ============================================================================
-// stack / frameBody — direct composition
+// stack / frameBody / centreRows / joinCols — direct composition
 // ============================================================================
 
 func TestCov_stack(t *testing.T) {
@@ -679,6 +593,11 @@ func TestCov_stack(t *testing.T) {
 	out = stack([]string{"H"}, []string{"m1", "m2", "m3"}, []string{"F"}, 3)
 	if len(out) != 3 || out[0] != "H" || out[2] != "F" || out[1] != "m1" {
 		t.Errorf("stack overflow-trim = %v", out)
+	}
+	// top + bottom exceed h: the region clamps to 0, tail still pins to the bottom
+	out = stack([]string{"a", "b"}, []string{"m"}, []string{"y", "z"}, 3)
+	if len(out) != 3 || out[2] != "z" {
+		t.Errorf("stack region<0 = %v", out)
 	}
 }
 
@@ -703,56 +622,23 @@ func TestCov_frameBody(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// renderMini — error / track / paused / idle / connecting
-// ============================================================================
-
-func TestCov_renderMini(t *testing.T) {
-	// fatal error
-	st := protocol.NewState()
-	st.SetFatal("Permission denied (publickey).")
-	m, _, _ := modelWith(st)
-	m.sty = newTheme()
-	m.cols = 50
-	if out := stripANSI(m.renderMini(m.st.Snap())); !strings.Contains(out, "ssh authentication failed") {
-		t.Errorf("mini fatal = %q", out)
+func TestCov_centreRows(t *testing.T) {
+	if got := centreRows(nil, 3); got != nil {
+		t.Errorf("centreRows(empty) = %v", got)
 	}
-
-	// playing track
-	mp, _, _ := makeModel(t)
-	mp.sty = newTheme()
-	mp.cols = 56
-	if out := stripANSI(mp.renderMini(mp.st.Snap())); !strings.Contains(out, "De Música Ligera") {
-		t.Errorf("mini track = %q", out)
+	col := []string{"ab", "cd", "ef"}
+	if got := centreRows(col, 2); !slices.Equal(got, col) {
+		t.Errorf("a taller column comes back as is, got %v", got)
 	}
-	// paused track -> the pause glyph
-	mp.st.ToggleOptimistic()
-	if out := mp.renderMini(mp.st.Snap()); !strings.Contains(out, GL["pause"]) {
-		t.Errorf("mini paused should carry the pause glyph: %q", stripANSI(out))
-	}
-
-	// connected, nothing playing
-	hb := protocol.NewState()
-	applyFixtureRecords(hb, "heartbeat_record.txt")
-	mh, _, _ := modelWith(hb)
-	mh.sty = newTheme()
-	mh.cols = 56
-	if out := stripANSI(mh.renderMini(mh.st.Snap())); !strings.Contains(out, "nothing playing") {
-		t.Errorf("mini connected-idle = %q", out)
-	}
-
-	// disconnected -> connecting
-	md, _, _ := modelWith(protocol.NewState())
-	md.sty = newTheme()
-	md.cols = 56
-	if out := stripANSI(md.renderMini(md.st.Snap())); !strings.Contains(out, "connecting to LP10") {
-		t.Errorf("mini connecting = %q", out)
+	got := centreRows([]string{"ab"}, 4)
+	if !slices.Equal(got, []string{"  ", "ab", "  ", "  "}) {
+		t.Errorf("centreRows(1 in 4) = %q", got)
 	}
 }
 
 // ============================================================================
-// render helpers: sourceStyle, fullSourceLine, seekRow idle, controlsRow,
-// dividerRow, metaLines idle, footerRow EQ hint
+// render helpers: sourceStyle, fullSourceLine, controlsRow, metaLines,
+// footerRow EQ hint, eqSliderRow, clipStyled
 // ============================================================================
 
 func TestCov_sourceStyle(t *testing.T) {
@@ -774,127 +660,168 @@ func TestCov_sourceStyle(t *testing.T) {
 	}
 }
 
+// The full player's source line: "● Spotify" beside a named track, the input
+// before any VND, nothing when no track is shown (metaLines names the source
+// there) or nothing is named.
 func TestCov_fullSourceLine(t *testing.T) {
 	m, _, _ := makeModel(t)
-	m.sty = newTheme()
 	s := m.st.Snap()
-	// fits -> the brand-tinted source line
-	if got := stripANSI(m.fullSourceLine(s, 60)); !strings.Contains(got, "Spotify") {
+	if got := stripANSI(m.fullSourceLine(s, 60)); got != "● Spotify" {
 		t.Errorf("fullSourceLine wide = %q", got)
 	}
 	// too narrow -> a plain dim clip that still respects the width contract
-	if got := m.fullSourceLine(s, 5); DispW(stripANSI(got)) > 5 {
-		t.Errorf("fullSourceLine narrow width = %d, want <= 5", DispW(stripANSI(got)))
+	if got := stripANSI(m.fullSourceLine(s, 5)); DispW(got) > 5 || !strings.HasSuffix(got, GL["ell"]) {
+		t.Errorf("fullSourceLine narrow = %q, want a clip within 5", got)
 	}
-	// nil track -> ""
-	if got := m.fullSourceLine(protocol.Snapshot{}, 60); got != "" {
-		t.Errorf("fullSourceLine(nil) = %q, want empty", got)
+	// a track before any VND: the input
+	if got := stripANSI(m.fullSourceLine(protocol.Snapshot{Source: "BT", Track: &protocol.Track{TrackName: "x"}}, 60)); got != "● Bluetooth" {
+		t.Errorf("fullSourceLine(BT) = %q", got)
+	}
+	// no track, or nothing named -> ""
+	if got := m.fullSourceLine(protocol.Snapshot{Service: "spotify"}, 60); got != "" {
+		t.Errorf("fullSourceLine(no track) = %q, want empty", got)
+	}
+	if got := m.fullSourceLine(protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}}, 60); got != "" {
+		t.Errorf("fullSourceLine(nothing named) = %q, want empty", got)
 	}
 }
 
-func TestCov_seekRowIdleAndControlsRow(t *testing.T) {
-	// idle seek row (nil track) hits the quiet-marker default branch and fills W
-	mi, _, _ := modelWith(protocol.NewState())
-	mi.sty = newTheme()
-	if got := DispW(stripANSI(mi.seekRow(mi.st.Snap(), 60))); got != 60 {
-		t.Errorf("idle seekRow width = %d, want 60", got)
-	}
-
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
-	st.SetVol(50)
+func TestCov_controlsRow(t *testing.T) {
+	m, _, _ := makeModel(t)
 	// withVol == false returns just the transport cluster (no volume)
 	noVol := stripANSI(m.controlsRow(m.st.Snap(), time.Now(), 80, false))
 	if strings.Contains(noVol, "vol") || strings.Contains(noVol, "%") {
 		t.Errorf("controlsRow(withVol=false) should omit volume: %q", noVol)
 	}
-	// muted + withVol shows the MUTED badge
+	live := stripANSI(m.controlsRow(m.st.Snap(), time.Now(), 80, true))
+	if !strings.Contains(live, "vol") || !strings.Contains(live, "44%") || !strings.Contains(live, " mute ") {
+		t.Errorf("controlsRow live = %q", live)
+	}
+	if DispW(live) != 80 {
+		t.Errorf("controlsRow width = %d, want 80", DispW(live))
+	}
+	// muted + withVol shows the MUTED badge and offers unmute
 	m.do("mute")
 	muted := stripANSI(m.controlsRow(m.st.Snap(), time.Now(), 80, true))
-	if !strings.Contains(muted, "MUTED") {
+	if !strings.Contains(muted, "MUTED") || !strings.Contains(muted, "unmute") {
 		t.Errorf("controlsRow muted = %q", muted)
+	}
+	// a flashing button lights up even when it is not focused
+	m.flash["next"] = time.Now().Add(time.Second)
+	if lit, plain := m.controlsRow(m.st.Snap(), time.Now(), 80, false), m.controlsRow(m.st.Snap(), time.Now().Add(2*time.Second), 80, false); lit == plain {
+		t.Error("a flashing next should be styled differently from a settled one")
 	}
 }
 
-func TestCov_dividerAndMetaIdleAndFooter(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	// a label wider than the row clamps the rule to 0 without panicking
-	if got := m.dividerRow("a-very-long-heading", 2); got == "" {
-		t.Error("dividerRow with a tiny W should still render")
-	}
-
-	// metaLines while disconnected with an error shows the friendly reason
+// metaLines while disconnected with an error shows the friendly reason, not
+// the raw dial error.
+func TestCov_metaLinesDisconnectedError(t *testing.T) {
 	st := protocol.NewState()
-	st.Note("ssh: Could not resolve hostname lp10.local")
+	st.Note("cannot reach :2018: dial tcp: lookup lp10.local: no such host")
 	md, _, _ := modelWith(st)
-	md.sty = newTheme()
 	lines := md.metaLines(md.st.Snap(), 50)
+	assertWithin(t, "metaLines", lines, 50)
 	joined := stripANSI(strings.Join(lines, "\n"))
 	if !strings.Contains(joined, "connecting to LP10") || !strings.Contains(joined, "can't find the device") {
 		t.Errorf("metaLines disconnected+error = %q", joined)
 	}
+}
 
-	// footer EQ-pane hint (a tone band: the generic hint)
+func TestCov_metaLinesTrackVariants(t *testing.T) {
+	m, _, _ := makeModel(t)
+	// empty title -> "—", artist + album joined on the second line
+	s1 := protocol.Snapshot{Track: &protocol.Track{Artist: "A", Album: "Al"}}
+	l1 := stripANSI(strings.Join(m.metaLines(s1, 40), "\n"))
+	if !strings.Contains(l1, "—") || !strings.Contains(l1, "A · Al") {
+		t.Errorf("metaLines empty-title = %q", l1)
+	}
+	// no artist but an album -> the album alone, linked to an album search
+	s2 := protocol.Snapshot{Track: &protocol.Track{TrackName: "T", Album: "OnlyAlbum"}}
+	l2 := m.metaLines(s2, 40)
+	if got := clean(l2[1]); got != "OnlyAlbum" || !strings.Contains(l2[1], spotifySearch("OnlyAlbum")) {
+		t.Errorf("metaLines album-only = %q", l2[1])
+	}
+	assertWithin(t, "metaLines", m.metaLines(s1, 40), 40)
+	assertWithin(t, "metaLines", l2, 40)
+	// a bare title: an empty, unlinked second line
+	l3 := m.metaLines(protocol.Snapshot{Track: &protocol.Track{TrackName: "T"}}, 40)
+	if clean(l3[1]) != "" || strings.Contains(l3[1], "\x1b]8") {
+		t.Errorf("metaLines title-only second line = %q", l3[1])
+	}
+}
+
+func TestCov_fullMetaVariants(t *testing.T) {
+	m, _, _ := makeModel(t)
+	// empty title -> "—", and with no artist/album there's a single line
+	out := m.fullMeta(protocol.Snapshot{Track: &protocol.Track{}}, 40)
+	if len(out) != 1 || clean(out[0]) != "—" {
+		t.Errorf("fullMeta empty-title = %q", out)
+	}
+	// the three fields on their own lines
+	full := m.fullMeta(m.st.Snap(), 40)
+	assertWithin(t, "fullMeta", full, 40)
+	assertWithin(t, "fullMeta narrow", m.fullMeta(m.st.Snap(), 8), 8)
+	if len(full) != 3 || clean(full[0]) != "De Música Ligera" || clean(full[1]) != "Soda Stereo" || clean(full[2]) != "Canción Animal" {
+		t.Errorf("fullMeta = %q", full)
+	}
+}
+
+func TestCov_footerRowEQHint(t *testing.T) {
+	m, _, _ := makeModel(t)
 	m.view = viewEQ
-	m.eqFocus = 2
-	if got := stripANSI(m.footerRow(80)); !strings.Contains(got, "select") || !strings.Contains(got, "adjust") {
+	if got := stripANSI(m.footerRow(80)); strings.TrimSpace(got) != eqHint || DispW(got) != 80 {
 		t.Errorf("footer EQ hint = %q", got)
 	}
 }
 
-// ============================================================================
-// eqSliderRow — toggle on/off, ranged warm/cool/accent knobs, unknown "—"
-// ============================================================================
-
 func TestCov_eqSliderRow(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
 	const w = 60
-	// toggle ON (EQE == Specs[1]) and OFF
-	if got := stripANSI(m.eqSliderRow(1, map[string]int{"EQE": 1}, false, w)); !strings.Contains(got, "on") {
+	mxv, eqe, bas := eqSpecIndex("MXV"), eqSpecIndex("EQE"), eqSpecIndex("BAS")
+	// toggle ON and OFF
+	if got := stripANSI(m.eqSliderRow(eqe, map[string]int{"EQE": 1}, false, w)); !strings.Contains(got, "● on") {
 		t.Errorf("toggle on = %q", got)
 	}
-	if got := stripANSI(m.eqSliderRow(1, map[string]int{"EQE": 0}, false, w)); !strings.Contains(got, "off") {
+	if got := stripANSI(m.eqSliderRow(eqe, map[string]int{"EQE": 0}, false, w)); !strings.Contains(got, "○ off") {
 		t.Errorf("toggle off = %q", got)
 	}
 	// ranged unknown value -> "—"
-	if got := stripANSI(m.eqSliderRow(0, map[string]int{}, false, w)); !strings.Contains(got, "—") {
+	if got := stripANSI(m.eqSliderRow(mxv, map[string]int{}, false, w)); !strings.HasSuffix(got, "—") {
 		t.Errorf("ranged unknown = %q", got)
 	}
 	// ranged tone +/- and a non-negative-min ranged (MXV) accent knob, focused
-	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": 5}, true, w)); !strings.Contains(got, "+5") {
+	if got := stripANSI(m.eqSliderRow(bas, map[string]int{"BAS": 5}, true, w)); !strings.HasSuffix(got, "+5") {
 		t.Errorf("ranged +5 = %q", got)
 	}
-	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": -5}, true, w)); !strings.Contains(got, "-5") {
+	if got := stripANSI(m.eqSliderRow(bas, map[string]int{"BAS": -5}, true, w)); !strings.HasSuffix(got, "-5") {
 		t.Errorf("ranged -5 = %q", got)
 	}
-	if got := stripANSI(m.eqSliderRow(0, map[string]int{"MXV": 50}, true, w)); !strings.Contains(got, "50") {
+	if got := stripANSI(m.eqSliderRow(mxv, map[string]int{"MXV": 50}, true, w)); !strings.HasSuffix(got, "50") {
 		t.Errorf("ranged MXV = %q", got)
 	}
+	// every row is exactly w wide, whatever the value
+	for _, row := range []string{
+		m.eqSliderRow(bas, map[string]int{"BAS": 1000}, false, w),  // over the max: the knob clamps
+		m.eqSliderRow(bas, map[string]int{"BAS": -1000}, false, w), // under the min
+		m.eqSliderRow(bas, map[string]int{"BAS": 0}, true, w),
+		m.eqSliderRow(eqe, map[string]int{"EQE": 1}, true, w),
+		m.eqSliderRow(eqe, map[string]int{}, false, w),
+	} {
+		if got := DispW(stripANSI(row)); got != w {
+			t.Errorf("row width = %d, want %d: %q", got, w, stripANSI(row))
+		}
+	}
 	// trackW < 1 (very narrow) still renders without panicking
-	_ = m.eqSliderRow(3, map[string]int{"BAS": 0}, false, 5)
-
-	// an out-of-range device echo drives the knob position past the track ends,
-	// exercising the defensive knobPos clamps (above the max, then below the min)
-	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": 1000}, false, w)); DispW(got) != w {
-		t.Errorf("over-range knob row width = %d, want %d", DispW(got), w)
-	}
-	if got := stripANSI(m.eqSliderRow(3, map[string]int{"BAS": -1000}, false, w)); DispW(got) != w {
-		t.Errorf("under-range knob row width = %d, want %d", DispW(got), w)
-	}
+	_ = m.eqSliderRow(bas, map[string]int{"BAS": 0}, false, 5)
+	_ = m.eqSliderRow(eqe, map[string]int{"EQE": 1}, false, 9)
 
 	// the warm (boost) and cool (cut) focused knobs emit different styling
-	warm := m.eqSliderRow(3, map[string]int{"BAS": 5}, true, w)
-	cool := m.eqSliderRow(3, map[string]int{"BAS": -5}, true, w)
+	warm := m.eqSliderRow(bas, map[string]int{"BAS": 5}, true, w)
+	cool := m.eqSliderRow(bas, map[string]int{"BAS": -5}, true, w)
 	if warm == cool {
 		t.Error("a boosted (warm) and cut (cool) knob should differ in styling")
 	}
 }
-
-// ============================================================================
-// clipStyled — fits and overflows
-// ============================================================================
 
 func TestCov_clipStyled(t *testing.T) {
 	if got := clipStyled("abc", 10); got != "abc" {
@@ -919,38 +846,73 @@ func TestCov_renderDashboardCompactAndErrors(t *testing.T) {
 	// compact layout: cols between MiniCols and FullCols
 	m, _, _ := makeModel(t)
 	m.rows, m.cols = 20, 64
-	out := clean(m.viewContent())
-	if strings.Contains(out, "EQ off") || !strings.Contains(out, GL["rew"]) {
+	out := clean(render(t, m))
+	if strings.Contains(out, "Max volume") || !strings.Contains(out, GL["rew"]) {
 		t.Errorf("compact dashboard should show the transport and nothing of the equalizer:\n%s", out)
 	}
 
 	// a connected error paints the red error line in the compact tail
 	me, st, _ := makeModel(t)
-	st.Note("Connection refused")
+	st.Note("dial tcp: connection refused")
 	me.rows, me.cols = 20, 64
-	if !strings.Contains(clean(me.viewContent()), "the device refused the connection") {
+	if !strings.Contains(clean(render(t, me)), "the device refused the connection") {
 		t.Error("compact errLine should show the friendly reason")
 	}
 
-	// and in the full layout
-	mf, st2, _ := makeModel(t)
-	st2.Note("Connection refused")
-	mf.rows, mf.cols = 40, 120
-	if !strings.Contains(clean(mf.viewContent()), "the device refused the connection") {
-		t.Error("full errLine should show the friendly reason")
+	// and in the full layout, the idle screen included
+	for _, stf := range []*protocol.State{playingState(), idleState()} {
+		mf, _, _ := modelWith(stf)
+		stf.Note("dial tcp: connection refused")
+		mf.rows, mf.cols = 40, 120
+		if !strings.Contains(clean(render(t, mf)), "the device refused the connection on :2018") {
+			t.Error("full errLine should show the friendly reason")
+		}
+	}
+
+	// an error older than ErrorDisplayDuration has left the player
+	mo, sto, _ := makeModel(t)
+	sto.Note("dial tcp: connection refused")
+	mo.rows, mo.cols = 40, 120
+	if got := mo.renderDashboard(sto.Snap(), time.Now().Add(ErrorDisplayDuration+time.Second), 114, true); strings.Contains(clean(strings.Join(got, "\n")), "refused") {
+		t.Error("an aged error should leave the player")
+	}
+}
+
+// TestCov_renderDashboardGeometry forces the full player's cover-sizing clamps
+// by calling renderDashboard with full=true at a tiny width / short height and
+// a known cell-pixel size, so coverH<6, the maxW reservation, coverW<8, and the
+// measured-cell aspect branch all fire in one paint.
+func TestCov_renderDashboardGeometry(t *testing.T) {
+	m, _, _ := makeModel(t)
+	m.cellW, m.cellH = 8, 16 // a real measured cell aspect (the m.cellW>0 branch)
+	m.rows = 18              // short inner region -> coverH floors to 6
+	if out := m.renderDashboard(m.st.Snap(), time.Now(), 40, true); len(out) != m.bodyRows() {
+		t.Errorf("renderDashboard rows = %d, want %d", len(out), m.bodyRows())
+	}
+	// a very wide cell aspect caps the cover by width and floors its height
+	m.cellW, m.cellH = 2, 40
+	m.rows = 40
+	if out := m.renderDashboard(m.st.Snap(), time.Now(), 60, true); len(out) != m.bodyRows() {
+		t.Errorf("renderDashboard rows = %d, want %d", len(out), m.bodyRows())
 	}
 }
 
 // ============================================================================
-// art: noteBox, ghostCover (kitty), boxArt (ambient frame)
+// art: noteBox, boxArt, artColumn
 // ============================================================================
 
 func TestCov_noteBox(t *testing.T) {
-	m := artModel(t)
-	// normal motif (room for the 5x3 note motif)
-	normal := strings.Join(m.noteBox(10, 6), "\n")
-	if !strings.Contains(normal, "●") {
+	m, _, _ := makeModel(t)
+	// normal motif (room for the 5x3 note motif), every line w wide
+	normal := m.noteBox(10, 6)
+	if !strings.Contains(strings.Join(normal, "\n"), "●") {
 		t.Errorf("noteBox normal should draw the note motif: %q", normal)
+	}
+	assertWithin(t, "noteBox", normal, 10)
+	for i, ln := range normal {
+		if visWidth(ln) != 10 {
+			t.Errorf("noteBox line %d width %d, want 10", i, visWidth(ln))
+		}
 	}
 	// too small for the motif -> a single centred ♪
 	small := strings.Join(m.noteBox(3, 2), "\n")
@@ -961,112 +923,59 @@ func TestCov_noteBox(t *testing.T) {
 	if got := m.noteBox(0, 3); len(got) != 3 {
 		t.Errorf("noteBox(0,3) len = %d, want 3", len(got))
 	}
-}
-
-func TestCov_ghostCoverKitty(t *testing.T) {
-	m := artModel(t)
-	m.cfg.ArtMode = "auto"
-	m.sty.trueColor = true
-	m.sty.kittyGraphics = true
-	s := protocol.Snapshot{Connected: true,
-		LastArt: fillImg(40, 40, color.RGBA{200, 60, 40, 255}), LastCoverURL: "http://x/last"}
-	lines := m.ghostCover(s, 16, 8)
-	if len(lines) != 8 {
-		t.Fatalf("kitty ghost should be 8 lines, got %d", len(lines))
-	}
-	if !strings.Contains(m.kittyTx, "\x1b_G") {
-		t.Error("kitty ghost should stash the transmit escape for the out-of-band flush")
-	}
-	// no remembered cover -> nil (caller falls back to the note motif)
-	if g := m.ghostCover(protocol.Snapshot{Connected: true}, 16, 8); g != nil {
-		t.Error("ghostCover with no LastArt should be nil")
+	// under a CJK locale the box falls back to the single note too
+	defer func(orig int) { localeAmb = orig }(localeAmb)
+	localeAmb = 2
+	if got := strings.Join(m.noteBox(10, 6), "\n"); strings.Contains(got, "●") {
+		t.Errorf("CJK noteBox should not draw the ambiguous-width motif: %q", got)
 	}
 }
 
-func TestCov_boxArtAmbientFrame(t *testing.T) {
-	m := artModel(t)
-	m.amb = m.sty.tint(color.RGBA{210, 30, 30, 255}) // a red ambient tint lights the frame
-	framed := m.boxArt([]string{"abcd"}, 4)
-	if len(framed) != 3 {
-		t.Fatalf("boxArt should add top/bottom rows, got %d", len(framed))
+// boxArt adds a one-cell frame: +2 lines, +2 columns, with the corner glyphs.
+func TestCov_boxArt(t *testing.T) {
+	m, _, _ := makeModel(t)
+	framed := m.boxArt([]string{"abcd", "efgh"}, 4)
+	if len(framed) != 4 {
+		t.Fatalf("got %d lines, want 4 (2 content + top/bottom)", len(framed))
 	}
-	if !strings.Contains(framed[0], GL["tl"]) || !strings.Contains(framed[2], GL["bl"]) {
-		t.Error("boxArt missing frame corners")
+	if !strings.Contains(framed[0], GL["tl"]) || !strings.Contains(framed[3], GL["bl"]) {
+		t.Error("missing top/bottom frame corners")
 	}
-}
-
-// ============================================================================
-// diagCard direct (defensive negative-bar) + latencyRow
-// ============================================================================
-
-// ============================================================================
-// renderDiag — Wi-Fi stacked and Wi-Fi cards, plus the short-pane trim
-// ============================================================================
-
-// wifiDev returns a synthetic @@i device section for a Wi-Fi link at the given MHz.
-func wifiDev(freq string) string {
-	return "@@i\nnet=wifi\niface=wlan0\nip=192.168.1.50\nmac=aa:bb:cc:dd:ee:01\n" +
-		"gw=192.168.1.1\nssid=HomeNet\nfreq=" + freq + "\nrate=433\n" +
-		"build=2025-12-24\napp=312\nplatform=LS8\ndata=1258291 7340032\ndns=192.168.1.1\n@@E\n"
-}
-
-// two Wi-Fi @@s heartbeats (signal/noise/linkq + audio chain + pings); the second
-// bumps the byte counters so the throughput rates compute (RatesOK).
-const (
-	wifiS1 = "@@s\n12350 0.5 0.4 0.3 138500 221064 2 AR241CE_8530.23 Linux-5.15.137 52400 1000 500 -55 50 2.1 0.9 22.4 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 -90\n@@E\n"
-	wifiS2 = "@@s\n12351 0.5 0.4 0.3 138500 221064 2 AR241CE_8530.23 Linux-5.15.137 52400 2000 1500 -55 50 2.2 1.0 23.0 RUNNING 4834 44100 S16_LE 2 22050 1200000 2/237 -90\n@@E\n"
-)
-
-func applyRaw(st *protocol.State, raw string) {
-	lines := strings.Split(strings.TrimSuffix(raw, "\n"), "\n")
-	for rec := range protocol.IterRecords(feeder(lines)) {
-		protocol.ApplyRecord(st, rec)
-	}
-}
-
-func TestCov_renderDiagWifiStacked(t *testing.T) {
-	st := protocol.NewState()
-	applyRaw(st, wifiDev("5180")) // 5 GHz, channel 36
-	applyRaw(st, wifiS1)
-	applyRaw(st, wifiS2)
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 44, 99 // W = 93 < diagCardsMinW -> stacked
-	m.view = viewDiag
-	out := clean(m.viewContent())
-	for _, want := range []string{"wi-fi", "HomeNet", "ch 36", "5 GHz", "signal", "latency", "you", "gw"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("wifi stacked diag missing %q", want)
+	for i, ln := range framed {
+		if w := lipgloss.Width(ln); w != 6 {
+			t.Errorf("framed line %d width %d, want 6 (4 + 2 border)", i, w)
 		}
 	}
 }
 
-func TestCov_renderDiagWifiCards(t *testing.T) {
-	st := protocol.NewState()
-	applyRaw(st, wifiDev("2437")) // 2.4 GHz, channel 6
-	applyRaw(st, wifiS1)
-	applyRaw(st, wifiS2)
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 44, 120 // W = 114 >= diagCardsMinW -> cards
-	m.view = viewDiag
-	out := clean(m.viewContent())
-	for _, want := range []string{"─ network", "wi-fi", "ch 6", "2.4 GHz", "snr", "dns", "rate", "433 Mbit/s"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("wifi cards diag missing %q", want)
-		}
+// The art column has three faces: the searching arcs while (re)connecting, the
+// plasma motif while there is something to show (a track, or playback without
+// one), and the calm note motif when connected and idle.
+func TestCov_artColumnStates(t *testing.T) {
+	cases := []struct {
+		name             string
+		st               *protocol.State
+		want             string
+		motif, searching bool
+	}{
+		{"connecting", protocol.NewState(), "searching for LP10", false, true},
+		{"playing a track", playingState(), "█", true, false},
+		{"playing untitled", untitledState(), "█", true, false},
+		{"idle", idleState(), "●", false, false},
 	}
-}
-
-func TestCov_renderDiagStackedShortPane(t *testing.T) {
-	st := protocol.NewState()
-	applyRaw(st, wifiDev("5180"))
-	applyRaw(st, wifiS1)
-	applyRaw(st, wifiS2)
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 18, 99 // too short: the read-out must be trimmed with a hint
-	m.view = viewDiag
-	out := clean(m.viewContent())
-	if !strings.Contains(out, "↑↓ scroll") {
-		t.Errorf("a short diag pane should scroll and say how much is off-screen:\n%s", out)
+	for _, c := range cases {
+		m, _, _ := modelWith(c.st)
+		col := m.artColumn(c.st.Snap(), 24, 8)
+		if len(col) != 8 {
+			t.Errorf("%s: %d rows, want 8", c.name, len(col))
+		}
+		assertWithin(t, c.name, col, 24)
+		if got := stripANSI(strings.Join(col, "\n")); !strings.Contains(got, c.want) {
+			t.Errorf("%s: art column lacks %q:\n%s", c.name, c.want, got)
+		}
+		if m.motifLive != c.motif || m.searchLive != c.searching {
+			t.Errorf("%s: motifLive=%v searchLive=%v, want %v %v", c.name, m.motifLive, m.searchLive, c.motif, c.searching)
+		}
 	}
 }
 
@@ -1082,6 +991,8 @@ func TestCov_nbSendDropOldest(t *testing.T) {
 	if got := <-ch; got != 2 {
 		t.Errorf("nbSend drop-oldest = %d, want 2", got)
 	}
+	// an unbuffered channel nobody reads never blocks the caller
+	nbSend(make(chan int), 3)
 }
 
 func TestCov_UpdateUnknownAndViewZero(t *testing.T) {
@@ -1113,6 +1024,10 @@ func TestCov_themeDegenerate(t *testing.T) {
 	if got := stripANSI(st.lineMeter(0, 10)); !strings.Contains(got, "●") {
 		t.Errorf("lineMeter(frac 0) should still draw the head: %q", got)
 	}
+	// an empty vbar fill draws the track only
+	if got := st.vbar(0, 3); len(got) != 3 || strings.Contains(stripANSI(strings.Join(got, "")), "█") {
+		t.Errorf("vbar(0) = %q, want three track cells", got)
+	}
 }
 
 func TestCov_marqueeZeroWidth(t *testing.T) {
@@ -1137,341 +1052,60 @@ func TestCov_transportLayoutNarrow(t *testing.T) {
 	}
 }
 
-func TestCov_stackRegionClamp(t *testing.T) {
-	// top + bottom exceed h: the region clamps to 0, tail still pins to the bottom
-	out := stack([]string{"a", "b"}, []string{"m"}, []string{"y", "z"}, 3)
-	if len(out) != 3 || out[2] != "z" {
-		t.Errorf("stack region<0 = %v", out)
-	}
-}
-
-func TestCov_metaLinesVariants(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-
-	// connected & idle -> the "start something" hint
-	hb := protocol.NewState()
-	applyFixtureRecords(hb, "heartbeat_record.txt")
-	mh, _, _ := modelWith(hb)
-	mh.sty = newTheme()
-	if got := stripANSI(strings.Join(mh.metaLines(mh.st.Snap(), 50), "\n")); !strings.Contains(got, "start something") {
-		t.Errorf("connected idle metaLines = %q", got)
-	}
-
-	// empty title -> "—", artist + album joined on the second line
-	s1 := protocol.Snapshot{Track: &protocol.Track{Artist: "A", Album: "Al"}}
-	l1 := stripANSI(strings.Join(m.metaLines(s1, 40), "\n"))
-	if !strings.Contains(l1, "—") || !strings.Contains(l1, "A · Al") {
-		t.Errorf("metaLines empty-title = %q", l1)
-	}
-
-	// no artist but an album -> the album-search link fallback path
-	s2 := protocol.Snapshot{Track: &protocol.Track{TrackName: "T", Album: "OnlyAlbum"}}
-	l2 := stripANSI(strings.Join(m.metaLines(s2, 40), "\n"))
-	if !strings.Contains(l2, "OnlyAlbum") {
-		t.Errorf("metaLines album-only = %q", l2)
-	}
-}
-
-func TestCov_fullMetaVariants(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	// empty title -> "—", and with no artist/album there's a single line
-	s := protocol.Snapshot{Track: &protocol.Track{}}
-	out := m.fullMeta(s, 40)
-	if len(out) != 1 || !strings.Contains(stripANSI(out[0]), "—") {
-		t.Errorf("fullMeta empty-title = %v", out)
-	}
-}
-
-func TestCov_fullSourceLineVariants(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	// a track with no source/format -> ""
-	if got := m.fullSourceLine(protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}}, 60); got != "" {
-		t.Errorf("fullSourceLine no-format = %q, want empty", got)
-	}
-	// a channel count appends "· N ch"
-	s := protocol.Snapshot{Track: &protocol.Track{PlayURL: "spotify:track:x", MIME: "audio/ogg", SampleRate: 44100, ChannelCount: 2}}
-	if got := stripANSI(m.fullSourceLine(s, 60)); !strings.Contains(got, "2 ch") {
-		t.Errorf("fullSourceLine channel count = %q", got)
-	}
-}
-
-func TestCov_seekRowNarrowAndTint(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	// a very narrow column clamps the meter to a single cell without panicking
-	// (the fixed status/time fields mean it can't honour W below their overhead)
-	if got := stripANSI(m.seekRow(m.st.Snap(), 6)); got == "" {
-		t.Error("narrow seekRow should still render")
-	}
-	// an ambient tint recolours the seek bar (the m.amb != nil branch)
-	m.amb = m.sty.tint(color.RGBA{210, 30, 30, 255})
-	_ = m.seekRow(m.st.Snap(), 60)
-}
-
 func TestCov_headerRowReconnectAndNarrow(t *testing.T) {
 	st := protocol.NewState()
 	st.StartConnection()
 	st.StartConnection() // attempts -> 2, still disconnected
 	m, _, _ := modelWith(st)
-	m.sty = newTheme()
 	// the attempt counter is this module's own behaviour, not an environment
 	// capability: failing to establish the precondition IS the regression, so it
 	// must fail rather than skip (a skip would report a green run).
 	if m.st.Snap().Attempts <= 1 {
 		t.Fatalf("setup: two StartConnection calls should bump attempts, got %d", m.st.Snap().Attempts)
 	}
-	if got := stripANSI(m.headerRow(m.st.Snap(), time.Now(), 80, false)); !strings.Contains(got, "reconnecting") {
+	if got := stripANSI(m.headerRow(m.st.Snap(), time.Now(), 80, false)); !strings.Contains(got, "● reconnecting (2)…") {
 		t.Errorf("disconnected header should read reconnecting: %q", got)
+	}
+	// the first attempt reads plain "connecting…"
+	first := protocol.NewState()
+	first.StartConnection()
+	if got := stripANSI(m.headerRow(first.Snap(), time.Now(), 80, false)); !strings.Contains(got, "● connecting…") {
+		t.Errorf("first-attempt header = %q", got)
 	}
 	// a tiny width drives the device-name budget below its floor (nameMax clamp)
 	_ = m.headerRow(m.st.Snap(), time.Now(), 12, false)
 }
 
-func TestCov_eqSliderRowTogglePadClamp(t *testing.T) {
-	m, _, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
-	// a very narrow toggle row drives the content-pad below zero (clamped)
-	_ = m.eqSliderRow(1, map[string]int{"EQS": 1}, false, 9)
-}
-
-// ============================================================================
-// Rich diagnostics scenarios — Wi-Fi cards/stacked arms: warn/red health
-// bands, buffer fill bands, latency spike, SNR vs link-quality detail, the
-// channel count, the discovered tag, and the "LUCI silent" header.
-// ============================================================================
-
-// sBase is a 26-field @@s heartbeat (see protocol @@s field order). sRec clones
-// it and overrides the given field indices, so each scenario tweaks just what it
-// needs (1=load1m, 6=ncpu, 9=tempmC, 10/11=rx/tx, 12/13=signal/linkq, 14=youPing,
-// 18=bufAvail, 22=bufSize, 25=noise).
-var sBase = []string{
-	"12350", "0.5", "0.4", "0.3", "138500", "221064", "2", "AR241CE_8530.23",
-	"Linux-5.15.137", "52400", "1000", "500", "-55", "50", "2.1", "0.9", "22.4",
-	"RUNNING", "4834", "44100", "S16_LE", "2", "22050", "1200000", "2/237", "-90",
-}
-
-func sRec(over map[int]string) string {
-	f := append([]string(nil), sBase...)
-	for i, v := range over {
-		f[i] = v
+// The compact header names the source beside the strip; brand-tinted when it
+// fits, a dim clip when only part of it does, and nothing below 8 columns of
+// room. The full player keeps it off the header (it has a source line).
+func TestCov_headerRowSource(t *testing.T) {
+	m, st, _ := makeModel(t)
+	now := time.Now()
+	if got := stripANSI(m.headerRow(st.Snap(), now, 80, false)); !strings.HasSuffix(got, "Spotify  1 player  2 equalizer  3 diagnostics") {
+		t.Errorf("compact header = %q", got)
 	}
-	return "@@s\n" + strings.Join(f, " ") + "\n@@E\n"
-}
-
-// richDiag builds a connected Wi-Fi state with warn/red metrics, a
-// channel-count track, a tunnel-live flag, and a latency spike. over patches the
-// final @@s sample (e.g. to drive a different buffer-fill band).
-func richDiag(t *testing.T, freq string, over map[int]string) (*model, *protocol.State) {
-	t.Helper()
-	st := protocol.NewState()
-	st.StartConnection()    // attempts -> 1 (singular "attempt"); records flow in below
-	st.SetEQConnected(true) // control tunnel "live"
-	st.PreloadEQ(map[string]int{"EQS": 1, "TRE": 3, "MID": -2, "BAS": 5, "VBS": 1, "VBI": 40, "MXV": 100})
-	st.Preload(&protocol.Track{TrackName: "X", MIME: "audio/flac", SampleRate: 44100, ChannelCount: 2}, 1000, 0)
-	applyRaw(st, wifiDev(freq))
-	// a data record marks the link connected; vol 0 + connected => muted
-	applyRaw(st, "@@p\nMID-Read:49 Data:1000 Length:4\n@@v\nMID-Read:64 Data:0 Length:1\n@@E\n")
-	st.SetVol(0)
-	// warn cpu (load 1.4 / 2 cores = 70%), red temp (80 °C), plus a rising ping spike
-	applyRaw(st, sRec(map[int]string{1: "1.4", 9: "80000"}))
-	applyRaw(st, sRec(map[int]string{1: "1.4", 9: "80000", 10: "2000", 11: "1500"}))
-	last := map[int]string{1: "1.4", 9: "80000", 10: "3000", 11: "2500", 14: "50"}
-	maps.Copy(last, over)
-	applyRaw(st, sRec(last))
-	m, _, _ := modelWith(st)
-	m.cfg.Discovered = true // the · mDNS host tag
-	return m, st
-}
-
-func TestCov_diagRichCards(t *testing.T) {
-	m, _ := richDiag(t, "5180", nil) // 5 GHz, buffer warn (fill ~0.3), SNR via noise
-	m.rows, m.cols = 44, 120
-	m.view = viewDiag
-	out := clean(m.viewContent())
-	for _, want := range []string{"5 GHz", "ch 36", "snr", "2 ch", "mDNS", "live", "─ latency", "─ connection"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("rich cards diag missing %q", want)
-		}
+	if got := stripANSI(m.headerRow(st.Snap(), now, 114, true)); strings.Contains(got, "Spotify") || !strings.HasSuffix(got, "Vol  ") {
+		t.Errorf("full header = %q, want Vol over the rail and no source", got)
+	}
+	// a long unknown service clipped into what the strip leaves
+	st.ApplyVendor("a-very-long-vendor-word")
+	got := stripANSI(m.headerRow(st.Snap(), now, 80, false))
+	if !strings.Contains(got, "a-very-long-ven"+GL["ell"]+"  1 player") || DispW(got) != 80 {
+		t.Errorf("clipped source header = %q (%d wide)", got, DispW(got))
+	}
+	// under 8 columns of room the source gives way to the strip
+	if got := stripANSI(m.headerRow(st.Snap(), now, 64, false)); strings.Contains(got, "a-very") || DispW(got) != 64 {
+		t.Errorf("crowded header = %q (%d wide)", got, DispW(got))
+	}
+	// muted: the rail label turns MUTED from the top
+	st.ApplyMute(true)
+	if got := stripANSI(m.headerRow(st.Snap(), now, 114, true)); !strings.Contains(got, "MUTED") {
+		t.Errorf("muted full header = %q", got)
 	}
 }
 
-func TestCov_diagRichStacked(t *testing.T) {
-	m, _ := richDiag(t, "5180", nil)
-	m.rows, m.cols = 44, 99
-	m.view = viewDiag
-	out := clean(m.viewContent())
-	for _, want := range []string{"5 GHz", "link 50/70", "mDNS"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("rich stacked diag missing %q", want)
-		}
-	}
-}
-
-func TestCov_diagCardsBufferRedAndLinkQ(t *testing.T) {
-	// bufAvail > bufSize -> negative fill clamped to 0 -> the red buffer arm; and an
-	// absent noise floor falls back to the link-quality SNR detail; ncpu 0 -> clamp.
-	m, _ := richDiag(t, "5180", map[int]string{18: "30000", 25: "-", 6: "0"})
-	m.rows, m.cols = 44, 120
-	m.view = viewDiag
-	if out := clean(m.viewContent()); !strings.Contains(out, "link 50/70") {
-		t.Errorf("buffer-red cards should fall back to link quality: missing in\n%s", out)
-	}
-}
-
-func TestCov_diagCardsSilentHeader(t *testing.T) {
-	m, st := richDiag(t, "5180", nil)
-	m.sty = newTheme()
-	m.rows = 44
-	dData := st.DiagnosticView(time.Now()).LastData
-	if dData.IsZero() {
-		t.Fatal("setup: expected a last-data stamp")
-	}
-	// a now well past the watchdog's SilentAfter flags "LUCI silent" in the header
-	out := stripANSI(strings.Join(m.renderDiagCards(st.Snap(), dData.Add(workers.SilentAfter+time.Second), 114), "\n"))
-	if !strings.Contains(out, "LUCI silent") {
-		t.Errorf("stale cards header should read LUCI silent: %q", firstLine(out))
-	}
-}
-
-// ============================================================================
-// Final pass: full-layout geometry clamps and the last few diagnostics arms.
-// ============================================================================
-
-// TestCov_renderDashboardGeometry forces the full player's cover-sizing clamps by
-// calling renderDashboard with full=true at a tiny width / short height and a
-// known cell-pixel size, so coverH<6, the maxW reservation, coverW<8, and the
-// measured-cell aspect branch all fire in one paint.
-func TestCov_renderDashboardGeometry(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	m.cellW, m.cellH = 8, 16 // a real measured cell aspect (the m.cellW>0 branch)
-	m.rows = 18              // short inner region -> coverH floors to 6
-	out := m.renderDashboard(m.st.Snap(), time.Now(), 40, true)
-	if len(out) == 0 {
-		t.Error("renderDashboard should produce a body")
-	}
-}
-
-func TestCov_diagStackedNcpuZero(t *testing.T) {
-	// ncpu 0 -> the nc<1 clamp on the stacked resources gauge
-	m, _ := richDiag(t, "5180", map[int]string{6: "0"})
-	m.rows, m.cols = 44, 99
-	m.view = viewDiag
-	if clean(m.viewContent()) == "" {
-		t.Error("stacked diag with ncpu 0 should still render")
-	}
-}
-
-func TestCov_diagCardsBufferWarn(t *testing.T) {
-	// bufAvail 15435 of 22050 -> fill ~0.30 -> the stWarn buffer arm
-	m, _ := richDiag(t, "5180", map[int]string{18: "15435"})
-	m.rows, m.cols = 44, 120
-	m.view = viewDiag
-	if !strings.Contains(clean(m.viewContent()), "buffer") {
-		t.Error("buffer-warn cards should still draw the buffer gauge")
-	}
-}
-
-func TestCov_diagCardsMissingPing(t *testing.T) {
-	// only the laptop ping reports; the gateway and internet targets are skipped
-	// (the !ps.OK continue) in the latency card.
-	st := protocol.NewState()
-	applyRaw(st, wifiDev("5180"))
-	applyRaw(st, "@@p\nMID-Read:49 Data:1000 Length:4\n@@v\nMID-Read:64 Data:44 Length:2\n@@E\n")
-	applyRaw(st, sRec(map[int]string{15: "-", 16: "-"})) // gw + net pings absent
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 44, 120
-	m.view = viewDiag
-	out := clean(m.viewContent())
-	if !strings.Contains(out, "─ latency") || !strings.Contains(out, "you") {
-		t.Errorf("latency card should still show the 'you' row: %q", out)
-	}
-}
-
-func TestCov_diagCardsDeviceError(t *testing.T) {
-	m, st := richDiag(t, "5180", nil)
-	st.Note("Connection refused") // a device error pins to the card tail (derr != "")
-	m.rows, m.cols = 44, 120
-	m.view = viewDiag
-	if !strings.Contains(clean(m.viewContent()), "the device refused the connection") {
-		t.Error("a device error should show its friendly reason in the cards tail")
-	}
-}
-
-func TestCov_latencyRowWideFields(t *testing.T) {
-	m, _, _ := modelWith(protocol.NewState())
-	m.sty = newTheme()
-	// wide numeric fields make the inner rpad a no-op (return s); a long name
-	// is clipped to its column so the figures stay aligned with the other rows
-	ps := protocol.PingStat{Avg: 12345, Jitter: 6789, Peak: 99999, OK: true}
-	row := stripANSI(m.latencyRow("verylongname", ps))
-	if !strings.Contains(row, Clip("verylongname", latNameW)) || strings.Contains(row, "verylongname") || !strings.Contains(row, "12345") {
-		t.Errorf("wide latency row = %q", row)
-	}
-}
-
-// ============================================================================
-// Kitty encode-failure degrade paths. KittyImage returns empty when the cell
-// width exceeds the placeholder diacritic table (297), which is the reachable
-// trigger for artColumn / ghostCover to degrade (half-block under truecolor,
-// else the motif / nil).
-// ============================================================================
-
-func TestCov_artColumnKittyDegrade(t *testing.T) {
-	img := fillImg(40, 40, color.RGBA{20, 180, 90, 255})
-	s := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "u", Art: img}
-
-	// truecolor: a failed kitty encode degrades to the half-block raster
-	m := artModel(t)
-	m.cfg.ArtMode = "kitty"
-	m.sty.kittyGraphics = true
-	m.sty.trueColor = true
-	if hb := strings.Join(m.artColumn(s, 298, 4), "\n"); !strings.Contains(hb, "▀") {
-		t.Error("a failed kitty encode should degrade to half-blocks under truecolor")
-	}
-
-	// no truecolor: it falls all the way back to the motif (built == nil)
-	m2 := artModel(t)
-	m2.cfg.ArtMode = "kitty"
-	m2.sty.kittyGraphics = true
-	m2.sty.trueColor = false
-	mo := strings.Join(m2.artColumn(s, 298, 4), "\n")
-	if !strings.Contains(mo, "█") || strings.Contains(mo, "▀") {
-		t.Errorf("a failed kitty encode without truecolor should fall back to the motif")
-	}
-}
-
-func TestCov_ghostCoverKittyDegrade(t *testing.T) {
-	img := fillImg(40, 40, color.RGBA{200, 60, 40, 255})
-	s := protocol.Snapshot{Connected: true, LastArt: img, LastCoverURL: "u"}
-
-	m := artModel(t)
-	m.cfg.ArtMode = "kitty"
-	m.sty.kittyGraphics = true
-	m.sty.trueColor = true
-	if hb := strings.Join(m.ghostCover(s, 298, 4), "\n"); !strings.Contains(hb, "▀") {
-		t.Error("a failed kitty ghost encode should degrade to half-blocks under truecolor")
-	}
-
-	m2 := artModel(t)
-	m2.cfg.ArtMode = "kitty"
-	m2.sty.kittyGraphics = true
-	m2.sty.trueColor = false
-	if g := m2.ghostCover(s, 298, 4); g != nil {
-		t.Error("a failed kitty ghost encode without truecolor should be nil")
-	}
-}
-
-func TestCov_diagCardsNarrowStillRenders(t *testing.T) {
-	// driving the card grid far below its width floor must degrade (clip) rather
-	// than panic or produce nothing.
-	m, st := richDiag(t, "5180", nil)
-	m.sty = newTheme()
-	m.rows = 44
-	if stripANSI(strings.Join(m.renderDiagCards(st.Snap(), time.Now(), 50), "\n")) == "" {
-		t.Error("narrow cards should still render")
-	}
+// eqSpecIndex is the tunnel.Specs index of a wire code.
+func eqSpecIndex(code string) int {
+	return slices.IndexFunc(tunnel.Specs, func(sp tunnel.Spec) bool { return sp.Code == code })
 }

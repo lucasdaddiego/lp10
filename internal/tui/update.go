@@ -5,25 +5,24 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/mediakey"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
+	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
-// Two cadences drive the UI. The logic tick (100ms) advances the marquee, the
-// stats keep-alive, and the window title — its constants (marqueeColTicks,
-// StatsReassertTicks) are counted in these 100ms units. The frame tick is the
-// animation clock, decoupled so the plasma motif and the extrapolated seek bar
-// glide at the renderer's 15 fps (renderFPS) without speeding up the logic
-// above. It idles to a gentle rate while paused/idle, when the motif is frozen
-// and the motif cache makes those wake-ups nearly free.
+// Two cadences drive the UI. The logic tick (100ms) advances the marquee and
+// the window title — its constants (marqueeColTicks) are counted in these
+// 100ms units. The frame tick is the animation clock, decoupled so the plasma
+// motif glides at the renderer's 15 fps (renderFPS) without speeding up the
+// logic above. It idles to a gentle rate while paused/idle, when the motif is
+// frozen and the motif cache makes those wake-ups nearly free.
 type logicMsg struct{}
 type frameMsg struct{}
 
@@ -71,8 +70,7 @@ func (m *model) Init() tea.Cmd {
 
 // nbSend enqueues v without ever blocking the caller: on a full buffer it drops
 // the oldest queued item and retries once. Stale commands are coalesced/aged-out
-// downstream, so a dropped one is harmless. Shared by the transport (send) and
-// EQ (sendEQ) paths.
+// downstream, so a dropped one is harmless.
 func nbSend[T any](ch chan T, v T) {
 	select {
 	case ch <- v:
@@ -88,121 +86,35 @@ func nbSend[T any](ch chan T, v T) {
 	}
 }
 
-// send enqueues a transport command without ever blocking the update loop.
-func (m *model) send(mid int, data string) {
-	nbSend(m.cmds, &protocol.Command{Mid: mid, Data: data, TS: time.Now()})
+// send enqueues a tunnel command without ever blocking the update loop.
+func (m *model) send(code string, val int) {
+	nbSend(m.cmds, workers.Command{Code: code, Val: val, TS: time.Now()})
 }
 
-// syncViews tells the device loop whether the player is on screen (MID 94 —
-// off it, the loop drops to a 3 s tick and skips the position read) and the
-// probe workers whether anyone is looking at what LSSDP and ZeroConf find (only
-// the services and the diagnostics show them). The loop starts every
-// connection assuming the player is visible, so "hidden" is re-asserted every
-// StatsReassertTicks the way the stats flag is; "visible" is the default and
-// is sent once when the player comes back.
-//
-// Nothing is sent while the link is down: the flag would wait in the command
-// queue until the worker dropped it as stale, and its "command not delivered"
-// would take the error line from the connection's own reason. The flag falls
-// back to the loop's default instead, so the first connected tick tells the
-// new loop once.
-func (m *model) syncViews(connected bool) {
-	m.st.SetProbeQuiet(m.view != viewServices && m.view != viewDiag)
-	if !connected {
-		m.playerShown = true // what the next connection's loop starts with
-		return
-	}
-	shown := m.view == viewPlayer || m.miniMode()
-	switch {
-	case shown && !m.playerShown:
-		m.send(94, "1")
-		m.playerShown = true
-	case !shown:
-		m.hiddenTicks--
-		if m.playerShown || m.hiddenTicks <= 0 {
-			m.send(94, "0")
-			m.playerShown = false
-			m.hiddenTicks = StatsReassertTicks
-		}
-	}
-}
-
-// syncStats keeps the device's resource-stat (@@s) emission aligned with the
-// diagnostics overlay: send "on" (90 1) when it opens and re-assert every
-// StatsReassertTicks so a reconnect resumes it; send "off" (90 0) once when it
-// closes (by any path, including a resize to the mini view). Off the overlay the
-// box does no /proc gathering at all. Like syncViews it sends nothing while the
-// link is down, falling back to the loop's default (off); the periodic
-// re-assert stays for a reconnect too quick for a tick to see.
-func (m *model) syncStats(connected bool) {
-	if !connected {
-		m.statsOn, m.statsTicks = false, 0 // what the next connection's loop starts with
-		return
-	}
-	switch {
-	case m.view == viewDiag && (!m.statsOn || m.statsTicks <= 0):
-		m.send(90, "1")
-		m.statsOn = true
-		m.statsTicks = StatsReassertTicks
-	case m.view == viewDiag:
-		m.statsTicks--
-	case m.statsOn:
-		m.send(90, "0")
-		m.statsOn = false
-		m.statsTicks = 0
-	}
-}
-
-// reaskLogs runs on the connect's tick: it asks again for every log tail that
-// was asked for and never answered. The logs are asked for once per run (see
-// setView), and a request made while the link was down expires unheard in the
-// command worker, which would leave the pane on "asking the device…" for good.
-func (m *model) reaskLogs() {
-	for i, src := range logSources {
-		if !m.logAsked[i] {
-			continue
-		}
-		if _, at := m.st.LogView(src.src); at.IsZero() {
-			m.send(93, strconv.Itoa(int(src.src)))
-		}
-	}
-}
-
-func (m *model) savePremute(v int) {
-	if v > 0 {
-		config.SavePremute(m.premutePath, v)
-	}
-}
-
-func (m *model) setVol(v int) {
-	value, persist := m.st.SetVol(v)
-	m.savePremute(persist)
-	m.send(64, strconv.Itoa(value))
-	m.volumeNotice(value)
+// syncViews tells the probe workers whether anyone is looking at what LSSDP
+// and ZeroConf find (only the diagnostics show them).
+func (m *model) syncViews() {
+	m.st.SetProbeQuiet(m.view != viewDiag)
 }
 
 func (m *model) adjustVol(delta int) {
-	value, persist := m.st.AdjustVol(delta)
-	m.savePremute(persist)
-	m.send(64, strconv.Itoa(value))
+	value := m.st.AdjustVol(delta)
+	m.send(tunnel.VolumeCode, value)
 	m.volumeNotice(value)
 }
 
-// volumeNotice prints the level a volume key just set, or "muted".
+// volumeNotice prints the level a volume key just set.
 func (m *model) volumeNotice(value int) {
-	if value == 0 {
-		m.notify("muted", noticeFor)
-		return
-	}
 	m.notify(fmt.Sprintf("volume %d%%", value), noticeFor)
 }
 
 // volumeLive reports whether the volume in State is the device's own, read
 // this run. Until then it is the snapshot cached by the last run, and a step
 // computed from it lands on the device as an absolute level: cached 40, the
-// phone set 70 meanwhile, ↑ during "connecting…" sends 64 42 and the room
+// phone set 70 meanwhile, ↑ during "connecting…" sends VOL:42 and the room
 // drops to 42 on connect. A later outage keeps the keys: the level in hand is
 // this run's own, and a key pressed during a blip is delivered when it ends.
+// The first status read also brings the mute, so the mute key waits on it too.
 func (m *model) volumeLive() bool {
 	return m.st.Snap().VolLive
 }
@@ -218,48 +130,35 @@ func (m *model) do(action string) {
 	m.flash[action] = time.Now().Add(FlashDuration)
 	switch action {
 	case "toggle":
-		if m.st.ToggleOptimistic() {
-			m.send(40, "PAUSE")
-		} else {
-			m.send(40, "RESUME")
-		}
+		// The device's POP is a toggle: the flip here only keeps the screen a
+		// step ahead of its PLA push.
+		m.st.ToggleOptimistic()
+		m.send(tunnel.ToggleCode, 0)
 	case "next":
-		m.send(40, "NEXT")
+		m.send(tunnel.NextCode, 0)
 	case "prev":
-		// One PREV; on Spotify the device restarts the current track first, so
+		// One PRE; on Spotify the device restarts the current track first, so
 		// skipping back is a double-press (device behavior, not modeled here).
-		m.send(40, "PREV")
+		m.send(tunnel.PrevCode, 0)
 	case "volup":
 		m.adjustVol(+m.cfg.VolStep)
 	case "voldn":
 		m.adjustVol(-m.cfg.VolStep)
 	case "mute":
-		vol, premute := m.st.VolAndPremute()
-		if vol > 0 {
-			m.setVol(0)
+		// A real mute in the MCU: the volume stays where it is.
+		if m.st.ToggleMute() {
+			m.send(tunnel.MuteCode, 1)
+			m.notify("muted", noticeFor)
 		} else {
-			if premute == 0 {
-				premute = config.LoadPremute(m.premutePath)
-			}
-			m.setVol(premute)
+			m.send(tunnel.MuteCode, 0)
+			m.notify("unmuted", noticeFor)
 		}
 	}
 }
 
-// Update is the Bubble Tea message loop: dispatch plus the Kitty-transmit
-// flush. A cover raster rebuilt during the previous View leaves its transmit
-// escape in m.kittyTx (the cell renderer would strip an APC from view content,
-// so it can't ride the art lines); it goes out here via tea.Raw, which writes
-// through the program's synchronized output. The tick heartbeat guarantees a
-// prompt flush, and the placeholders already on screen composite the image the
-// moment it lands.
+// Update is the Bubble Tea message loop.
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	mm, cmd := m.dispatch(msg)
-	if m.kittyTx != "" {
-		cmd = tea.Batch(cmd, tea.Raw(m.kittyTx))
-		m.kittyTx = ""
-	}
-	return mm, cmd
+	return m.dispatch(msg)
 }
 
 // dispatch handles one message. KeyReleaseMsg is deliberately not handled:
@@ -269,7 +168,7 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.rows, m.cols = msg.Height, msg.Width
-		m.cellW, m.cellH = cellPixelSize() // window px changed; refresh the cover's pixel footprint
+		m.cellW, m.cellH = cellPixelSize() // window px changed; re-square the art box
 		return m, nil
 	case tea.BackgroundColorMsg:
 		dark := msg.IsDark()
@@ -277,21 +176,12 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureTheme() // rebuilds the palette when the answer differs from the one drawn
 		return m, nil
 	case logicMsg:
-		m.scroll++               // advance the now-playing marquee (independent of play state)
-		s := m.st.Snap()         // one snapshot per tick, reused below
-		m.syncStats(s.Connected) // device emits @@s only while the diag overlay is open
-		m.syncViews(s.Connected) // the loop's poll cadence and the LAN probes follow the view on screen
+		m.scroll++       // advance the now-playing marquee (independent of play state)
+		s := m.st.Snap() // one snapshot per tick, reused below
+		m.syncViews()    // the LAN probes follow the view on screen
 		now := time.Now()
-		if s.Connected && !m.wasConnected {
-			m.reaskLogs() // the connect's tick: trackConnection below moves wasConnected
-		}
 		m.trackConnection(s, now)
 		m.sleepFire(now, s) // after the connect summary, so a timer it cancels keeps the notice line
-		// follow mode: refetch the open log every 10 s (100 ticks) while it
-		// shows and the link is up (a request into a dead link expires unheard)
-		if m.logFollow && m.view == viewLogs && m.scroll%100 == 0 && s.Connected {
-			m.logRequest()
-		}
 		// The window title rides View (tea.View.WindowTitle under bubbletea v2),
 		// so the tick only has to keep the cached string current.
 		m.curTitle = m.computeTitle(s)
@@ -299,13 +189,13 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case frameMsg:
 		// Advance the animation clock only when something on screen is animating:
 		// the plasma motif while playing (frozen when paused), or the connecting
-		// search figure in the idle cover slot. Otherwise (album art, ghost cover,
-		// paused) nothing moves, so idle the clock — the 100ms logic tick still
-		// drives slow updates. m.motifLive / m.searchLive are set by the last render.
+		// search figure in the art slot. Otherwise nothing moves, so idle the
+		// clock — the 100ms logic tick still drives slow updates. m.motifLive /
+		// m.searchLive are set by the last render.
 		fs := m.st.Snap()
 		next := frameIdle
 		switch {
-		case m.motifLive && fs.Playing == 0:
+		case m.motifLive && fs.Playing:
 			m.frame++
 			next = framePlaying
 		case m.searchLive && !fs.Connected:
@@ -373,11 +263,4 @@ func (m *model) computeTitle(s protocol.Snapshot) string {
 		}
 	}
 	return b.String()
-}
-
-func (m *model) fmtRight(total, pos int) string {
-	if m.showRemaining && total > 0 {
-		return "-" + FmtMs(total-pos)
-	}
-	return FmtMs(total)
 }

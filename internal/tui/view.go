@@ -1,6 +1,6 @@
 // Rendering of the player: View's size dispatch and frame, the mini line, the
-// full/compact dashboards, and their rows (header, now-playing metadata, seek,
-// transport, volume rail, divider, footer).
+// full/compact dashboards, and their rows (header, now-playing metadata, play
+// status, transport, volume rail, divider, footer).
 
 package tui
 
@@ -50,22 +50,15 @@ func (m *model) viewContent() string {
 	now := time.Now()
 	full := rows >= FullRows && cols >= FullCols
 	s := m.st.Snap()
-	if m.view == viewPlayer {
-		m.refreshAmbient(s) // recolour the meter/frame/dot to the cover (must precede headerRow)
-	}
 	// "Vol" labels the rail only when the full player draws one: not on the idle screen
-	header := m.headerRow(s, now, W, full && m.view == viewPlayer && !(s.Track == nil && s.Connected))
+	header := m.headerRow(s, now, W, full && m.view == viewPlayer && !idle(s))
 	notice := m.noticeRow(now, W)
 	var body []string
 	switch m.view {
 	case viewEQ:
 		body = m.renderEQ(W)
-	case viewServices:
-		body = m.renderServices(now, W)
-	case viewLogs:
-		body = m.renderLogs(now, W)
 	case viewDiag:
-		body = m.renderDiagnostic(m.st.DiagnosticView(now), now, W)
+		body = m.renderDiagnostic(m.st.DiagnosticView(), now, W)
 	case viewHelp:
 		body = m.renderHelp(W)
 	default:
@@ -134,11 +127,20 @@ func (m *model) frameLines(lines []string, W int) string {
 	return b.String()
 }
 
+// idle reports whether the player shows its idle screen: connected, nothing
+// playing, and no track announced this run.
+func idle(s protocol.Snapshot) bool {
+	return s.Connected && s.Track == nil && !s.Playing
+}
+
 // trackTitle joins track name and artist with the em-dash separator, omitting
-// whichever side is missing so partial metadata (Bluetooth/AirPlay sources)
-// never renders a dangling " — ".
+// whichever side is missing so partial metadata never renders a dangling
+// " — ", and falls back to the album when the device named neither ("" only
+// when it named none of the three).
 func trackTitle(t *protocol.Track) string {
 	switch {
+	case t.TrackName == "" && t.Artist == "":
+		return t.Album
 	case t.TrackName == "":
 		return t.Artist
 	case t.Artist == "":
@@ -152,19 +154,23 @@ func (m *model) renderMini(s protocol.Snapshot) string {
 	ps := m.sty.pens()
 	t, cols := s.Track, m.cols
 	switch {
-	case s.Error != "" && (s.Fatal || time.Since(s.ErrorAt) < ErrorDisplayDuration):
+	case s.Error != "" && s.Connected && time.Since(s.ErrorAt) < ErrorDisplayDuration:
 		return ps.red.render(Clip(GL["warn"]+" "+friendlyError(s.Error), cols-1))
-	case t != nil:
+	case s.Connected && (t != nil || s.Playing):
 		glyph := GL["play"]
-		if s.Playing != 0 {
+		if !s.Playing {
 			glyph = GL["pause"]
 		}
-		line := fmt.Sprintf("%s %s  %s/%s  %d%%", glyph, trackTitle(t),
-			FmtMs(s.Pos), m.fmtRight(t.TotalTime, s.Pos), s.Vol)
-		if lbl, _ := m.sleepLabel(time.Now()); lbl != "" {
-			line += "  " + lbl
+		what := cmp.Or(SourceName(s), "playing")
+		if t != nil {
+			what = cmp.Or(trackTitle(t), what)
 		}
-		if lbl := nightLabel(s); lbl != "" {
+		vol := fmt.Sprintf("%d%%", s.Vol)
+		if s.Muted {
+			vol = "muted"
+		}
+		line := fmt.Sprintf("%s %s  %s", glyph, what, vol)
+		if lbl, _ := m.sleepLabel(time.Now()); lbl != "" {
 			line += "  " + lbl
 		}
 		return ps.txt.render(Clip(line, cols-1))
@@ -183,7 +189,7 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	// already told by the header ("reconnecting…") and the idle reason below the
 	// "connecting to LP10…" line, so don't also dump it red across the bottom.
 	errLine := ""
-	if s.Error != "" && (s.Fatal || (s.Connected && now.Sub(s.ErrorAt) < ErrorDisplayDuration)) {
+	if s.Error != "" && s.Connected && now.Sub(s.ErrorAt) < ErrorDisplayDuration {
 		errLine = stRed.Render(Clip(GL["warn"]+" "+friendlyError(s.Error), W))
 	}
 	inner := m.bodyRows()
@@ -195,37 +201,25 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		if errLine != "" {
 			tail = append(tail, errLine)
 		}
-		if s.Track == nil && s.Connected {
+		if idle(s) {
 			// connected, nothing playing: the idle screen instead of an empty sleeve
 			return append(m.renderIdle(s, now, W, inner-len(tail)), tail...)
 		}
-		// The framed cover fills the region between the header and that tail. Its
+		// The framed art fills the region between the header and that tail. Its
 		// height comes from the real region; its width makes the box *square in
 		// device pixels* using the measured cell aspect (cells are ~2:1, but the
-		// exact ratio varies by font/terminal — assuming 2:1 left covers stretched).
-		// Bounded by a hard height cap so it stays a cover, not a billboard, and by
-		// width so the metadata column stays usable.
-		// region minus the 2 frame rows, capped to a tasteful record sleeve (not a billboard)
+		// exact ratio varies by font/terminal). Bounded by a hard height cap so it
+		// stays a record sleeve, not a billboard, and by width so the metadata
+		// column stays usable.
 		coverH := max(min((inner-2-len(tail))-2, coverHCap), 6)
 		cellAR := 2.0 // cell height ÷ width; converts a cell count to display pixels
 		if m.cellW > 0 && m.cellH > 0 {
 			cellAR = float64(m.cellH) / float64(m.cellW)
 		}
-		// Size the box to the cover's TRUE aspect ratio (album art isn't always
-		// square) so neither the half-block raster (which stretches to fill its cell
-		// box) nor the Kitty placement distorts it: the box's display footprint
-		// (coverW·cellW × coverH·cellH px) tracks the source's width:height. A square
-		// cover keeps the old square box; a non-square one no longer gets stretched.
-		srcAR := 1.0 // source width ÷ height
-		if s.Art != nil {
-			if b := s.Art.Bounds(); b.Dx() > 0 && b.Dy() > 0 {
-				srcAR = float64(b.Dx()) / float64(b.Dy())
-			}
-		}
-		coverW := int(float64(coverH)*cellAR*srcAR + 0.5)
+		coverW := int(float64(coverH)*cellAR + 0.5)
 		if maxW := W - 49; coverW > maxW { // reserve a readable metadata column (≥ 36 cols) + the volume rail
 			coverW = maxW
-			coverH = int(float64(coverW)/(cellAR*srcAR) + 0.5)
+			coverH = int(float64(coverW)/cellAR + 0.5)
 		}
 		if coverH < 6 {
 			coverH = 6
@@ -235,23 +229,22 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		}
 		blockH := coverH + 2 // framed cover height = the now-playing block height
 		midW := W - (coverW + 2) - volColW - 2*artGap
-		// Three columns, all blockH tall: the framed album cover (left, a tidy sleeve);
-		// the now-playing column (middle); and a full-height volume rail (right). The
-		// middle is built as ONE cohesive block — title / artist / album, a blank, the
-		// source·format line, a blank, then the seek bar + transport — and centred
-		// vertically beside the cover. Grouping it tightly (rather than spreading the
+		// Three columns, all blockH tall: the framed art (left, a tidy sleeve); the
+		// now-playing column (middle); and a full-height volume rail (right). The
+		// middle is built as ONE cohesive block — title / artist / album, a blank,
+		// the source line, a blank, then the status + transport — and centred
+		// vertically beside the art. Grouping it tightly (rather than spreading the
 		// pieces evenly down the whole height) keeps it ordered instead of scattered
 		// with the source line floating in a void.
 		mid := m.fullMeta(s, midW)
 		if src := m.fullSourceLine(s, midW); src != "" {
 			mid = append(mid, "", src)
 		}
-		mid = append(mid, "", m.seekRow(s, midW), "", m.transportSegments(s, now, midW))
-		// A wide cover capped to its width can come out shorter than the
-		// metadata block (a 300×120 radio logo at 70×25 floors coverH at 6:
-		// 8 rows against 9 lines of mid), and frameBody would trim the
+		mid = append(mid, "", m.statusRow(s, midW), "", m.transportSegments(s, now, midW))
+		// A short art box (a wide, short terminal floors coverH at 6) can come
+		// out shorter than the metadata block, and frameBody would trim the
 		// transport row off the bottom. The block takes the taller of the two
-		// and the framed cover sits centred beside it instead.
+		// and the framed art sits centred beside it instead.
 		blockH = max(blockH, len(mid))
 		mid = frameBody(mid, nil, blockH, true) // centre the cohesive block in the column
 		art := centreRows(m.boxArt(m.artColumn(s, coverW, coverH), coverW), blockH)
@@ -262,10 +255,10 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		return stack(nil, block, tail, inner)
 	}
 
-	// Compact: no art / volume rail — metadata + seek + controls centred in the
-	// body, with the footer pinned to the bottom.
+	// Compact: no art / volume rail — metadata + status + controls centred in
+	// the body, with the footer pinned to the bottom.
 	meta := m.metaLines(s, W)
-	seek, controls := m.seekRow(s, W), m.controlsRow(s, now, W, true)
+	seek, controls := m.statusRow(s, W), m.controlsRow(s, now, W, true)
 	tail := []string{m.footerRow(W)}
 	if errLine != "" {
 		tail = append(tail, errLine)
@@ -279,7 +272,7 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 	return stack(nil, content, tail, inner)
 }
 
-// compactBody is the compact layout's player block — metadata, seek row,
+// compactBody is the compact layout's player block — metadata, status row,
 // transport row — with or without the blank lines between them.
 func compactBody(meta []string, seek, controls string, gaps bool) []string {
 	var out []string
@@ -385,9 +378,9 @@ func frameBody(content, tail []string, h int, center bool) []string {
 
 // headerRow is the one row every view shares: the device name and the
 // connection light on the left; on the right the view strip (1 player …
-// 5 diagnostics, the one on show lit), the source · format read-out when the
-// player has no other place for it (the compact layout), and the "Vol" label
-// over the full player's volume rail (showVol).
+// 3 diagnostics, the one on show lit), the source read-out when the player
+// has no other place for it (the compact layout), and the "Vol" label over
+// the full player's volume rail (showVol).
 func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, showVol bool) string {
 	full := showVol
 	ps := m.sty.pens()
@@ -398,9 +391,6 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, showVol boo
 	// "Vol" labels the volume rail from the right, centred over its column so it
 	// sits directly above the bar (which starts on the row just below).
 	statTxt := "● " + clock // the green dot reads unambiguously as "connected"
-	// The connected dot stays the theme's green — a status light, not an accent: an
-	// album-tinted dot (e.g. orange for a sepia cover) reads as a warning. The
-	// ambient hue still colours the seek bar and cover frame, just not this light.
 	statStyled := ps.acc.render("●") + ps.dim.render(" "+clock)
 	if !s.Connected {
 		statTxt = "● connecting…"
@@ -419,12 +409,6 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, showVol boo
 		}
 		statTxt += " · " + lbl
 		statStyled += ps.dmr.render(" · ") + pen.render(lbl)
-	}
-	// Night mode (the device's multi-band DRC) sits beside it: an accent badge,
-	// since it is an active effect on the sound rather than a clock.
-	if lbl := nightLabel(s); lbl != "" {
-		statTxt += " · " + lbl
-		statStyled += ps.dmr.render(" · ") + ps.acc.render(lbl)
 	}
 
 	prefixW := DispW(note) + 1 // "♪ "
@@ -449,7 +433,7 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, showVol boo
 
 	// the right side, outermost first: Vol over the rail (full player), the
 	// view strip, then — on the compact player, which has no source line of
-	// its own — the source · format read-out, each taking the room left.
+	// its own — the source read-out, each taking the room left.
 	right, rightW := vol, volW
 	room := W - leftW - 2
 	if strip, sw := m.viewStrip(room - rightW - btoi(rightW > 0)*2); sw > 0 {
@@ -459,13 +443,13 @@ func (m *model) headerRow(s protocol.Snapshot, now time.Time, W int, showVol boo
 			right, rightW = strip, sw
 		}
 	}
-	if q := sourceFormat(s.Track); q != "" && m.view == viewPlayer && !full {
+	if q := SourceName(s); q != "" && s.Connected && m.view == viewPlayer && !full {
 		if qroom := room - rightW - btoi(rightW > 0)*2; qroom >= 8 {
 			var qStyled string
 			var qW int
 			if DispW(q) <= qroom {
-				// fits fully: tint the source name in its brand colour, dim the format
-				qStyled, qW = m.brandSource(q, SourceName(s.Track)), DispW(q)
+				// fits fully: tint the source name in its brand colour
+				qStyled, qW = m.sty.pens().brandPen(q).render(q), DispW(q)
 			} else {
 				c := Clip(q, qroom)
 				qStyled, qW = ps.dmr.render(c), DispW(c)
@@ -529,7 +513,7 @@ func (m *model) viewStrip(room int) (string, int) {
 }
 
 // viewShort are the strip's labels for widths the full names overflow.
-var viewShort = [...]string{"play", "eq", "svc", "log", "diag"}
+var viewShort = [...]string{"play", "eq", "diag"}
 
 // Now-playing marquee tuning: a line wider than its column scrolls horizontally,
 // looping with a gap and pausing briefly at the start so the head stays readable.
@@ -559,32 +543,41 @@ func (m *model) marquee(s string, w int) string {
 	return dispWindow(strip+strip, off, w)
 }
 
-// metaLines renders the now-playing text: title, artist · album, and the
-// technical format line (or a connecting/idle message). The track lines scroll
-// as a marquee when they overflow w; the idle messages are clipped.
+// untitledHint is the line under a playing source the device has not named a
+// track for: the tunnel announces a track only when it changes, so a run that
+// starts mid-track waits for the next one.
+const untitledHint = "the title shows when the track changes"
+
+// metaLines renders the now-playing text: title, then artist · album (or a
+// connecting/idle message). The track lines scroll as a marquee when they
+// overflow w; the idle messages are clipped.
 func (m *model) metaLines(s protocol.Snapshot, w int) []string {
 	ps := m.sty.pens()
 	t := s.Track
 	if t == nil {
 		msg := "connecting to LP10…"
-		if s.Connected {
+		switch {
+		case s.Connected && s.Playing:
+			msg = "playing on " + cmp.Or(SourceName(s), "the LP10")
+		case s.Connected:
 			msg = "nothing playing"
 		}
 		out := []string{ps.dim.render(Clip(msg, w))}
 		switch {
+		case s.Connected && s.Playing:
+			out = append(out, ps.dmr.render(Clip(untitledHint, w)))
 		case s.Connected:
-			out = append(out, ps.dmr.render(Clip(wakeHint(m.st.ConfView()), w)))
+			out = append(out, ps.dmr.render(Clip(wakeHint, w)))
 		case s.Error != "":
 			// disconnected: a calm reason under "connecting…", not a red bottom line
 			out = append(out, ps.dmr.render(Clip(friendlyError(s.Error), w)))
 		}
 		if !s.Connected {
-			// The LSSDP probe needs neither ssh nor the tunnel, so it can say
-			// which kind of "connecting…" this is: a box that answers on the
-			// LAN but won't take the ssh (its lockout, or a password problem),
-			// or one that isn't there at all.
+			// The LSSDP probe needs no tunnel, so it can say which kind of
+			// "connecting…" this is: a box that answers on the LAN but not on
+			// :2018, or one that isn't there at all.
 			if s.LSSDPAlive && time.Since(s.LSSDPAt) < lssdpFresh {
-				out = append(out, ps.dmr.render(Clip("device is up on the LAN · ssh not accepting yet", w)))
+				out = append(out, ps.dmr.render(Clip("device is up on the LAN · :2018 not answering yet", w)))
 			} else if !s.LSSDPProbeAt.IsZero() {
 				out = append(out, ps.dmr.render(Clip("device not answering on the LAN", w)))
 			}
@@ -631,22 +624,6 @@ func sourceStyle(t *theme, name string) lipgloss.Style {
 	default:
 		return t.sAcc
 	}
-}
-
-// sourceFormat is the "Source · Mime · NN kHz" descriptor for a track (e.g.
-// "Spotify · Ogg · 44.1 kHz"), or "" when nothing is playing.
-func sourceFormat(t *protocol.Track) string {
-	if t == nil {
-		return ""
-	}
-	var q []string
-	if sn := SourceName(t); sn != "" {
-		q = append(q, sn)
-	}
-	if ql := Quality(t); ql != "" {
-		q = append(q, ql)
-	}
-	return strings.Join(q, " · ")
 }
 
 // osc8 wraps text in an OSC 8 hyperlink to url. Terminals that support
@@ -730,9 +707,9 @@ const (
 )
 
 // fullMeta is the now-playing metadata for the full dashboard: title, artist, and
-// album each on their own line (clickable + marqueed), so the smaller cover's freed
-// width reads as a card. Falls back to metaLines' idle/connecting copy when nothing
-// is playing. The compact view keeps metaLines' tighter two-line form.
+// album each on their own line (clickable + marqueed), so the column reads as a
+// card. Falls back to metaLines' idle/connecting copy when no track is named.
+// The compact view keeps metaLines' tighter two-line form.
 func (m *model) fullMeta(s protocol.Snapshot, w int) []string {
 	t := s.Track
 	if t == nil {
@@ -752,49 +729,22 @@ func (m *model) fullMeta(s protocol.Snapshot, w int) []string {
 	return out
 }
 
-// fullSourceLine is the prominent source/format line in the full player: a
-// brand-tinted dot + "Spotify · Ogg · 44.1 kHz · 2 ch". The source name wears its
-// brand colour, the rest is dim. Returns "" when nothing is playing or there's no
-// format to show; degrades to a dim clip when it can't fit w.
+// fullSourceLine is the source line in the full player: a brand-tinted dot +
+// the service ("● Spotify"), or the input before the device names a service.
+// Returns "" when the device has named neither, or when no track is shown
+// (metaLines already names the source there).
 func (m *model) fullSourceLine(s protocol.Snapshot, w int) string {
-	t := s.Track
-	if t == nil {
-		return ""
-	}
-	q := sourceFormat(t)
-	if q == "" {
+	name := SourceName(s)
+	if s.Track == nil || name == "" {
 		return ""
 	}
 	ps := m.sty.pens()
-	segs := strings.Split(q, " · ")
-	if ch := t.ChannelCount; ch > 0 {
-		segs = append(segs, fmt.Sprintf("%d ch", ch))
-	}
-	// Too narrow for the whole line: drop detail from the right — channels,
-	// then the rate, then the codec — before ellipsising, so the 24-column
-	// middle column at the minimum size reads "● Spotify · audio/ogg" rather
-	// than "● Spotify · audio/ogg · 44…".
-	for len(segs) > 1 && DispW("● "+strings.Join(segs, " · ")) > w {
-		segs = segs[:len(segs)-1]
-	}
-	q = strings.Join(segs, " · ")
-	plain := "● " + q
-	if DispW(plain) > w { // still too narrow: a plain dim clip keeps the width contract
+	plain := "● " + name
+	if DispW(plain) > w { // too narrow: a plain dim clip keeps the width contract
 		return ps.dmr.render(Clip(plain, w))
 	}
-	bp := ps.brandPen(SourceName(t))
-	return bp.render("●") + " " + m.brandSource(q, SourceName(t))
-}
-
-// brandSource renders a source/format string with the leading source name in
-// its brand colour and the remainder dimmed — all-dim when the name isn't the
-// prefix. Shared by the header and the full-meta source line.
-func (m *model) brandSource(q, name string) string {
-	ps := m.sty.pens()
-	if name != "" && strings.HasPrefix(q, name) {
-		return ps.brandPen(name).render(name) + ps.dmr.render(strings.TrimPrefix(q, name))
-	}
-	return ps.dmr.render(q)
+	bp := ps.brandPen(name)
+	return bp.render("●") + " " + bp.render(name)
 }
 
 // volRailKey identifies a cached volume-rail block: everything the rail's
@@ -837,76 +787,29 @@ func (m *model) buildVolRail(s protocol.Snapshot, barH int) []string {
 	return append(rows, ccell(m.sty.sDim.Render(fmt.Sprintf("%d%%", s.Vol)), volColW))
 }
 
-func (m *model) seekRow(s protocol.Snapshot, W int) string {
-	t := s.Track
-	playing := s.Playing == 0 && t != nil
-
-	// A colour-coded STATE label owns play/pause prominence: a teal "Playing" while
-	// playing, an amber "Paused" when paused. The transport toggle button is an
-	// icon-free verb (play/pause), so the state indicator and the action label never
-	// duel. Padded to a fixed width so the meter's start column doesn't jump on a
-	// state change.
+// statusRow is the play state: a colour-coded label owns play/pause
+// prominence — a teal "Playing", an amber "Paused" — so the transport toggle
+// button can stay an icon-free verb (play/pause) and the two never duel. The
+// tunnel reports no position or duration, so there is no seek bar: a mute
+// shows here instead, beside the state.
+func (m *model) statusRow(s protocol.Snapshot, W int) string {
 	ps := m.sty.pens()
-	const statusW = 9 // DispW("▶ Playing")
-	var status string
+	var row string
 	switch {
-	case playing:
-		status = ps.accB.render(padDisp(GL["play"]+" Playing", statusW))
-	case t != nil:
-		status = ps.warnB.render(padDisp(GL["pause"]+" Paused", statusW))
+	case !s.Connected:
+		row = ps.dmr.render(GL["pause"]) // a quiet marker while connecting
+	case s.Playing:
+		row = ps.accB.render(GL["play"] + " Playing")
+	case s.Track != nil:
+		row = ps.warnB.render(GL["pause"] + " Paused")
 	default:
-		status = ps.dmr.render(padDisp(GL["pause"], statusW)) // idle: a quiet marker
+		row = ps.dmr.render(GL["pause"])
 	}
-
-	total, pos := 0, s.Pos
-	if t != nil {
-		total = t.TotalTime
-	} else {
-		pos = 0 // nothing playing: don't bleed a stale elapsed time into the idle bar
+	if s.Connected && s.Muted {
+		row += ps.dmr.render(" · ") + ps.red.render("muted")
 	}
-	cur := FmtMs(pos)
-	rem := m.fmtRight(total, pos)
-	// The row must never exceed W: the meter absorbs the slack, and when the
-	// fixed parts leave it no room (a narrow middle column plus >100-minute
-	// times) the elapsed, then the remaining readout, are dropped — a 1-cell
-	// meter floor here once pushed every frame line 1–2 cells wide and wrapped
-	// the whole UI.
-	meterW := func() int {
-		w := W - statusW - 1 // status column and its trailing space
-		if cur != "" {
-			w -= DispW(cur) + 1
-		}
-		if rem != "" {
-			w -= DispW(rem) + 1
-		}
-		return w
-	}
-	if meterW() < 1 {
-		cur = ""
-	}
-	if meterW() < 1 {
-		rem = ""
-	}
-	cells := max(meterW(), 1)
-	frac := 0.0
-	if total > 0 {
-		frac = float64(pos) / float64(total)
-	}
-	fillCells, headCell := ps.mFill, ps.mHead
-	if m.amb != nil {
-		m.amb.ensure() // the seek bar wears the album's colour
-		fillCells, headCell = m.amb.mFill, m.amb.mHead
-	}
-	row := status + " "
-	if cur != "" {
-		row += ps.dim.render(cur) + " "
-	}
-	row += lineMeterCells(frac, cells, fillCells, headCell, ps.mTrack)
-	if rem != "" {
-		row += " " + ps.dim.render(rem)
-	}
-	// Backstop for a sub-minimal W (status alone wider than the column): an
-	// over-wide row wraps the whole frame, a clipped one degrades one row.
+	// Backstop for a sub-minimal W: an over-wide row wraps the whole frame, a
+	// clipped one degrades one row.
 	return clipStyled(row, W)
 }
 
@@ -946,25 +849,14 @@ func (m *model) controlsRow(s protocol.Snapshot, now time.Time, W int, withVol b
 	return between(left, leftW, right, rightW, W)
 }
 
-// dividerRow is a section separator: the label centred between two dim rules,
-// "──── label ────", W cells wide, so the title reads as a heading.
-func (m *model) dividerRow(label string, W int) string {
-	ps := m.sty.pens()
-	rule := max(W-DispW(label)-2, 0) // a space flanks the label on each side
-	left := rule / 2
-	bar := func(n int) string { return ps.dmr.render(strings.Repeat(GL["track"], n)) }
-	return bar(left) + " " + ps.dim.render(label) + " " + bar(rule-left)
-}
-
 // playerHints are the player's footer, widest first; the first that fits the
 // width is shown, so a narrow frame drops the rarer keys instead of clipping
 // the line mid-word. Every view is reachable from the strip, so the footer
 // names the player's own keys and how to get help, not every other view.
 var playerHints = []string{
-	"space play/pause · ↑↓ volume · m mute · s sleep · b bedtime · d night · t remaining · 1-5 views · ? help · q quit",
-	"space play/pause · ↑↓ volume · m mute · s sleep · b bedtime · d night · 1-5 views · ? help · q quit",
-	"space play/pause · ↑↓ volume · m mute · s sleep · d night · 1-5 views · ? help · q quit",
-	"space play · ↑↓ volume · m mute · s sleep · d night · ? help · q quit",
+	"space play/pause · n p next/previous · ↑↓ volume · m mute · s sleep · 1-3 views · ? help · q quit",
+	"space play/pause · ↑↓ volume · m mute · s sleep · 1-3 views · ? help · q quit",
+	"space play · ↑↓ volume · m mute · s sleep · ? help · q quit",
 	"space play · ↑↓ vol · m mute · s sleep · ? help · q quit",
 	"space play · ↑↓ vol · ? help · q quit",
 }
@@ -977,9 +869,9 @@ const eqHint = "↑↓ select · ←→ adjust · enter toggle · esc player · 
 // page has no room for — shown for four seconds in every sixteen, so the help
 // page is not the only place they appear.
 var playerHintsRare = []string{
-	"n · p next · previous · +/- volume · S cancel sleep · t remaining ⇄ total · e c l i views by letter · tab cycles",
-	"n · p next · previous · S cancel sleep · t remaining ⇄ total · tab cycles the views",
-	"n · p next · previous · S cancel sleep · t remaining",
+	"n · p next · previous · +/- volume · S cancel sleep · e i views by letter · tab cycles",
+	"n · p next · previous · S cancel sleep · tab cycles the views",
+	"n · p next · previous · S cancel sleep",
 }
 
 // footerRow right-aligns the current view's key hint.
@@ -1008,9 +900,9 @@ func (m *model) footerRow(W int) string {
 // toggleVerb is the transport toggle's icon-free action label: "pause" while
 // playing (press to pause), "play" while paused or idle (press to play). It carries
 // no play/pause glyph so it never duels with the colour-coded STATE shown on the
-// seek row. Shared by transportSegments and controlsRow.
+// status row. Shared by transportSegments and controlsRow.
 func toggleVerb(s protocol.Snapshot) string {
-	if s.Playing == 0 {
+	if s.Playing {
 		return "pause"
 	}
 	return "play"

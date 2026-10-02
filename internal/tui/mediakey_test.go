@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/lucasdaddiego/lp10/internal/mediakey"
@@ -24,12 +25,14 @@ func TestKeyToAction(t *testing.T) {
 	}
 }
 
-// A mediaKeyMsg must run the mapped action through do() on the update loop — here
-// the playing fixture means a next sends MID40 NEXT.
+// A mediaKeyMsg must run the mapped action through do() on the update loop:
+// each transport key reaches the tunnel as its own code.
 func TestMediaKeyMsgRunsAction(t *testing.T) {
 	m, _, collect := makeModel(t)
-	m.Update(mediaKeyMsg{action: "next"})
-	if c := collect(); len(c) != 1 || c[0].Mid != 40 || c[0].Data != "NEXT" {
-		t.Errorf("media next -> %+v, want [40 NEXT]", c)
+	for action, want := range map[string]string{"next": "NXT", "prev": "PRE", "toggle": "POP"} {
+		m.Update(mediaKeyMsg{action: action})
+		if got := wire(collect()); !slices.Equal(got, []string{want}) {
+			t.Errorf("media %s -> %v, want [%s]", action, got, want)
+		}
 	}
 }

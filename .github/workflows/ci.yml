@@ -14,11 +14,10 @@ concurrency:
 
 jobs:
   test:
-    # lp10 ships for macOS and Linux. The OS password-store integration is the
-    # one platform-specific piece (security(1) on darwin, secret-tool on Linux —
-    # see internal/transport/secret_*.go) and is stubbed in the askpass tests, so
-    # both jobs run the full suite. Everything else is portable: pure-Go mDNS, the
-    # POSIX device shell loop, ptys / TIOCGWINSZ. We test both.
+    # lp10 ships for macOS and Linux. The macOS media-key tap is the one
+    # platform-specific piece (internal/mediakey, cgo on darwin, a no-op
+    # elsewhere). Everything else is portable: pure-Go mDNS, the :2018 tunnel
+    # client, ptys / TIOCGWINSZ. We test both.
     strategy:
       fail-fast: false
       matrix:
@@ -43,23 +42,11 @@ jobs:
         # go fix -diff prints a patch and exits non-zero when the tree isn't at the
         # toolchain modernizer's fixpoint; run `go fix ./...` locally to clear it.
         run: go fix -diff ./...
-      # Both legs: the darwin-only cgo files (the media-key tap, the Keychain
-      # lookup) are only ever compiled — and so only ever analysed — on macOS.
+      # Both legs: the darwin-only cgo file (the media-key tap) is only ever
+      # compiled — and so only ever analysed — on macOS.
       - name: staticcheck
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
       - name: vulnerability scan
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - name: test
         run: go test -race ./...
-      # The device loop runs under BusyBox v1.32.0 ash, and the transport tests
-      # run its fragments with `sh`, which is dash here and bash on macOS. This
-      # step runs them again inside the BusyBox image, where `sh` is that ash
-      # (`make busybox` does the same, with the same pinned image). The macOS
-      # runners have no docker, so the Linux leg alone runs it.
-      - name: busybox
-        if: runner.os == 'Linux'
-        run: |
-          CGO_ENABLED=0 GOOS=linux go test -c -o .busybox/transport.test ./internal/transport
-          docker run --rm --network none -v "$PWD":/src:ro -w /src/internal/transport \
-            busybox:1.32.0-uclibc@sha256:0c1b9fc207ab03d86cf4f6b5ce1b5b7973ccd595202c36f1de31ad8d6885a6b1 \
-            sh -c 'busybox | head -1; exec "$@"' sh /src/.busybox/transport.test -test.count=1 -test.timeout=2m

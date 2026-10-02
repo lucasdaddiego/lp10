@@ -165,13 +165,13 @@ func balStr(v int) string {
 // queryEQ asks the device to re-broadcast one control's value (no local write,
 // no echo hold — the broadcast lands via ApplyTunnel like any other).
 func (m *model) queryEQ(code string) {
-	nbSend(m.eqcmds, workers.EQCommand{Code: code, Query: true, TS: time.Now()})
+	nbSend(m.cmds, workers.Command{Code: code, Query: true, TS: time.Now()})
 }
 
 // sendEQ records the change optimistically (arming the echo hold) and enqueues
 // the tunnel write, never blocking the update loop (drop-oldest like send).
 // While the tunnel is down the equalizer is read-only: the write would wait in
-// the queue until the worker dropped it (EQCommandDeadline), leaving a value
+// the queue until the worker dropped it (CommandDeadline), leaving a value
 // painted that the device never received, so the change is refused and the
 // notice says why.
 func (m *model) sendEQ(code string, val int) {
@@ -180,7 +180,7 @@ func (m *model) sendEQ(code string, val int) {
 		return
 	}
 	m.st.SetEQLocal(code, val)
-	nbSend(m.eqcmds, workers.EQCommand{Code: code, Val: val, TS: time.Now()})
+	nbSend(m.cmds, workers.Command{Code: code, Val: val, TS: time.Now()})
 }
 
 // eqSliders renders one horizontal row per EQ band, all W columns wide, in

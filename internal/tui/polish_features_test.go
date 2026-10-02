@@ -6,223 +6,220 @@ import (
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
-	"github.com/lucasdaddiego/lp10/internal/sweep"
 )
 
 // The notice line under the header carries transient events and fades: a
-// volume step names the level, mute says so, the timers and night mode report
-// their state, a service toggle says what was asked.
+// volume step names the level, the mute says so both ways, the sleep timer
+// reports its state.
 func TestNoticeLineEvents(t *testing.T) {
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
+	m, _, _ := makeModel(t)
 	m.rows, m.cols = 40, 120
-	st.SetVol(50)
-	line := func() string { return stripANSI(strings.Split(m.viewContent(), "\n")[2]) }
+	line := func() string { return stripANSI(strings.Split(render(t, m), "\n")[2]) }
 	if strings.TrimSpace(strings.Trim(line(), "┃")) != "" {
 		t.Errorf("notice line should start blank, got %q", line())
 	}
-	m.key(ke(kUp))
-	if !strings.Contains(line(), "volume 52%") {
-		t.Errorf("volume notice missing: %q", line())
-	}
-	m.key(kr('m'))
-	if !strings.Contains(line(), "muted") {
-		t.Errorf("mute notice missing: %q", line())
-	}
-	m.key(kr('s'))
-	if !strings.Contains(line(), "sleep") {
-		t.Errorf("sleep notice missing: %q", line())
-	}
-	m.key(kr('S'))
-	if !strings.Contains(line(), "sleep timer cancelled") {
-		t.Errorf("cancel notice missing: %q", line())
-	}
-	m.key(kr('d'))
-	if !strings.Contains(line(), "night mode") {
-		t.Errorf("night notice missing: %q", line())
+	for _, step := range []struct {
+		ev   keyEvent
+		want string
+	}{
+		{ke(kUp), "volume 46%"},
+		{kr('m'), "muted"},
+		{kr('m'), "unmuted"},
+		{kr('s'), "sleep timer set · " + GL["sleep"] + " 15m"},
+		{kr('S'), "sleep timer cancelled"},
+	} {
+		m.key(step.ev)
+		if got := strings.TrimSpace(strings.Trim(line(), "┃")); got != step.want {
+			t.Errorf("notice = %q, want %q", got, step.want)
+		}
 	}
 	// it fades
 	m.noticeUntil = time.Now().Add(-time.Second)
 	if strings.TrimSpace(strings.Trim(line(), "┃")) != "" {
 		t.Errorf("notice should have faded, got %q", line())
 	}
-	// the services toggle reports what it asked for (once the services are read)
-	applyFixtureRecords(st, "config_record.txt")
-	m.setView(viewServices)
-	m.svcFocus = 0
-	m.svcToggle(time.Now())
-	if !strings.Contains(line(), "Spotify →") || !strings.Contains(line(), "asked the device") {
-		t.Errorf("toggle notice missing: %q", line())
+	// a long notice is clipped to the row, and the warning pen differs from the plain one
+	m.notifyWarn(strings.Repeat("w", 200), time.Minute)
+	warn := m.noticeRow(time.Now(), 50)
+	if visWidth(warn) != 50 || !strings.HasSuffix(stripANSI(warn), GL["ell"]) {
+		t.Errorf("long notice = %q", stripANSI(warn))
+	}
+	m.notify(strings.Repeat("w", 200), time.Minute)
+	if plain := m.noticeRow(time.Now(), 50); plain == warn {
+		t.Error("a warning notice should not render in the plain pen")
 	}
 }
 
-// A connect prints a summary once the capability block has arrived; a lost
-// connection prints a warning; the summary waits for the facts but not forever.
+// startupSummary names whatever of the identity is known: the firmware from
+// the LSSDP answer, the MCU build's version field, the eSDK's release.
+func TestStartupSummary(t *testing.T) {
+	all := protocol.DiagnosticSnapshot{
+		LSSDP:     &protocol.LSSDPInfo{FW: "AR241CP_8747.29.2"},
+		MCU:       "29-1d316f0c-10",
+		SpotifyZC: &protocol.SpotifyZC{LibraryVersion: "3.216.31-gdeadbeef"},
+	}
+	if got, want := startupSummary(all), "connected · firmware AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31"; got != want {
+		t.Errorf("all parts = %q, want %q", got, want)
+	}
+	partial := protocol.DiagnosticSnapshot{
+		LSSDP:     &protocol.LSSDPInfo{State: "S"}, // answered, but named no build
+		MCU:       "29",
+		SpotifyZC: &protocol.SpotifyZC{StatusString: "OK"}, // no library version
+	}
+	if got := startupSummary(partial); got != "connected · MCU 29" {
+		t.Errorf("partial = %q, want connected · MCU 29", got)
+	}
+	if got := startupSummary(protocol.DiagnosticSnapshot{}); got != "connected" {
+		t.Errorf("none = %q, want connected", got)
+	}
+}
+
+// A connect prints the summary once the MCU build (VER) and the ZeroConf
+// answer are in, or after startupSummaryWait with what it has; a lost
+// connection warns; a reconnect prints the summary again.
 func TestStartupSummaryAndConnectionNotices(t *testing.T) {
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
-	m.rows, m.cols = 40, 120
 	now := time.Now()
-	applyFixtureRecords(st, "device_record.txt")
-	applyFixtureRecords(st, "config_record.txt")
-	protocol.ApplyRecord(st, protocol.Record{"o": {"n=88", "t=Sep 11 01:47:58", "u="}})
+	st := protocol.NewState()
+	m, _, _ := modelWith(st)
+	// never connected: no lost-connection warning, the header says connecting
 	m.trackConnection(st.Snap(), now)
-	got := stripANSI(m.noticeRow(now, 120))
-	for _, want := range []string{"connected", "firmware AR241CE_8530.23.2", "HiFi engine", "88 reconnects since Sep 11 01:47", "power-on"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("summary %q missing %q", got, want)
-		}
+	if m.notice != "" {
+		t.Fatalf("notice before any connection = %q", m.notice)
 	}
-	// without the log's first stamp the count cannot name its window
-	d := st.DiagnosticView(now)
-	d.Ops = &protocol.DevOps{Reconnects: 1, ReconnectsOK: true}
-	if got := startupSummary(d); !strings.Contains(got, "1 reconnect in the log") {
-		t.Errorf("stampless summary = %q", got)
+	connect(st)
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2"})
+	m.trackConnection(st.Snap(), now)
+	if m.notice != "" {
+		t.Errorf("summary printed before the MCU and ZeroConf facts: %q", m.notice)
 	}
+	st.ApplyVersion("29-1d316f0c-10")
+	m.trackConnection(st.Snap(), now.Add(time.Second))
+	if m.notice != "" {
+		t.Errorf("summary printed with the ZeroConf answer still out: %q", m.notice)
+	}
+	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK", LibraryVersion: "3.216.31-g1"}, 9095)
+	m.trackConnection(st.Snap(), now.Add(2*time.Second))
+	if want := "connected · firmware AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31"; m.notice != want {
+		t.Errorf("summary = %q, want %q", m.notice, want)
+	}
+	if got := stripANSI(m.noticeRow(time.Now(), 120)); got != m.notice {
+		t.Errorf("notice row = %q", got)
+	}
+	// printed once: a later tick leaves a newer notice alone
+	m.notify("volume 46%", noticeFor)
+	m.trackConnection(st.Snap(), now.Add(3*time.Second))
+	if m.notice != "volume 46%" {
+		t.Errorf("the summary printed twice: %q", m.notice)
+	}
+
 	// a disconnect after a connection warns
 	st.Disconnect()
-	m.trackConnection(st.Snap(), now.Add(time.Second))
-	if got := stripANSI(m.noticeRow(now.Add(time.Second), 120)); !strings.Contains(got, "connection lost") || !m.noticeWarn {
-		t.Errorf("disconnect notice = %q (warn=%v)", got, m.noticeWarn)
+	m.trackConnection(st.Snap(), now.Add(4*time.Second))
+	if m.notice != "connection lost · reconnecting…" || !m.noticeWarn {
+		t.Errorf("disconnect notice = %q (warn=%v)", m.notice, m.noticeWarn)
 	}
+	// the reconnect: the facts are already in hand, so the summary is at once
+	connect(st)
+	m.trackConnection(st.Snap(), now.Add(5*time.Second))
+	if !strings.HasPrefix(m.notice, "connected · ") || m.noticeWarn {
+		t.Errorf("reconnect notice = %q (warn=%v)", m.notice, m.noticeWarn)
+	}
+
 	// a fresh connect with no facts yet waits, then prints what it has
-	m2, st2, _ := modelWith(protocol.NewState())
-	m2.sty = newTheme()
-	protocol.ApplyRecord(st2, protocol.Record{"v": {"MID-Read:64 Data:40 Length:2"}})
+	st2 := idleState()
+	m2, _, _ := modelWith(st2)
 	m2.trackConnection(st2.Snap(), now)
-	if got := stripANSI(m2.noticeRow(now, 120)); got != "" {
-		t.Errorf("summary printed before the facts arrived: %q", got)
+	if m2.notice != "" {
+		t.Errorf("summary printed before the facts arrived: %q", m2.notice)
 	}
-	m2.trackConnection(st2.Snap(), now.Add(startupSummaryWait+time.Second))
-	if got := stripANSI(m2.noticeRow(now.Add(startupSummaryWait+time.Second), 120)); got != "connected" {
-		t.Errorf("late summary = %q, want just 'connected'", got)
+	m2.trackConnection(st2.Snap(), now.Add(startupSummaryWait-time.Millisecond))
+	if m2.notice != "" {
+		t.Errorf("summary printed before the wait ran out: %q", m2.notice)
+	}
+	m2.trackConnection(st2.Snap(), now.Add(startupSummaryWait))
+	if m2.notice != "connected" {
+		t.Errorf("late summary = %q, want just 'connected'", m2.notice)
+	}
+	// the summary is due only while connected: a drop inside the wait cancels it
+	st3 := idleState()
+	m3, _, _ := modelWith(st3)
+	m3.trackConnection(st3.Snap(), now)
+	st3.Disconnect()
+	m3.trackConnection(st3.Snap(), now.Add(time.Second))
+	if !m3.summaryDue.IsZero() {
+		t.Error("a drop inside the wait should cancel the pending summary")
 	}
 }
 
-// Connected with nothing playing, the full player shows the big clock and the
-// sources that are on; the compact player names them in its hint line.
-func TestIdleScreen(t *testing.T) {
-	st := protocol.NewState()
-	applyFixtureRecords(st, "config_record.txt")
-	protocol.ApplyRecord(st, protocol.Record{"v": {"MID-Read:64 Data:40 Length:2"}, "B": {"MID-Read:42 Data: Length:0"}})
+// The logic tick drives the same notices end to end.
+func TestLogicTickPrintsTheSummary(t *testing.T) {
+	st := idleState()
+	st.ApplyVersion("29-1d316f0c-10")
+	st.SetSpotifyZC(&protocol.SpotifyZC{LibraryVersion: "3.216.31"}, 9095)
 	m, _, _ := modelWith(st)
-	m.sty = newTheme()
+	m.dispatch(logicMsg{})
+	if m.notice != "connected · MCU 29 · Spotify eSDK 3.216.31" {
+		t.Errorf("first tick notice = %q", m.notice)
+	}
+}
+
+// Connected with nothing playing, the full player shows the big clock and
+// the sources that always wake the box; the compact player says the same in
+// its hint line; the mini line says nothing plays.
+func TestIdleScreen(t *testing.T) {
+	m, _, _ := modelWith(idleState())
 	m.rows, m.cols = 40, 120
-	out := stripANSI(m.viewContent())
+	out := clean(render(t, m))
 	if !strings.Contains(out, "█████") {
 		t.Errorf("idle screen lacks the block clock:\n%s", out)
 	}
-	for _, want := range []string{"nothing playing", "start something on", "Spotify", "AirPlay 2", "Bluetooth", "DLNA / UPnP"} {
+	for _, want := range []string{"nothing playing", wakeHint} {
 		if !strings.Contains(out, want) {
 			t.Errorf("idle screen missing %q", want)
 		}
 	}
-	if strings.Contains(out, "Tidal") {
-		t.Error("an off service was named as a way to wake the box")
+	for _, absent := range []string{"Vol", "Playing", "Paused", GL["rew"]} {
+		if strings.Contains(out, absent) {
+			t.Errorf("idle screen carries %q:\n%s", absent, out)
+		}
 	}
-	// the clock reads the current time
-	if !strings.Contains(strings.Join(bigClock(time.Date(2026, 9, 12, 16, 4, 0, 0, time.UTC)), "\n"), "█") {
-		t.Error("bigClock drew nothing")
-	}
-	// compact: the hint names the same sources
+	// compact: the hint line
 	m.rows, m.cols = 20, 80
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "start something on Spotify · AirPlay 2") {
+	if out := clean(render(t, m)); !strings.Contains(out, "nothing playing") || !strings.Contains(out, wakeHint) {
 		t.Errorf("compact idle hint missing:\n%s", out)
 	}
-	// no capability block yet: the fixed three
-	if got := sourcesOn(nil); got != "Spotify · AirPlay · Bluetooth" {
-		t.Errorf("sourcesOn(nil) = %q", got)
+	// mini
+	m.rows = MiniRows - 1
+	if out := clean(render(t, m)); out != GL["note"]+" nothing playing" {
+		t.Errorf("mini idle = %q", out)
 	}
-	if got := wakeHint(&protocol.ConfInfo{Svc: map[string]string{"spotify": "off"}}); got != "no streaming service is switched on · 3 opens the services" {
-		t.Errorf("all-off = %q", got)
-	}
+	// a narrow idle frame clips the hint rather than overflowing
+	m.rows, m.cols = 30, FullCols
+	render(t, m)
 }
 
-// The diagnostics' device card names what moved since the last sweep.
-func TestSinceSweepFact(t *testing.T) {
-	base := &sweep.Report{At: time.Date(2026, 9, 12, 16, 0, 0, 0, time.Local), Build: "AR241CE_8530", MCU: "23", VendorApp: "32"}
-	same := diagIdentity{fw: "AR241CE_8530.23.2", mcu: "v23"}
-	if got := sweepDeltaFact(same, &protocol.DevInfo{VendorApp: "32"}, base); got != "unchanged since Sep 12 16:00" {
-		t.Errorf("unchanged = %q", got)
+// bigClock draws HH:MM in the five-row block font: five digits' worth of
+// glyphs, two columns apart, the colon one column wide.
+func TestBigClock(t *testing.T) {
+	rows := bigClock(time.Date(2026, 9, 12, 16, 4, 0, 0, time.UTC))
+	if len(rows) != 5 {
+		t.Fatalf("bigClock rows = %d, want 5", len(rows))
 	}
-	moved := diagIdentity{fw: "AR241CE_9000.24.1", mcu: "v24"}
-	got := sweepDeltaFact(moved, &protocol.DevInfo{VendorApp: "33"}, base)
-	for _, want := range []string{"firmware AR241CE_8530 → AR241CE_9000", "mcu 23 → 24", "vendor app 32 → 33", "since Sep 12 16:00"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("delta %q missing %q", got, want)
+	want := 4*5 + 1 + 4*2 // four digits, the colon, four gaps
+	for i, r := range rows {
+		if DispW(r) != want {
+			t.Errorf("row %d width %d, want %d", i, DispW(r), want)
 		}
 	}
-	if sweepDeltaFact(same, nil, nil) != "" {
-		t.Error("no baseline should print nothing")
+	if rows[0] != blockDigits['1'][0]+"  "+blockDigits['6'][0]+"  "+blockDigits[':'][0]+"  "+blockDigits['0'][0]+"  "+blockDigits['4'][0] {
+		t.Errorf("first row = %q", rows[0])
 	}
-	if sweepDeltaFact(diagIdentity{fw: "—", mcu: "—"}, nil, base) != "" {
-		t.Error("no identity yet should print nothing")
-	}
-	// a merged baseline: an ssh-less sweep on Sep 14 carried the identity read
-	// on Sep 12, so "unchanged" dates to Sep 12, not to the latest sweep
-	merged := *base
-	merged.At = time.Date(2026, 9, 14, 9, 0, 0, 0, time.Local)
-	merged.Carried = map[string]time.Time{"identity": base.At, "mcu": base.At, "vendorApp": base.At}
-	if got := sweepDeltaFact(same, &protocol.DevInfo{VendorApp: "32"}, &merged); got != "unchanged since Sep 12 16:00" {
-		t.Errorf("carried identity dated %q, want the read date", got)
-	}
-	// on the card
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
-	m.rows, m.cols = 44, 160
-	m.baseline = base
-	applyFixtureRecords(st, "device_record.txt")
-	m.setView(viewDiag)
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "sweep     unchanged since Sep 12") {
-		t.Errorf("device card lacks the since-sweep row:\n%s", out)
-	}
-}
-
-// F follows the open log: an immediate fetch, then one every 100 ticks while
-// the view shows, and the title says so.
-func TestLogsFollowMode(t *testing.T) {
-	m, _, collect := makeModel(t)
-	m.sty = newTheme()
-	m.rows, m.cols = 40, 120
-	m.dispatch(logicMsg{}) // the connect's tick, before anything is asked (it re-asks what was)
-	m.setView(viewLogs)
-	collect() // the fetch on open
-	m.key(kr('F'))
-	if !m.logFollow || len(collect()) != 1 {
-		t.Fatal("F should turn follow on and fetch at once")
-	}
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "following") || !strings.Contains(out, "F follow") {
-		t.Errorf("follow state not shown:\n%s", out)
-	}
-	fetches := func() int {
-		n := 0
-		for _, c := range collect() {
-			if c.Mid == 93 {
-				n++
+	for r, g := range blockDigits {
+		for i, ln := range g {
+			if w := DispW(g[0]); DispW(ln) != w {
+				t.Errorf("glyph %q row %d width %d, want %d", r, i, DispW(ln), w)
 			}
 		}
-		return n
-	}
-	m.scroll = 99
-	m.dispatch(logicMsg{})
-	if fetches() != 1 {
-		t.Error("the 100th tick should refetch")
-	}
-	m.dispatch(logicMsg{})
-	if fetches() != 0 {
-		t.Error("an ordinary tick should not fetch")
-	}
-	m.setView(viewPlayer)
-	m.scroll = 199
-	m.dispatch(logicMsg{})
-	if fetches() != 0 {
-		t.Error("follow must not fetch while another view shows")
-	}
-	m.setView(viewLogs)
-	collect()
-	m.key(kr('F'))
-	if m.logFollow {
-		t.Error("F again should turn follow off")
 	}
 }
 
@@ -230,9 +227,8 @@ func TestLogsFollowMode(t *testing.T) {
 // footer rotates a second page of rarer keys for four seconds in sixteen.
 func TestStripShortFormAndFooterRotation(t *testing.T) {
 	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	if s, _ := m.viewStrip(40); stripANSI(s) != "1 play  2 eq  3 svc  4 log  5 diag" {
-		t.Errorf("short strip = %q", stripANSI(s))
+	if s, w := m.viewStrip(30); stripANSI(s) != "1 play  2 eq  3 diag" || w != 20 {
+		t.Errorf("short strip = %q (%d)", stripANSI(s), w)
 	}
 	m.scroll = 0
 	first := stripANSI(m.footerRow(120))
@@ -244,6 +240,51 @@ func TestStripShortFormAndFooterRotation(t *testing.T) {
 	m.scroll = 160
 	if got := stripANSI(m.footerRow(120)); got != first {
 		t.Errorf("footer should be back on the first page: %q", got)
+	}
+}
+
+// Every footer width gets the widest hint that fits, right-aligned and exactly
+// W wide; only below the narrowest hint is it clipped.
+func TestFooterHintLadderFitsW(t *testing.T) {
+	m, _, _ := makeModel(t)
+	for _, page := range []int{0, 130} {
+		m.scroll = page
+		ladder := playerHints
+		if page > 0 {
+			ladder = playerHintsRare
+		}
+		narrowest := DispW(ladder[len(ladder)-1])
+		for W := 1; W <= 130; W++ {
+			got := m.footerRow(W)
+			if visWidth(got) != W {
+				t.Fatalf("page %d W=%d: footer width %d", page, W, visWidth(got))
+			}
+			hint := strings.TrimSpace(stripANSI(got))
+			if W >= narrowest {
+				if strings.Contains(hint, GL["ell"]) {
+					t.Errorf("page %d W=%d: a hint that fits was clipped: %q", page, W, hint)
+				}
+				// the widest that fits
+				for _, h := range ladder {
+					if DispW(h) <= W {
+						if hint != h {
+							t.Errorf("page %d W=%d: %q, want %q", page, W, hint, h)
+						}
+						break
+					}
+				}
+			} else if !strings.HasSuffix(hint, GL["ell"]) && W > 1 {
+				t.Errorf("page %d W=%d: a too-narrow footer should be clipped: %q", page, W, hint)
+			}
+		}
+	}
+	// the help and diagnostics footers name no removed views or keys
+	for _, h := range append(append(append([]string{}, playerHints...), playerHintsRare...), diagFooters...) {
+		for _, gone := range []string{"services", "logs", "night", "bedtime", "remaining"} {
+			if strings.Contains(h, gone) {
+				t.Errorf("footer hint %q names the removed %q", h, gone)
+			}
+		}
 	}
 }
 
@@ -277,66 +318,10 @@ func TestThemeSelection(t *testing.T) {
 	if newThemeFor(true).sTxt.GetForeground() == newThemeFor(false).sTxt.GetForeground() {
 		t.Error("light and dark text colours should differ")
 	}
-}
-
-// When the diagnostics are taller than the frame they scroll: ↑↓ by a row,
-// ←→ by a page, clamped at both ends, with the footer saying how much is
-// off-screen instead of the colour legend.
-func TestDiagScrollsWhenTallerThanTheFrame(t *testing.T) {
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
-	applyFixtureRecords(st, "device_record.txt")
-	applyFixtureRecords(st, "config_record.txt")
-	m.rows, m.cols = 24, 160 // cards layout, but only ~20 body rows for ~45 rows of read-out
-	m.setView(viewDiag)
-	first := stripANSI(m.viewContent())
-	if !strings.Contains(first, "↑↓ scroll") || !strings.Contains(first, "more rows below") {
-		t.Fatalf("a too-short frame should offer to scroll:\n%s", first)
-	}
-	if !strings.Contains(first, "─ audio") {
-		t.Error("the top of the read-out should show first")
-	}
-	m.key(ke(kDown))
-	m.key(ke(kDown))
-	scrolled := stripANSI(m.viewContent())
-	if scrolled == first || !strings.Contains(scrolled, "2 above") {
-		t.Errorf("↓↓ should scroll two rows and say so:\n%s", scrolled)
-	}
-	m.key(ke(kRight)) // a page
-	if m.diagScroll <= 2 {
-		t.Error("→ should page down")
-	}
-	for range 40 {
-		m.key(ke(kRight))
-	}
-	bottom := stripANSI(m.viewContent())
-	if !strings.Contains(bottom, "rows above") || strings.Contains(bottom, "below") {
-		t.Errorf("over-scrolling should clamp at the bottom:\n%s", bottom)
-	}
-	for range 40 {
-		m.key(ke(kLeft))
-	}
-	if m.diagScroll != 0 || stripANSI(m.viewContent()) != first {
-		t.Error("← past the top should clamp at the first row")
-	}
-	// tall enough: nothing to scroll, the legend is back
-	m.rows = 60
-	tall := stripANSI(m.viewContent())
-	if strings.Contains(tall, "↑↓ scroll") || !strings.Contains(tall, "● good") {
-		t.Errorf("a tall frame should show the legend, not a scroll hint:\n%s", tall)
-	}
-}
-
-// The verdict names what made it amber or red, worst first, at most two.
-func TestDiagVerdictNamesItsReasons(t *testing.T) {
-	now := time.Now()
-	v := diagVitals{haveTemp: true, tempC: 90, onWifi: true, haveReconnect: true, reconnectRate: 6}
-	worst, why := diagVerdict(v, now, now)
-	if worst != 2 || len(why) != 2 || why[0] != "temp 90 °C" || why[1] != "on wi-fi" {
-		t.Errorf("verdict = %d %q", worst, why)
-	}
-	worst, why = diagVerdict(diagVitals{haveCPU: true, cpuFrac: 0.1}, now, now)
-	if worst != 0 || len(why) != 0 {
-		t.Errorf("healthy verdict = %d %q", worst, why)
+	// the light palette renders every view inside the frame too
+	m.rows, m.cols = 40, 120
+	for _, v := range []view{viewPlayer, viewEQ, viewDiag, viewHelp} {
+		m.view = v
+		render(t, m)
 	}
 }

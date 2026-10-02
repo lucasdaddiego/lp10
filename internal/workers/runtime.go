@@ -10,17 +10,15 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/tunnel"
 )
 
-// Runtime owns the long-lived background workers and their command queues.
-// Close performs the existing command-drain/process teardown handshake and then
+// Runtime owns the long-lived background workers and the command queue. Close
+// lets the tunnel write what is still queued, persists the snapshot, and then
 // joins every worker, so Run never returns while a worker still references
 // State or its persistence paths.
 type Runtime struct {
-	Commands   chan *protocol.Command
-	EQCommands chan EQCommand
+	Commands chan Command
 
 	st        *protocol.State
 	snapshot  string
-	procs     *processSlot
 	control   *runControl
 	cancel    context.CancelFunc
 	closeOnce sync.Once
@@ -29,7 +27,7 @@ type Runtime struct {
 
 type runControl struct {
 	stop    *runSignal
-	drained *runSignal
+	drained *runSignal // the tunnel worker has written (or dropped) what was queued at stop
 }
 
 func newRunControl() *runControl {
@@ -37,7 +35,7 @@ func newRunControl() *runControl {
 }
 
 // runSignal is the runtime-owned, one-shot broadcast used for worker shutdown
-// and the command-drain handshake.
+// and the drain handshake.
 type runSignal struct {
 	mu  sync.Mutex
 	ch  chan struct{}
@@ -77,49 +75,39 @@ func (s *runSignal) Wait(d time.Duration) bool {
 	}
 }
 
-// StartRuntime starts the stream, command, watchdog, tunnel, artwork, LSSDP,
-// Spotify ZeroConf, and OTA workers as one owned unit.
+// StartRuntime starts the tunnel, LSSDP, Spotify ZeroConf, and OTA workers as
+// one owned unit.
 func StartRuntime(st *protocol.State, cfg config.Config) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
 	snapshot := config.SnapshotPath(cfg)
 	PreloadSnapshot(st, config.LoadSnapshot(snapshot))
 	r := &Runtime{
-		Commands: make(chan *protocol.Command, 1024),
-		// Sized like Commands: the tunnel drains only while connected, and a
-		// held EQ key during a reconnect (~30 presses/s) filled 64 slots in two
-		// seconds — the drop-oldest queue then evicted an unrelated earlier
-		// control's set (an EQE on) with no note. Expired intent is still
-		// dropped downstream (EQCommandDeadline), so depth costs nothing.
-		EQCommands: make(chan EQCommand, 1024),
-		st:         st,
-		snapshot:   snapshot,
-		procs:      newProcessSlot(),
-		control:    newRunControl(),
-		cancel:     cancel,
+		// Deep: the tunnel drains only while connected, and a held key during
+		// a reconnect (~30 presses/s) fills a shallow queue in seconds — the
+		// drop-oldest send would then evict an unrelated earlier command with
+		// no note. Expired intent is still dropped downstream
+		// (CommandDeadline), so depth costs nothing.
+		Commands: make(chan Command, 1024),
+		st:       st,
+		snapshot: snapshot,
+		control:  newRunControl(),
+		cancel:   cancel,
 	}
-	r.wg.Go(func() { streamWorker(ctx, st, cfg, r.snapshot, r.procs, r.control) })
-	r.wg.Go(func() { commandWorker(st, r.procs, r.control, r.Commands, CommandDeadline) })
-	r.wg.Go(func() { watchdog(st, r.procs, r.control, SilentAfter, ConnectWindow, DatalessAfter) })
-	r.wg.Go(func() { tunnelWorker(ctx, r.control, st, cfg, r.EQCommands) })
-	r.wg.Go(func() { artWorker(ctx, r.control, st, cfg) })
+	r.wg.Go(func() { tunnelWorker(ctx, r.control, st, cfg, r.Commands, r.snapshot) })
 	r.wg.Go(func() { lssdpWorker(ctx, r.control, st, cfg) })
 	r.wg.Go(func() { zcWorker(ctx, r.control, st, cfg) })
 	r.wg.Go(func() { otaWorker(ctx, r.control, st) })
 	return r
 }
 
-// PreloadSnapshot seeds the domain state from the last persisted player and EQ
-// values. The cache is only a first-paint hint: playback always starts paused,
-// and live device reads remain authoritative.
+// PreloadSnapshot seeds the domain state from the last persisted volume and
+// EQ values. The cache is only a first-paint hint: live device reads remain
+// authoritative.
 func PreloadSnapshot(st *protocol.State, cached *config.CachedSnapshot) {
 	if cached == nil {
 		return
 	}
-	track := protocol.SanitizeCached(cached.Track)
-	if track.Empty() {
-		track = nil
-	}
-	st.Preload(track, cached.Pos, cached.Vol)
+	st.Preload(cached.Vol)
 
 	if len(cached.EQ) == 0 {
 		return
@@ -136,12 +124,17 @@ func PreloadSnapshot(st *protocol.State, cached *config.CachedSnapshot) {
 	}
 }
 
-// Close drains player commands, stops the device processes and interruptible
-// network work, then waits for all workers. It is safe to call more than once.
+// Close stops the workers — the tunnel first writes what is still queued,
+// waiting at most drain for it — persists the snapshot, and waits for every
+// worker. It is safe to call more than once.
 func (r *Runtime) Close(drain time.Duration) {
 	r.closeOnce.Do(func() {
-		teardown(r.st, r.procs, r.control, r.Commands, drain, r.snapshot)
+		r.control.stop.Set()
+		r.control.drained.Wait(drain)
 		r.cancel()
 		r.wg.Wait()
+		if r.snapshot != "" {
+			config.SaveSnapshot(r.snapshot, selfSnap(r.st))
+		}
 	})
 }

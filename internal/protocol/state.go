@@ -1,102 +1,61 @@
 // The shared State: the lock-protected model the worker goroutines mutate and
 // the TUI reads, its immutable Snapshot projection, and the accessor methods
-// grouped by concern (volume/mute, EQ tunnel, connection liveness, diag views).
+// grouped by concern (player, volume/mute, EQ, connection, probes, diag view).
 
 package protocol
 
 import (
-	"image"
-	"image/color"
 	"maps"
-	"math"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 // State is the shared, lock-protected domain model the workers mutate and the
-// TUI reads. Child processes, shutdown coordination, and persistence paths are
-// deliberately owned by workers.Runtime instead.
+// TUI reads. The connection, its goroutines and the persistence paths belong
+// to workers.Runtime instead.
 type State struct {
 	mu sync.Mutex
 
+	// connected is the :2018 tunnel: up from its first parsed frame until the
+	// socket closes or goes silent. It is the one link to the box, so the
+	// player and the equalizer share it.
 	connected bool
-	track     *Track
-	trackAt   time.Time
-	garbageBs int // consecutive content-free, non-idle @@B sections (see ApplyRecord)
-	sysinfo   *SysInfo
-	devinfo   *DevInfo    // static device/network info (@@i, once per connection)
-	confinfo  *ConfInfo   // streaming-capability state (@@c: at connect and after each services toggle)
-	confAt    time.Time   // when that block arrived: the engine age in it is as of then
-	details   *DevDetails // device-details JSON readout (@@d, once per connection)
-	mroom     *Multiroom  // multiroom-group readout (@@g, once per connection)
-	logs      []string    // device syslog tail (@@l, only in answer to MID 93 "1")
-	logsAt    time.Time   // when that tail arrived (zero == none yet this run)
-	vlogs     []string    // vendor app log tail (@@L, only in answer to MID 93 "2")
-	vlogsAt   time.Time
-	ops       *DevOps   // syslog digest (@@o: at connect and each time the diagnostics open)
-	opsAt     time.Time // when that digest arrived: the end of the window its count covers
+	lastRx    time.Time // the latest frame (zero: none this connection)
+	attempts  int       // connections tried this run
 
-	posMs   int
-	posAt   time.Time
-	playing int // MID 51: 0=playing, anything else not
-	vol     int
-	volHold time.Time
+	// the player, as the tunnel reports it
+	track     *Track // the track the device announced this run (nil: none yet, or the source moved)
+	service   string // the latest VND word ("spotify"), carried into the next track
+	source    string // the input: NET, BT, LINE-IN, USBPLAY ("" until read)
+	playing   bool
+	playKnown bool // the device has reported a play state this run
+	playHold  time.Time
+	vol       int
+	volHold   time.Time
 	// volLive: a volume read has arrived this run, so vol is the device's
 	// level and not the snapshot the previous run cached.
-	volLive  bool
-	playHold time.Time
-	premute  int // 0 == none
+	volLive bool
+	// the volume bridge (see TakeVolumeBridge): the level the device last
+	// reported on this connection, and a level to re-send through the tunnel
+	devVol        int
+	devVolKnown   bool
+	bridgeVol     int
+	bridgePending bool
+	muted         bool
+	muteHold      time.Time
+	mcu           string // the MCU firmware as VER reports it, "29-1d316f0c-10"
 
 	errMsg string
 	errAt  time.Time
-	fatal  bool
 
-	gotRecord bool
-	lastRx    time.Time // zero == never (this connection)
-	lastData  time.Time // zero == never (this connection)
-	attempts  int
-	retryBase int // attempts at last successful connect
-
-	// datalessDeaths counts consecutive connections that died without any
-	// player data (reset by the next data record); deathCounted keeps a repeat
-	// Disconnect from double-counting one connection. A running streak withholds
-	// WriterLive's young-spawn grace — see WriterLive.
-	datalessDeaths int
-	deathCounted   bool
-
-	// network throughput + latency for the diagnostics overlay, over the active
-	// interface. Rates derive from the cumulative byte counters against the prior
-	// @@s; the ping rings hold recent RTTs (ms) for laptop/gateway/internet.
-	netPrevRx, netPrevTx int64
-	netPrevAt            time.Time
-	netRxRate, netTxRate float64
-	netRatesOK           bool
-	pingRing             [3][]float64
-
-	// cumulative interface error/drop counters: the connection's first sample
-	// baselines the session, so boot-lifetime noise (e.g. a powerline link's
-	// historical drops) never reads as a live fault.
-	errBase, errCur [4]int64 // rx_errors, tx_errors, rx_dropped, tx_dropped
-	errsOK          bool
-
-	// EQ / tone control state from the :2018 tunnel (separate from the ssh
-	// player stream). Keyed by wire code (MXV/EQS/BAS/MID/TRE/VBS/VBI).
-	eqConnected bool
-	eqVals      map[string]int       // wire code -> last-known value
-	eqHold      map[string]time.Time // wire code -> echo-suppression deadline
-	eqPresets   []string             // EQ preset names by EQS index (the PEQ list), nil until read
-
-	// output level: the ALSA softvol "Master" as last sampled (@@s, every
-	// third tick while the overlay is open) and how many consecutive samples
-	// disagreed with the reported volume — see updateLevel.
-	softvol      int
-	softvolOK    bool
-	levelBadRuns int
-	fatalStreak  int // consecutive fatal verdicts since the last data record
+	// EQ / tone control state, keyed by wire code (MXV/EQE/EQS/BAS/MID/TRE/
+	// VBS/VBI/BAL).
+	eqVals    map[string]int       // wire code -> last-known value
+	eqHold    map[string]time.Time // wire code -> echo-suppression deadline
+	eqPresets []string             // EQ preset names by EQS index (the PEQ list), nil until read
 
 	// LSSDP liveness: the device's UDP:1800 answer as last probed (nil when the
 	// last probe went unanswered), and when a probe last ran / last succeeded.
@@ -121,37 +80,19 @@ type State struct {
 	ota     *OTAInfo
 
 	// probeQuiet is raised by the TUI while no view shows what the LSSDP and
-	// ZeroConf probes find (anything but the services and the diagnostics);
-	// the probe workers then skip their connected-cadence rounds — the box is
-	// asked nothing it will not be shown. Disconnected, the probes always run:
-	// the connecting screen is built on them. Default off, so a State without
-	// a TUI (tests, the sweep) probes as before.
+	// ZeroConf probes find (anything but the diagnostics); the probe workers
+	// then skip their connected-cadence rounds — the box is asked nothing it
+	// will not be shown. Disconnected, the probes always run: the connecting
+	// screen is built on them. Default off, so a State without a TUI (tests)
+	// probes as before.
 	probeQuiet bool
-
-	// night mode: the device's multi-band DRC enable as last read back (@@n),
-	// and the value seen first this process, which quit restores. Known flags
-	// distinguish "off" from "never reported".
-	night, nightKnown         bool
-	nightOrig, nightOrigKnown bool
-	nightHold                 time.Time // echo-suppression deadline after SetNightLocal
-
-	// album art: the decoded cover and the CoverArtUrl it was loaded for, set
-	// by the art worker. Snap exposes the image only while artURL still matches
-	// the playing track, so a stale cover never lingers across a track change.
-	artURL   string
-	artImg   image.Image
-	artDom   color.RGBA // cover's representative hue (computed by the art worker)
-	artDomOK bool       // false for a greyscale cover (keep the theme default)
 }
 
-// NewState returns an initialized State (playing starts at 2 = "not playing",
-// posAt = now).
+// NewState returns an initialized State.
 func NewState() *State {
 	return &State{
-		playing: 2,
-		posAt:   time.Now(),
-		eqVals:  map[string]int{},
-		eqHold:  map[string]time.Time{},
+		eqVals: map[string]int{},
+		eqHold: map[string]time.Time{},
 	}
 }
 
@@ -162,18 +103,17 @@ type LSSDPInfo struct {
 }
 
 // SpotifyZC is the Spotify engine's ZeroConf getInfo answer (see
-// discovery.ProbeSpotifyZC): whether it is up and who is signed in. Strings
-// are control-stripped on the way in. (The answer also carries the eSDK build
-// and the advertised name; the @@s stream and LSSDP already show those.)
+// discovery.ProbeSpotifyZC): whether it is up, who is signed in, and the eSDK
+// build. Strings are control-stripped on the way in.
 type SpotifyZC struct {
-	StatusString, ActiveUser string
+	StatusString, ActiveUser, LibraryVersion string
 }
 
 // OTAInfo is the vendor manifest's verdict on the device's firmware, as last
 // asked: up to date, a newer build on offer, or why the check failed.
 type OTAInfo struct {
 	At       time.Time // when the answer (or failure) landed
-	Asked    string    // the firmware build the check was made for, e.g. "AR241CE_8530"
+	Asked    string    // the firmware build the check was made for, e.g. "AR241CP_8747"
 	UpToDate bool
 	Offered  string // the build the manifest offers instead ("" when up to date / failed)
 	Err      string // "" on a clean answer; else why there is no verdict
@@ -185,9 +125,16 @@ type OTAInfo struct {
 // Snapshot is an immutable view of State for rendering.
 type Snapshot struct {
 	Connected bool
-	Track     *Track
-	Pos       int
-	Playing   int
+	// Track is what the device announced this run, nil before its first
+	// announcement: the tunnel names a track only when it changes, so a run
+	// that starts mid-track has none until the next one.
+	Track   *Track
+	Service string // the latest VND word, "" until the device names one
+	Source  string // the input, "" until read
+	Playing bool
+	// PlayKnown is false until the device has reported its play state this
+	// run: before that Playing is only the zero value.
+	PlayKnown bool
 	Vol       int
 	Muted     bool
 	// VolLive is true once the device has reported its volume this run.
@@ -196,99 +143,397 @@ type Snapshot struct {
 	VolLive  bool
 	Error    string
 	ErrorAt  time.Time
-	Fatal    bool
 	Attempts int
 
-	CoverURL string      // current track's cover art URL ("" if none)
-	Art      image.Image // decoded cover for CoverURL, or nil if not yet loaded
-	// Dominant is the cover's representative hue, precomputed by the art worker so
-	// the renderer never scans pixels; DominantOK is false for a greyscale cover or
-	// before the cover loads. Valid only while Art is non-nil.
-	Dominant   color.RGBA
-	DominantOK bool
-
-	// Night is the device's multi-band DRC enable (night mode) as last read
-	// back; NightKnown is false until the device has reported it.
-	Night, NightKnown bool
-
 	// LSSDPAlive is true when the device's UDP:1800 responder answered the
-	// most recent probe — the box is up even if the ssh stream isn't; LSSDPAt
-	// is when that last answer arrived (zero: never this process).
+	// most recent probe — the box is up even if the tunnel isn't; LSSDPAt is
+	// when that last answer arrived (zero: never this process).
 	LSSDPAlive   bool
 	LSSDPAt      time.Time
 	LSSDPProbeAt time.Time // when a probe last ran (zero: none yet)
-
-	// LastArt is the most-recently-decoded cover and the URL it came from,
-	// retained across idle so the idle screen can show a dimmed "ghost" of the
-	// last thing played. Unlike Art, it is not gated on the current track.
-	LastArt      image.Image
-	LastCoverURL string
 }
 
-// SetArt stores the decoded cover image for url (a track's CoverArtUrl) plus its
-// precomputed dominant hue (dom/domOK), computed by the art worker off the render
-// path. The art worker calls this; Snap only surfaces them while url is still the
-// playing track's cover.
-func (st *State) SetArt(url string, img image.Image, dom color.RGBA, domOK bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.artURL = url
-	st.artImg = img
-	st.artDom, st.artDomOK = dom, domOK
-}
-
-// Snap projects the current State, advancing the position clock while playing.
+// Snap projects the current State.
 func (st *State) Snap() Snapshot {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.snapLocked(time.Now())
+	return st.snapLocked()
 }
 
-// snapLocked projects State at now. The caller holds st.mu.
-func (st *State) snapLocked(now time.Time) Snapshot {
-	pos := st.posMs
-	t := st.track
-	if st.playing == 0 && t != nil && st.connected {
-		pos = st.elapsedLocked(pos, now)
-	}
-	if t != nil && t.TotalTime > 0 && pos > t.TotalTime {
-		pos = t.TotalTime
-	}
-	cover := ""
-	if t != nil {
-		cover = t.CoverArtURL
-	}
-	var art image.Image
-	var dom color.RGBA
-	var domOK bool
-	if cover != "" && cover == st.artURL {
-		art = st.artImg
-		dom, domOK = st.artDom, st.artDomOK
-	}
+// snapLocked projects State. The caller holds st.mu.
+func (st *State) snapLocked() Snapshot {
 	return Snapshot{
 		Connected:    st.connected,
-		Track:        t,
-		Pos:          pos,
+		Track:        st.track,
+		Service:      st.service,
+		Source:       st.source,
 		Playing:      st.playing,
+		PlayKnown:    st.playKnown,
 		Vol:          st.vol,
+		Muted:        st.muted,
 		VolLive:      st.volLive,
-		Muted:        st.connected && st.vol == 0,
 		Error:        st.errMsg,
 		ErrorAt:      st.errAt,
-		Fatal:        st.fatal,
-		Attempts:     st.attempts - st.retryBase,
-		CoverURL:     cover,
-		Art:          art,
-		Dominant:     dom,
-		DominantOK:   domOK,
-		LastArt:      st.artImg,
-		LastCoverURL: st.artURL,
-		Night:        st.night,
-		NightKnown:   st.nightKnown,
+		Attempts:     st.attempts,
 		LSSDPAlive:   st.lssdp != nil,
 		LSSDPAt:      st.lssdpOKAt,
 		LSSDPProbeAt: st.lssdpProbeAt,
 	}
+}
+
+// ---- the player, as the tunnel reports it ----
+
+// held reports whether a local change's echo window is still open at now.
+func held(hold, now time.Time) bool { return now.Before(hold) }
+
+// ApplyStatus records one STA reply: the source, the mute, the volume and the
+// play state, each unless a local change of it is still inside its echo
+// window. A change of source drops the track and the service (see
+// applySourceLocked).
+func (st *State) ApplyStatus(source string, muted bool, vol int, playing bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	now := time.Now()
+	st.applySourceLocked(printable(source))
+	if !held(st.muteHold, now) {
+		st.muted = muted
+	}
+	st.applyVolLocked(vol, now)
+	st.applyPlayLocked(playing, now)
+}
+
+// ApplyVolume records a VOL reply or push.
+func (st *State) ApplyVolume(vol int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.applyVolLocked(vol, time.Now())
+}
+
+// ApplyMute records a MUT reply or push.
+func (st *State) ApplyMute(muted bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !held(st.muteHold, time.Now()) {
+		st.muted = muted
+	}
+}
+
+// ApplyPlaying records a PLA reply or push.
+func (st *State) ApplyPlaying(playing bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.applyPlayLocked(playing, time.Now())
+}
+
+// ApplySource records a SRC reply.
+func (st *State) ApplySource(source string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.applySourceLocked(printable(source))
+}
+
+func (st *State) applyVolLocked(vol int, now time.Time) {
+	vol = clamp100(vol)
+	if (!st.devVolKnown || vol != st.devVol) && !held(st.volHold, now) {
+		st.bridgeVol, st.bridgePending = vol, true
+	}
+	st.devVol, st.devVolKnown = vol, true
+	st.volLive = true
+	if !held(st.volHold, now) {
+		st.vol = vol
+	}
+}
+
+// TakeVolumeBridge hands the tunnel worker a level to re-send as VOL:n, once.
+// Firmware AR241CP_8747 broke the Spotify app's volume: the level the app
+// sets reaches the MCU's register — the MCU pushes it to the tunnel's
+// clients as VOL:n, and the status poll reads it — but the SoC's softvol
+// never follows (its amixer call fails), so the room stays where it was. A
+// VOL set through the tunnel takes the MCU's own path, which applies it
+// (verified by ear 2026-10-01: the room followed the app's slider within a
+// fraction of a second while lp10 ran). So a level the device reports that lp10 did not set (outside
+// the local echo hold), and the first one of each connection, is sent back
+// as it is. For a knob or remote change, already applied, the re-send is a
+// no-op.
+func (st *State) TakeVolumeBridge() (int, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !st.bridgePending {
+		return 0, false
+	}
+	st.bridgePending = false
+	return st.bridgeVol, true
+}
+
+func (st *State) applyPlayLocked(playing bool, now time.Time) {
+	st.playKnown = true
+	if !held(st.playHold, now) {
+		st.playing = playing
+	}
+}
+
+// applySourceLocked records the input. A change drops the track and the
+// service word: what the old input announced is not what the new one plays,
+// and a VND comes again only when a service starts playing.
+func (st *State) applySourceLocked(source string) {
+	if source == "" {
+		return
+	}
+	if st.source != "" && source != st.source {
+		st.track, st.service = nil, ""
+	}
+	st.source = source
+}
+
+// Track fields, by the tunnel code that pushes each.
+const (
+	FieldTitle  = "TIT"
+	FieldArtist = "ART"
+	FieldAlbum  = "ALB"
+)
+
+// ApplyTrackField records one pushed track field. The device sends TIT, ART
+// and ALB in that order on a track change, so a title starts a new track —
+// the artist and album of the last one must not linger beside it — and an
+// artist or album fills in the current one (or starts one, should a title
+// ever be missing). A published Track is never mutated: each field makes a
+// new value, so a Snapshot taken before it stays as it was.
+func (st *State) ApplyTrackField(field, text string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	text = printable(text)
+	var t Track
+	if field != FieldTitle && st.track != nil {
+		t = *st.track
+	}
+	t.Service = st.service
+	switch field {
+	case FieldTitle:
+		t.TrackName = text
+	case FieldArtist:
+		t.Artist = text
+	case FieldAlbum:
+		t.Album = text
+	default:
+		return
+	}
+	st.track = &t
+}
+
+// ApplyVendor records a VND push — the service playing ("spotify"). It names
+// the current track's service too, and every track after it.
+func (st *State) ApplyVendor(service string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.service = printable(service)
+	if st.track != nil && st.track.Service != st.service {
+		t := *st.track
+		t.Service = st.service
+		st.track = &t
+	}
+}
+
+// ApplyVersion records the MCU firmware as VER reports it.
+func (st *State) ApplyVersion(v string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.mcu = printable(v)
+}
+
+// ---- optimistic UI ----
+
+// ToggleOptimistic flips the local play state and arms the echo hold; it
+// returns whether the player WAS playing. The device's POP is a toggle too,
+// so the wire command is the same either way: this only keeps the screen a
+// step ahead of the device's PLA push.
+func (st *State) ToggleOptimistic() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	was := st.playing
+	st.playing = !was
+	st.playHold = time.Now().Add(PlayHoldDuration)
+	return was
+}
+
+// PauseOptimistic is the toggle's one-way form, for the sleep timer: it
+// pauses only if the device last said it is playing — decided under the
+// lock, so a pause landing between a snapshot and the flip can never turn the
+// timer's toggle into a resume — and reports whether a POP must be sent.
+func (st *State) PauseOptimistic() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !st.playing {
+		return false
+	}
+	st.playing = false
+	st.playHold = time.Now().Add(PlayHoldDuration)
+	return true
+}
+
+// ---- volume / mute ----
+
+func clamp100(v int) int { return max(0, min(100, v)) }
+
+// applyVol computes and applies the target under the lock and arms the echo
+// hold. A local set replaces any level still waiting to be bridged: sent
+// after the key's own write, that older level would undo the step.
+func (st *State) applyVol(target func(cur int) int) int {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.vol = clamp100(target(st.vol))
+	st.volHold = time.Now().Add(VolHoldDuration)
+	st.bridgePending = false
+	return st.vol
+}
+
+// SetVol sets an absolute volume and returns the applied value.
+func (st *State) SetVol(v int) int {
+	return st.applyVol(func(int) int { return v })
+}
+
+// AdjustVol changes the volume by delta and returns the applied value.
+func (st *State) AdjustVol(delta int) int {
+	return st.applyVol(func(cur int) int {
+		// Preserve the 0..100 invariant without performing an addition that can
+		// overflow when a caller supplies an extreme delta.
+		switch {
+		case delta > 0 && delta >= 100-cur:
+			return 100
+		case delta < 0 && delta <= -cur:
+			return 0
+		default:
+			return cur + delta
+		}
+	})
+}
+
+// ToggleMute flips the local mute, arms its echo hold, and returns the new
+// state — the one the device is to be told.
+func (st *State) ToggleMute() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.muted = !st.muted
+	st.muteHold = time.Now().Add(MuteHoldDuration)
+	return st.muted
+}
+
+// ---- EQ / tone control state ----
+
+// ApplyTunnel records a device-reported control value, unless that control was
+// changed locally within its echo-suppression window.
+func (st *State) ApplyTunnel(code string, val int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if h, ok := st.eqHold[code]; ok && time.Now().Before(h) {
+		return
+	}
+	st.eqVals[code] = val
+}
+
+// SetEQLocal optimistically records a user change and arms the echo hold so the
+// device's broadcast echo doesn't fight a rapid adjustment.
+func (st *State) SetEQLocal(code string, val int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.eqVals[code] = val
+	st.eqHold[code] = time.Now().Add(EQHoldDuration)
+}
+
+// PreloadEQ seeds cached EQ/tone values for an instant first paint of the
+// equalizer, before the tunnel has connected. It does NOT arm the echo hold,
+// so the device's seed values overwrite these the moment the tunnel comes up.
+func (st *State) PreloadEQ(vals map[string]int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	maps.Copy(st.eqVals, vals)
+}
+
+// SetEQPresets records the device's EQ preset names by index (its PEQ list).
+func (st *State) SetEQPresets(names []string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.eqPresets = slices.Clone(names)
+}
+
+// EQPresets returns the preset names by EQS index (nil before the PEQ reply).
+func (st *State) EQPresets() []string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return slices.Clone(st.eqPresets)
+}
+
+// EQValue returns one control's last-known value and whether it is known yet.
+func (st *State) EQValue(code string) (int, bool) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	v, ok := st.eqVals[code]
+	return v, ok
+}
+
+// EQView snapshots the link state and a copy of all known control values for
+// rendering, in one locked read.
+func (st *State) EQView() (connected bool, vals map[string]int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.connected, maps.Clone(st.eqVals)
+}
+
+// ---- errors ----
+
+// Note records a transient error message. The text is control-stripped: a
+// note can carry a dial error or a device word, which the error line renders
+// at full width — an un-stripped ESC there could inject an escape sequence.
+func (st *State) Note(msg string) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.errMsg, st.errAt = printable(msg), time.Now()
+}
+
+// ---- connection liveness ----
+
+// StartConnection counts a fresh connection attempt. The volume bridge starts
+// over: the first level the new connection reads is re-sent (see
+// TakeVolumeBridge).
+func (st *State) StartConnection() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.attempts++
+	st.lastRx = time.Time{}
+	st.devVolKnown, st.bridgePending = false, false
+}
+
+// Received marks a parsed frame: the link is live, and when it last spoke.
+func (st *State) Received() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.connected = true
+	st.lastRx = time.Now()
+}
+
+// Disconnect marks the link dead (idempotent).
+func (st *State) Disconnect() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.connected = false
+}
+
+// LastRx is when the current connection last delivered a frame (zero: none).
+func (st *State) LastRx() time.Time {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.lastRx
+}
+
+// ---- preload ----
+
+// Preload seeds the cached volume for an instant first paint. The play state
+// and the track are not cached: the device reports the first at once, and
+// the second only when the track changes — a cached title could name
+// something the box stopped playing long ago.
+func (st *State) Preload(vol int) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.vol = clamp100(vol)
 }
 
 // ---- LSSDP liveness ----
@@ -323,7 +568,8 @@ func (st *State) SetSpotifyZC(info *SpotifyZC, port int) {
 		st.zc = nil
 		return
 	}
-	st.zc = &SpotifyZC{StatusString: printable(info.StatusString), ActiveUser: printable(info.ActiveUser)}
+	st.zc = &SpotifyZC{StatusString: printable(info.StatusString), ActiveUser: printable(info.ActiveUser),
+		LibraryVersion: printable(info.LibraryVersion)}
 	st.zcOKAt = now
 }
 
@@ -343,6 +589,8 @@ func (st *State) ProbeWanted() bool {
 	return !st.probeQuiet
 }
 
+// ---- firmware update check ----
+
 // RequestOTA asks for a firmware update check. Raised by the TUI's u key in
 // the diagnostics — the check contacts the vendor, so it only ever runs on
 // that explicit keystroke, never on a timer or on opening a view.
@@ -353,36 +601,24 @@ func (st *State) RequestOTA() {
 }
 
 // reBuild is the shape of a firmware build the vendor manifest is asked about
-// ("AR241CE_8530") — the same shape the OTA worker insists on before the
+// ("AR241CP_8747") — the same shape the OTA worker insists on before the
 // string goes into a request body.
 var reBuild = regexp.MustCompile(`^[A-Z0-9]{2,12}_[0-9]{1,8}$`)
 
 // TakeOTARequest hands a pending request to the worker (clearing it, and
 // marking the check in flight until SetOTA), with the firmware build to ask
-// about: the reg-5 build from the ssh stream when it has the shape of one,
-// else the LSSDP answer's. A reg-5 read that failed at connect leaves the
-// stream's firmware "." or ".23" for the whole connection; handing that over
-// only bought an "unrecognised firmware string" verdict while LSSDP held the
-// real build. Before a build has arrived the request is NOT handed over — the
-// worker polls again, and the diagnostics keep saying "checking…" until one
-// lands (a check asked for in the first seconds of a run used to get a "check
-// failed · firmware not read yet" verdict that nothing ever retried).
+// about: the LSSDP answer's, the one place the box names its build without
+// ssh. Before an answer with a build has arrived the request is NOT handed
+// over — the worker polls again, and the diagnostics keep saying "checking…"
+// until one lands.
 func (st *State) TakeOTARequest() (build string, pending bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !st.otaWant {
-		return "", false
-	}
-	switch {
-	case st.sysinfo != nil && reBuild.MatchString(firmwareBuild(st.sysinfo.FW)):
-		build = firmwareBuild(st.sysinfo.FW)
-	case st.lssdp != nil && st.lssdp.FW != "":
-		build = firmwareBuild(st.lssdp.FW)
-	default:
+	if !st.otaWant || st.lssdp == nil || !reBuild.MatchString(firmwareBuild(st.lssdp.FW)) {
 		return "", false
 	}
 	st.otaWant, st.otaBusy = false, true
-	return build, true
+	return firmwareBuild(st.lssdp.FW), true
 }
 
 // SetOTA records the worker's verdict (strings control-stripped), which ends
@@ -396,7 +632,7 @@ func (st *State) SetOTA(info OTAInfo) {
 }
 
 // firmwareBuild is the manifest's fwVersion: the build before the first dot
-// ("AR241CE_8530.23.2" → "AR241CE_8530").
+// ("AR241CP_8747.29.2" → "AR241CP_8747").
 func firmwareBuild(fw string) string {
 	if before, _, ok := strings.Cut(fw, "."); ok {
 		return before
@@ -404,55 +640,16 @@ func firmwareBuild(fw string) string {
 	return fw
 }
 
-// ---- night mode (multi-band DRC) ----
-
-// SetNightLocal records the state lp10 just asked for, so the header flips at
-// once, and arms the echo hold; the device's @@n readback that follows the set
-// confirms or corrects it once the hold is over.
-func (st *State) SetNightLocal(on bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.night, st.nightKnown = on, true
-	st.nightHold = time.Now().Add(NightHoldDuration)
-}
-
-// NightRestore reports the value quit should put back — the first readback of
-// this process — and whether restoring is needed at all (the device reported a
-// baseline and the current state differs from it).
-func (st *State) NightRestore() (orig bool, needed bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.nightOrig, st.nightOrigKnown && st.nightKnown && st.night != st.nightOrig
-}
+// ---- diagnostics view ----
 
 // DiagnosticSnapshot is the complete, point-in-time state consumed by the
-// diagnostics overlay. One State lock supplies the player, liveness, device,
-// capability, network, and tunnel fields, preventing a frame from combining
-// values observed on opposite sides of a worker update.
+// diagnostics view, read under one lock so a frame never combines values
+// observed on opposite sides of a worker update.
 type DiagnosticSnapshot struct {
 	Snapshot Snapshot
 
-	LastRx, LastData time.Time
-	ConnectAttempts  int
-	SysInfo          *SysInfo
-	DevInfo          *DevInfo
-	ConfInfo         *ConfInfo
-	Details          *DevDetails
-	Multiroom        *Multiroom
-	Net              NetStat
-	EQConnected      bool
-
-	// ConfAt is when ConfInfo arrived (zero: not stamped). The block is read
-	// only at connect and after a services toggle, so the engine age in it is
-	// as of then, not as of this frame.
-	ConfAt time.Time
-
-	// Softvol is the last sampled output level (SoftvolOK false until one
-	// arrives); LevelDesync is true once it has disagreed with the reported
-	// volume on two consecutive samples — the app normally holds it at vol−1.
-	Softvol     int
-	SoftvolOK   bool
-	LevelDesync bool
+	LastRx time.Time // the tunnel's latest frame (zero: none this connection)
+	MCU    string    // the MCU firmware as VER reports it ("" until read)
 
 	// LSSDP is the device's last UDP:1800 answer (nil: unanswered or never
 	// probed); LSSDPProbeAt / LSSDPOKAt time the last probe and last answer.
@@ -470,447 +667,26 @@ type DiagnosticSnapshot struct {
 	// waiting for the worker, or in flight to the vendor.
 	OTA        *OTAInfo
 	OTAPending bool
-
-	// Ops is the device's own syslog digest — the Spotify engine's reconnect
-	// count over the log's window and the box's own last manifest answer (nil:
-	// none received yet); OpsAt is when it arrived, which is where the window
-	// its count covers ends.
-	Ops   *DevOps
-	OpsAt time.Time
 }
-
-// ---- volume / mute ----
-
-func clamp100(v int) int { return max(0, min(100, v)) }
-
-// setVolLocked sets the volume and arms the echo-suppression hold, capturing a
-// pre-mute level to persist (returned) when transitioning into mute.
-func (st *State) setVolLocked(v int) (int, int) {
-	v = clamp100(v)
-	persist := 0
-	if st.vol > 0 && v == 0 {
-		st.premute = st.vol
-		persist = st.vol
-	}
-	if v > 0 {
-		st.premute = 0
-	}
-	st.vol = v
-	st.volHold = time.Now().Add(VolHoldDuration)
-	return v, persist
-}
-
-// applyVol computes and applies the target under the lock. persist is the
-// pre-mute level a controller should save when this change enters mute; State
-// reports the value but performs no persistence itself.
-func (st *State) applyVol(target func(cur int) int) (value, persist int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.setVolLocked(target(st.vol))
-}
-
-// SetVol sets an absolute volume and returns the applied value plus any
-// pre-mute level the controller should persist.
-func (st *State) SetVol(v int) (value, persist int) {
-	return st.applyVol(func(int) int { return v })
-}
-
-// AdjustVol changes the volume by delta and returns the applied value plus any
-// pre-mute level the controller should persist.
-func (st *State) AdjustVol(delta int) (value, persist int) {
-	return st.applyVol(func(cur int) int {
-		// Preserve the 0..100 invariant without performing an addition that can
-		// overflow when a caller supplies an extreme delta.
-		switch {
-		case delta > 0 && delta >= 100-cur:
-			return 100
-		case delta < 0 && delta <= -cur:
-			return 0
-		default:
-			return cur + delta
-		}
-	})
-}
-
-// VolAndPremute reads the current volume and pre-mute level atomically (used by
-// the mute toggle).
-func (st *State) VolAndPremute() (int, int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.vol, st.premute
-}
-
-// ---- EQ / tone control state (the :2018 tunnel) ----
-
-// ApplyTunnel records a device-reported control value, unless that control was
-// changed locally within its echo-suppression window. Marks the tunnel live.
-func (st *State) ApplyTunnel(code string, val int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.eqConnected = true
-	if h, ok := st.eqHold[code]; ok && time.Now().Before(h) {
-		return
-	}
-	st.eqVals[code] = val
-}
-
-// SetEQConnected sets the tunnel link state (false on disconnect/reconnect).
-func (st *State) SetEQConnected(b bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.eqConnected = b
-}
-
-// SetEQLocal optimistically records a user change and arms the echo hold so the
-// device's broadcast echo doesn't fight a rapid adjustment.
-func (st *State) SetEQLocal(code string, val int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.eqVals[code] = val
-	st.eqHold[code] = time.Now().Add(EQHoldDuration)
-}
-
-// PreloadEQ seeds cached EQ/tone values for an instant first paint of the
-// equalizer, before the :2018 tunnel has connected. It does NOT arm the echo
-// hold or mark the tunnel connected, so the device's authoritative seed values
-// overwrite these the moment the tunnel comes up (mirroring Preload for the
-// player snapshot).
-func (st *State) PreloadEQ(vals map[string]int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	maps.Copy(st.eqVals, vals)
-}
-
-// SetEQPresets records the device's EQ preset names by index (its PEQ list).
-// A parsed frame, so it marks the tunnel live like ApplyTunnel.
-func (st *State) SetEQPresets(names []string) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.eqConnected = true
-	st.eqPresets = slices.Clone(names)
-}
-
-// EQPresets returns the preset names by EQS index (nil before the PEQ reply).
-func (st *State) EQPresets() []string {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return slices.Clone(st.eqPresets)
-}
-
-// EQValue returns one control's last-known value and whether it is known yet.
-func (st *State) EQValue(code string) (int, bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	v, ok := st.eqVals[code]
-	return v, ok
-}
-
-// EQView snapshots the tunnel link state and a copy of all known control values
-// for rendering, in one locked read.
-func (st *State) EQView() (connected bool, vals map[string]int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.eqConnected, maps.Clone(st.eqVals)
-}
-
-// ---- errors ----
-
-// Note records a transient error message (no-op once fatal). The text is
-// control-stripped: a note can carry raw ssh stderr / a device banner, which
-// the error line renders at full width — an un-stripped ESC there could inject
-// an escape sequence (an OSC-8 hyperlink survives an SGR reset and bleeds down
-// the frame).
-func (st *State) Note(msg string) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.fatal {
-		st.errMsg, st.errAt = printable(msg), time.Now()
-	}
-}
-
-// ClearFatalOnData clears a fatal error once data flows again (self-healing).
-func (st *State) ClearFatalOnData() {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.fatalStreak = 0
-	if st.fatal {
-		st.fatal = false
-		st.errMsg = ""
-	}
-}
-
-// SetFatal latches a fatal error with its timestamp (control-stripped like
-// every device-facing string) and returns how many fatal verdicts in a row
-// this makes — reset by the next data record — so the caller can stretch its
-// retry cadence.
-func (st *State) SetFatal(msg string) int {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.errMsg, st.errAt, st.fatal = printable(msg), time.Now(), true
-	st.fatalStreak++
-	return st.fatalStreak
-}
-
-// ---- connection liveness (used by the workers and the TUI) ----
-
-// StartConnection resets per-connection liveness and counts a fresh attempt.
-// Process ownership remains with the worker runtime.
-func (st *State) StartConnection() {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.gotRecord = false
-	st.lastRx = time.Time{}
-	st.lastData = time.Time{}
-	st.netPrevAt = time.Time{} // re-baseline throughput; latency rings start fresh
-	st.netRatesOK = false
-	st.pingRing = [3][]float64{}
-	st.errsOK = false                                       // error counters re-baseline on the next sample
-	st.softvol, st.softvolOK, st.levelBadRuns = 0, false, 0 // a dead session's half-built desync streak is not this one's
-	st.deathCounted = false
-	st.attempts++
-}
-
-// staleDeathAfter mirrors the workers' LiveSessionTimeout: a connection whose
-// death follows data this recent was healthy to the end (clean EOF, device
-// reboot), so its successor keeps the young-spawn write grace. A staler death —
-// the watchdog killing a session that went silent mid-outage — arms the streak
-// immediately, so even the FIRST respawn of an outage refuses the grace. A var
-// so tests can shrink it.
-var staleDeathAfter = 8 * time.Second
-
-// Disconnect marks the player connection dead (idempotent). A connection that
-// dies without recent player data extends the dataless-death streak that
-// withholds WriterLive's young-spawn grace.
-func (st *State) Disconnect() {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.connected = false
-	if !st.deathCounted {
-		st.deathCounted = true
-		if st.lastData.IsZero() || time.Since(st.lastData) > staleDeathAfter {
-			st.datalessDeaths++
-		}
-	}
-}
-
-// LivenessView snapshots the fields the watchdog needs in one locked read.
-func (st *State) LivenessView() (lastRx, lastData time.Time, got bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.lastRx, st.lastData, st.gotRecord
-}
-
-// WriterLive reports whether a process spawned at spawned is live enough to
-// accept a command: a young connection may still be handshaking (ssh buffers
-// stdin), while a session that went data-silent is treated as wedged. The
-// young-spawn grace is withheld while a dataless-death streak is running:
-// during an outage every respawn is young, and the grace would keep swallowing
-// commands into a doomed stdin pipe with no "command not delivered" note.
-// grace reports that the verdict rests on that young-spawn grace alone (no
-// data yet): such a write rides a pipe into an ssh that may never connect, so
-// the caller remembers it and reports it lost if the session dies dataless.
-func (st *State) WriterLive(now, spawned time.Time, liveTimeout time.Duration) (live, grace bool) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if !st.lastData.IsZero() && now.Sub(st.lastData) <= liveTimeout {
-		return true, false
-	}
-	live = st.datalessDeaths == 0 && now.Sub(spawned) <= liveTimeout
-	return live, live
-}
-
-// DataSince reports whether a data record has arrived after t.
-func (st *State) DataSince(t time.Time) bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return !st.lastData.IsZero() && st.lastData.After(t)
-}
-
-// ---- diagnostics views ----
 
 // DiagnosticView returns every value used by one diagnostics frame under one
-// lock. The one-shot pointer values are safe to publish because ApplyRecord
-// replaces them wholesale and never mutates a published value.
-func (st *State) DiagnosticView(now time.Time) DiagnosticSnapshot {
+// lock. The pointer values are safe to publish: the setters replace them
+// wholesale and never mutate a published value.
+func (st *State) DiagnosticView() DiagnosticSnapshot {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return DiagnosticSnapshot{
-		Snapshot:        st.snapLocked(now),
-		LastRx:          st.lastRx,
-		LastData:        st.lastData,
-		ConnectAttempts: st.attempts,
-		SysInfo:         st.sysinfo,
-		DevInfo:         st.devinfo,
-		ConfInfo:        st.confinfo,
-		ConfAt:          st.confAt,
-		Details:         st.details,
-		Multiroom:       st.mroom,
-		Net:             st.netViewLocked(),
-		EQConnected:     st.eqConnected,
-		Softvol:         st.softvol,
-		SoftvolOK:       st.softvolOK,
-		LevelDesync:     st.levelBadRuns >= 2,
-		LSSDP:           st.lssdp,
-		LSSDPProbeAt:    st.lssdpProbeAt,
-		LSSDPOKAt:       st.lssdpOKAt,
-		SpotifyZC:       st.zc,
-		ZCPort:          st.zcPort,
-		ZCProbeAt:       st.zcProbeAt,
-		ZCOKAt:          st.zcOKAt,
-		OTA:             st.ota,
-		OTAPending:      st.otaWant || st.otaBusy,
-		Ops:             st.ops,
-		OpsAt:           st.opsAt,
+		Snapshot:     st.snapLocked(),
+		LastRx:       st.lastRx,
+		MCU:          st.mcu,
+		LSSDP:        st.lssdp,
+		LSSDPProbeAt: st.lssdpProbeAt,
+		LSSDPOKAt:    st.lssdpOKAt,
+		SpotifyZC:    st.zc,
+		ZCPort:       st.zcPort,
+		ZCProbeAt:    st.zcProbeAt,
+		ZCOKAt:       st.zcOKAt,
+		OTA:          st.ota,
+		OTAPending:   st.otaWant || st.otaBusy,
 	}
-}
-
-// levelTolerance is how far the softvol may sit from vol−1 before a sample
-// counts as out of step: ±1 absorbs the app's own rounding and a sample taken
-// mid-change.
-const levelTolerance = 1
-
-// updateLevel folds one @@s softvol sample into the desync tracker. The
-// caller holds st.mu. An unread sample ("-" / "") leaves everything as is; a
-// readable one is compared with the current volume: the app keeps the softvol
-// at vol−1 (floored at 0), so anything further off than levelTolerance is a
-// bad run, and two bad runs in a row (≈6 s at the sample cadence) flag the
-// desync — one sample alone could straddle a volume change.
-func (st *State) updateLevel(si *SysInfo, vol int) {
-	v, err := strconv.Atoi(si.Softvol)
-	if err != nil || v < 0 {
-		return
-	}
-	st.softvol, st.softvolOK = v, true
-	want := max(vol-1, 0)
-	if d := v - want; d > levelTolerance || d < -levelTolerance {
-		st.levelBadRuns++
-	} else {
-		st.levelBadRuns = 0
-	}
-}
-
-// ConfView returns the streaming-capability state (or nil before the first @@c
-// block arrives). The returned ConfInfo is owned by the caller's read: the worker
-// only ever replaces st.confinfo wholesale (never mutates a published map), so the
-// map is safe to range without copying.
-func (st *State) ConfView() *ConfInfo {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.confinfo
-}
-
-// LogSource names one of the two device-side tails MID 93 can fetch: the wire
-// value is the MID-93 payload, so the TUI and the loop agree by construction.
-type LogSource int
-
-const (
-	LogSyslog LogSource = 1 // /var/log/syslog/messages.log (@@l)
-	LogVendor LogSource = 2 // /lsync/app.log, the vendor app's own log (@@L)
-)
-
-// LogView returns the last tail of the given source and when it arrived (nil,
-// zero before any answer). The slice is replaced wholesale by the worker and
-// never mutated in place, so the caller may range it without copying.
-func (st *State) LogView(src LogSource) ([]string, time.Time) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if src == LogVendor {
-		return st.vlogs, st.vlogsAt
-	}
-	return st.logs, st.logsAt
-}
-
-// ---- preload / optimistic UI ----
-
-// Preload seeds the cached track/pos/vol for an instant first paint. The clock
-// never resumes from a cached position, so playing starts at 2 (not playing)
-// and trackAt is the zero time; garbageBs starts at 1 so the FIRST live garbage
-// B already clears a stale cached track (live tracks need two consecutive).
-func (st *State) Preload(track *Track, pos, vol int) {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	st.track = track
-	st.trackAt = time.Time{}
-	st.garbageBs = 1
-	st.posMs = max(0, pos)
-	st.playing = 2
-	st.vol = clamp100(vol)
-}
-
-// ToggleOptimistic flips the local play state, arms the echo-suppression hold,
-// and restarts the position clock; it returns whether the player WAS playing
-// (so the caller sends PAUSE vs RESUME).
-func (st *State) ToggleOptimistic() bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	now := time.Now()
-	playing := st.playing == 0
-	if playing {
-		st.pauseLocked(now)
-	} else {
-		st.playing = 0
-		st.playHold = now.Add(PlayHoldDuration)
-		st.posAt = now
-	}
-	return playing
-}
-
-// PauseOptimistic is the toggle's one-way form, for the sleep timer: it
-// pauses only if the player is playing at the moment of the check — decided
-// under the lock, so a device-side pause landing between a snapshot and the
-// flip can never turn the timer into a RESUME — and reports whether a PAUSE
-// must be sent. It needs no track metadata: a playing state with no @@B (a
-// metadata-less source, a garbage read) still pauses.
-func (st *State) PauseOptimistic() bool {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	if st.playing != 0 {
-		return false
-	}
-	st.pauseLocked(time.Now())
-	return true
-}
-
-// elapsedLocked is pos advanced by the clock since posAt, saturating at MaxInt
-// (a hostile MaxInt position plus any elapsed must not wrap). The one rule
-// behind the snapshot's extrapolation and the pause's fold, so the two cannot
-// drift. The caller holds st.mu.
-func (st *State) elapsedLocked(pos int, now time.Time) int {
-	elapsed := now.Sub(st.posAt).Milliseconds()
-	if elapsed <= 0 {
-		return pos
-	}
-	if elapsed > int64(math.MaxInt-pos) {
-		return math.MaxInt
-	}
-	return pos + int(elapsed)
-}
-
-// pauseLocked flips to paused at now and arms the echo hold. The extrapolated
-// elapsed is folded into posMs before the clock stops — under the same
-// conditions snapLocked extrapolates — so pausing doesn't step the display
-// back to the last device tick; the next @@p replaces posMs, keeping the
-// device authoritative. The caller holds st.mu.
-func (st *State) pauseLocked(now time.Time) {
-	if st.track != nil && st.connected {
-		st.posMs = st.elapsedLocked(st.posMs, now)
-	}
-	st.playing = 2
-	st.playHold = now.Add(PlayHoldDuration)
-	st.posAt = now
-}
-
-// RawPos returns the un-extrapolated position (the last position the device
-// reported), used by tests to distinguish a parsed update from clock drift.
-func (st *State) RawPos() int {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.posMs
-}
-
-// RawAttempts returns the total connection-attempt counter.
-func (st *State) RawAttempts() int {
-	st.mu.Lock()
-	defer st.mu.Unlock()
-	return st.attempts
 }

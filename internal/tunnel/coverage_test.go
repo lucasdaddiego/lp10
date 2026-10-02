@@ -89,14 +89,15 @@ func TestCov_Query(t *testing.T) {
 	}
 }
 
-// TestCov_SeedQueries confirms one query per control, in Specs order, with
-// len(out) == len(Specs)+1 (the PEQ preset-name list rides along).
+// TestCov_SeedQueries confirms the player status first, one query per control
+// in Specs order, then the PEQ preset-name list and the MCU version:
+// len(out) == len(Specs)+3.
 func TestCov_SeedQueries(t *testing.T) {
 	got := SeedQueries()
-	if len(got) != len(Specs)+1 {
-		t.Fatalf("SeedQueries len=%d want %d", len(got), len(Specs)+1)
+	if len(got) != len(Specs)+3 {
+		t.Fatalf("SeedQueries len=%d want %d", len(got), len(Specs)+3)
 	}
-	want := []string{"MXV;", "EQE;", "EQS;", "BAS;", "MID;", "TRE;", "VBS;", "VBI;", "BAL;", "PEQ;"}
+	want := []string{"STA;", "MXV;", "EQE;", "EQS;", "BAS;", "MID;", "TRE;", "VBS;", "VBI;", "BAL;", "PEQ;", "VER;"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("SeedQueries=%v want %v", got, want)
 	}
@@ -212,5 +213,81 @@ func TestCov_parseFrame(t *testing.T) {
 	// reject: non-numeric value
 	if u, ok := parseFrame("MXV:abc"); ok || u.Code != "" || u.Val != 0 || u.Names != nil {
 		t.Errorf("parseFrame(MXV:abc)=(%+v,%v) want (zero,false)", u, ok)
+	}
+	// reject: a short STA, and an all-junk PEQ, give the zero Update
+	for _, f := range []string{"STA:NET,0,44", "PEQ:junk", "RAW:NEXT"} {
+		if u, ok := parseFrame(f); ok || !reflect.DeepEqual(u, Update{}) {
+			t.Errorf("parseFrame(%q)=(%+v,%v) want (zero,false)", f, u, ok)
+		}
+	}
+}
+
+// TestCov_parseStatus drives parseStatus directly: the minimum field count,
+// and each of the three numeric fields failing alone.
+func TestCov_parseStatus(t *testing.T) {
+	if st, ok := parseStatus("NET,0,44,0,0,3,0,1"); !ok || st != (Status{Source: "NET", Vol: 44, Playing: true}) {
+		t.Errorf("8 fields = (%+v, %v), want NET 44 playing", st, ok)
+	}
+	for _, v := range []string{
+		"NET,0,44,0,0,3,0",     // 7 fields
+		"",                     // nothing
+		"NET,x,44,0,0,3,0,1",   // mute
+		"NET,0,x,0,0,3,0,1",    // volume
+		"NET,0,44,0,0,3,0,x",   // playing
+		"NET,0,4.5,0,0,3,0,1",  // a fractional volume
+		"NET,0,,0,0,3,0,1,1,0", // an empty volume
+	} {
+		if st, ok := parseStatus(v); ok || st != (Status{}) {
+			t.Errorf("parseStatus(%q) = (%+v, %v), want (zero, false)", v, st, ok)
+		}
+	}
+}
+
+// TestCov_cleanText: the strip runs before the clip, and the clip counts
+// runes, not bytes; surrounding spaces are trimmed after it.
+func TestCov_cleanText(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"spotify", 24, "spotify"},
+		{"abcdef", 3, "abc"},
+		{"ñññññ", 3, "ñññ"},
+		{"\x07a\x07b\x07c\x07d", 3, "abc"},
+		{"  ab  ", 10, "ab"},
+		{"ab   cd", 4, "ab"}, // clipped to "ab  ", then trimmed
+		{"", 5, ""},
+		{"abc", 0, ""},
+	}
+	for _, c := range cases {
+		if got := cleanText(c.in, c.n); got != c.want {
+			t.Errorf("cleanText(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+// TestCleanTextDropsAnEdgeJoiner: a trim or a clip can leave a zero-width
+// joiner at the start or the end of a track field; it joins nothing there.
+func TestCleanTextDropsAnEdgeJoiner(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{" \u200d\U0001f468 x", maxText, "\U0001f468 x"},
+		{"ab\u200d\U0001f469", 3, "ab"}, // the clip ends on the joiner
+	} {
+		if got := cleanText(tc.in, tc.n); got != tc.want {
+			t.Errorf("cleanText(%+q, %d) = %+q, want %+q", tc.in, tc.n, got, tc.want)
+		}
+	}
+}
+
+// TestCleanNameDropsAnEdgeJoiner: the trim or the clip can leave a zero-width
+// joiner at an edge of a preset name; it joins nothing there.
+func TestCleanNameDropsAnEdgeJoiner(t *testing.T) {
+	if got := cleanName(" \u200d\U0001f468 Rock"); got != "\U0001f468 Rock" {
+		t.Errorf("cleanName = %+q, want %+q", got, "\U0001f468 Rock")
 	}
 }

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"image/color"
 	"strings"
 	"testing"
 	"time"
@@ -11,83 +10,50 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-// A coloured cover sets a per-album tint, a grey cover clears it (keep the
-// default teal), and an unchanged cover is served from the cache (no recompute).
-func TestRefreshAmbient(t *testing.T) {
-	m := artModel(t)
-	m.cfg.ArtMode = "halfblock"
-	m.sty.trueColor = true // so artChoice() resolves to a real cover, not the motif
-
-	// the art worker precomputes the hue (Dominant/DominantOK); refreshAmbient now
-	// consumes it rather than scanning pixels on the render path
-	red := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/red",
-		Art: fillImg(40, 40, color.RGBA{210, 30, 30, 255}), Dominant: color.RGBA{210, 30, 30, 255}, DominantOK: true}
-	m.refreshAmbient(red)
-	if m.amb == nil {
-		t.Fatal("a coloured cover should set an ambient tint")
-	}
-	prev := m.amb
-	m.refreshAmbient(red) // same cover: cached, not rebuilt
-	if m.amb != prev {
-		t.Error("an unchanged cover recomputed the tint")
-	}
-
-	grey := protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}, CoverURL: "http://x/grey",
-		Art: fillImg(40, 40, color.RGBA{128, 128, 128, 255})}
-	m.refreshAmbient(grey)
-	if m.amb != nil {
-		t.Error("a greyscale cover should clear the tint (keep the default accent)")
-	}
-
-	m.amb, m.ambKey = m.sty.tint(color.RGBA{200, 30, 30, 255}), "stale"
-	m.refreshAmbient(protocol.Snapshot{Track: &protocol.Track{TrackName: "x"}}) // no art
-	if m.amb != nil || m.ambKey != "" {
-		t.Error("no cover should clear the tint")
-	}
-}
-
-// The ambient tint recolours the seek-bar fill to the cover's hue (asserted at
-// the style level, so it's independent of the test terminal's colour profile),
-// without changing the meter's width.
-func TestAmbientTintRecolorsMeter(t *testing.T) {
-	m := artModel(t)
-	at := m.sty.tint(color.RGBA{210, 30, 30, 255}) // red cover
-	if len(at.fill) != len(m.sty.fill) {
-		t.Fatalf("tint fill has %d steps, want %d", len(at.fill), len(m.sty.fill))
-	}
-	differs := false
-	for i := range at.fill {
-		if at.fill[i].GetForeground() != m.sty.fill[i].GetForeground() {
-			differs = true
-		}
-	}
-	if !differs {
-		t.Error("a red tint should differ from the default teal fill")
-	}
-	at.ensure()
-	a := lineMeterCells(0.5, 20, at.mFill, at.mHead, m.sty.pens().mTrack)
-	if b := m.sty.lineMeter(0.5, 20); lipgloss.Width(a) != lipgloss.Width(b) {
-		t.Errorf("tinted meter width %d != default %d", lipgloss.Width(a), lipgloss.Width(b))
-	}
-}
-
 // The muted volume rail is impossible to miss: a SOLID red column and a bold
 // "MUTED" badge, distinct from a live rail showing a percentage.
 func TestVolRailMuted(t *testing.T) {
-	m := artModel(t)
-	muted := strings.Join(m.volRail(protocol.Snapshot{Muted: true, Vol: 0}, 5), "\n")
-	if !strings.Contains(muted, "MUTED") {
-		t.Error("a muted rail should show the MUTED badge")
+	m, _, _ := makeModel(t)
+	muted := m.volRail(protocol.Snapshot{Muted: true, Vol: 44}, 5)
+	if len(muted) != 6 {
+		t.Fatalf("a 5-high rail is %d rows, want 6 (bar + value)", len(muted))
 	}
-	if !strings.Contains(muted, "█") {
-		t.Error("a muted rail should show the solid red column")
+	joined := strings.Join(muted, "\n")
+	if !strings.Contains(joined, "MUTED") || !strings.Contains(joined, "█") {
+		t.Error("a muted rail should show the MUTED badge over a solid column")
 	}
 	live := strings.Join(m.volRail(protocol.Snapshot{Vol: 60}, 5), "\n")
 	if strings.Contains(live, "MUTED") {
 		t.Error("a live rail should not read muted")
 	}
-	if !strings.Contains(live, "60%") {
+	if !strings.Contains(stripANSI(live), "60%") {
 		t.Error("a live rail should show the percentage")
+	}
+	for _, rail := range [][]string{muted, m.volRail(protocol.Snapshot{Vol: 60}, 5)} {
+		for i, ln := range rail {
+			if w := lipgloss.Width(ln); w != volColW {
+				t.Errorf("rail row %d width %d, want %d", i, w, volColW)
+			}
+		}
+	}
+}
+
+// The rail is cached by what it shows: the same volume, mute and height reuse
+// the block; a change of any rebuilds it.
+func TestVolRailCache(t *testing.T) {
+	m, _, _ := makeModel(t)
+	a := m.volRail(protocol.Snapshot{Vol: 60}, 5)
+	if b := m.volRail(protocol.Snapshot{Vol: 60}, 5); &a[0] != &b[0] {
+		t.Error("an unchanged rail should come from the cache")
+	}
+	for _, s := range []struct {
+		snap protocol.Snapshot
+		h    int
+	}{{protocol.Snapshot{Vol: 61}, 5}, {protocol.Snapshot{Vol: 61, Muted: true}, 5}, {protocol.Snapshot{Vol: 61, Muted: true}, 6}} {
+		prev := m.volBlk
+		if got := m.volRail(s.snap, s.h); &got[0] == &prev[0] {
+			t.Errorf("%+v h=%d reused the stale rail", s.snap, s.h)
+		}
 	}
 }
 
@@ -95,82 +61,72 @@ func TestVolRailMuted(t *testing.T) {
 // sign (eqSliderRow) — are distinct, asserted at the style level so it's
 // independent of the test terminal's colour profile.
 func TestToneKnobsDistinct(t *testing.T) {
-	m := artModel(t)
-	if m.sty.warmKnob.GetForeground() == m.sty.coolKnob.GetForeground() {
-		t.Error("the warm (boost) and cool (cut) knobs should be different colours")
+	for _, dark := range []bool{true, false} {
+		th := newThemeFor(dark)
+		if th.warmKnob.GetForeground() == th.coolKnob.GetForeground() {
+			t.Errorf("dark=%v: the warm (boost) and cool (cut) knobs should be different colours", dark)
+		}
 	}
 }
 
 // On a wide column the transport buttons form a centred cluster (padded both
 // sides) rather than stretching edge to edge — but still fill the column width.
 func TestTransportClusterCentred(t *testing.T) {
-	m := artModel(t)
-	const w = 60
-	row := m.transportSegments(protocol.Snapshot{Playing: 0}, time.Now(), w)
-	if lipgloss.Width(row) != w {
-		t.Errorf("transport row width %d, want %d", lipgloss.Width(row), w)
+	m, _, _ := makeModel(t)
+	for _, w := range []int{60, 40, 10, 3} {
+		row := m.transportSegments(protocol.Snapshot{Playing: true}, time.Now(), w)
+		if lipgloss.Width(row) != w {
+			t.Errorf("transport row width %d, want %d", lipgloss.Width(row), w)
+		}
 	}
-	if !strings.HasPrefix(row, " ") {
+	if row := m.transportSegments(protocol.Snapshot{}, time.Now(), 60); !strings.HasPrefix(row, " ") {
 		t.Error("a wide transport cluster should be padded (centred), not edge-to-edge")
 	}
-}
-
-// friendlyError condenses common raw ssh/network errors to short human lines.
-func TestFriendlyError(t *testing.T) {
-	cases := map[string]string{
-		"ssh: Could not resolve hostname lp10.local: nodename nor servname provided, or not known": "can't find the device — are you on the home network?",
-		"connect to host lp10.local port 22: Connection refused":                                   "the device refused the connection",
-		"ssh: connect to host x port 22: Operation timed out":                                      "connection timed out — the device may be off or away",
-		"Permission denied (publickey).":                                                           "ssh authentication failed",
-	}
-	for in, want := range cases {
-		if got := friendlyError(in); got != want {
-			t.Errorf("friendlyError(%q) = %q, want %q", in, got, want)
-		}
+	// the focused button lights up only on the player
+	m.focus = 2
+	onPlayer := m.transportSegments(protocol.Snapshot{}, time.Now(), 60)
+	m.view = viewEQ
+	if off := m.transportSegments(protocol.Snapshot{}, time.Now(), 60); off == onPlayer {
+		t.Error("the transport focus should not light while another view has the keys")
 	}
 }
 
 // While disconnected, a connection error shows a calm friendly reason in the
-// idle area and never the raw ssh text as a red bottom line.
+// idle area and never the raw dial error as a red bottom line.
 func TestDisconnectedErrorIsFriendly(t *testing.T) {
-	st := protocol.NewState()
-	st.Note("ssh: Could not resolve hostname lp10.local: nodename nor servname provided, or not known")
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 32, 100
-	view := clean(m.viewContent())
-	if !strings.Contains(view, "can't find the device") {
-		t.Error("disconnected idle should show the friendly reason")
-	}
-	if strings.Contains(view, "Could not resolve hostname") {
-		t.Error("the raw ssh error must not appear while reconnecting")
-	}
-}
-
-// A fatal error still shows the bottom line, prettified.
-func TestFatalErrorStillShown(t *testing.T) {
-	st := protocol.NewState()
-	st.SetFatal("Permission denied (publickey).")
-	m, _, _ := modelWith(st)
-	m.rows, m.cols = 32, 100
-	view := clean(m.viewContent())
-	if !strings.Contains(view, "ssh authentication failed") {
-		t.Error("a fatal error should show a friendly bottom line")
+	for _, size := range [][2]int{{32, 100}, {20, 64}} {
+		st := protocol.NewState()
+		st.StartConnection()
+		st.Note("cannot reach :2018: dial tcp: lookup lp10.local: no such host")
+		m, _, _ := modelWith(st)
+		m.rows, m.cols = size[0], size[1]
+		view := clean(render(t, m))
+		if !strings.Contains(view, "can't find the device") {
+			t.Errorf("%dx%d: disconnected idle should show the friendly reason:\n%s", size[1], size[0], view)
+		}
+		if strings.Contains(view, "lookup lp10.local") {
+			t.Errorf("%dx%d: the raw dial error must not appear while reconnecting", size[1], size[0])
+		}
+		if strings.Contains(view, GL["warn"]) {
+			t.Errorf("%dx%d: a reconnect reason is not a red error line:\n%s", size[1], size[0], view)
+		}
 	}
 }
 
-// The diagnostics overlay shows the friendly reason, not the raw ssh dump — the
-// overlay already states "disconnected · tunnel down · N attempts".
+// The diagnostics show the friendly reason, not the raw dial error — the
+// masthead already says "disconnected" and the tunnel row "down".
 func TestDiagErrorIsFriendly(t *testing.T) {
 	st := protocol.NewState()
-	st.Note("ssh: Could not resolve hostname lp10.local: nodename nor servname provided, or not known")
+	st.StartConnection()
+	st.Note("cannot reach :2018: dial tcp: lookup lp10.local: no such host")
 	m, _, _ := modelWith(st)
 	m.rows, m.cols = 32, 100
 	m.view = viewDiag
-	view := clean(m.viewContent())
-	if strings.Contains(view, "Could not resolve hostname") {
-		t.Error("the diag overlay must not show the raw ssh error")
+	view := clean(render(t, m))
+	if strings.Contains(view, "lookup lp10.local") {
+		t.Error("the diagnostics must not show the raw dial error")
 	}
 	if !strings.Contains(view, "can't find the device") {
-		t.Error("the diag overlay should show the friendly reason")
+		t.Error("the diagnostics should show the friendly reason")
 	}
 }

@@ -10,35 +10,23 @@ var helpGroups = []struct {
 	keys  [][2]string // key, meaning
 }{
 	{"views", [][2]string{
-		{"1 … 5", "player · equalizer · services · logs · diagnostics"},
+		{"1 · 2 · 3", "player · equalizer · diagnostics"},
 		{"tab", "next view"},
 		{"esc", "back to the player (q does the same, then quits from the player)"},
-		{"?", "this page · e c l i also open their view, and close it again"},
+		{"?", "this page · e i also open their view, and close it again"},
 	}},
 	{"player", [][2]string{
 		{"space", "play / pause"},
 		{"n · p", "next · previous track"},
 		{"↑↓ · + −", "volume"},
-		{"m", "mute (the level comes back on unmute)"},
+		{"m", "mute (in the device: the level stays where it is)"},
 		{"←→ enter", "pick a transport button and press it"},
-		{"t", "right-hand time: remaining ⇄ total"},
 		{"s · S", "sleep timer: 15 → 30 → 45 → 60 → 90 min, then off · S cancels"},
-		{"b", "bedtime: one sleep step plus night mode, both restored when it ends"},
-		{"d", "night mode (the device's multi-band compressor)"},
 	}},
 	{"equalizer", [][2]string{
 		{"↑↓", "select a control"},
 		{"←→", "adjust it — the device echoes the value it applied"},
 		{"enter", "toggle a switch · step the preset"},
-	}},
-	{"services", [][2]string{
-		{"↑↓ enter", "select a service · switch it (Spotify cycles off → HiFi → Pro)"},
-		{"←→", "page the read-out under the rows, when it is taller than the terminal"},
-	}},
-	{"logs", [][2]string{
-		{"↑↓ · ←→", "scroll · page"},
-		{"s · f · r", "source (device syslog / vendor app) · filter · refresh"},
-		{"F", "follow: refetch every 10 s while the view is open"},
 	}},
 	{"diagnostics", [][2]string{
 		{"↑↓ · ←→", "scroll · page, when the read-out is taller than the terminal"},

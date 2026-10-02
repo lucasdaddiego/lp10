@@ -3,13 +3,9 @@ package tui
 import (
 	"image/color"
 	"math"
-	"os"
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/colorprofile"
-
-	"github.com/lucasdaddiego/lp10/internal/artwork"
 )
 
 // theme holds the lipgloss styles and rendering primitives for the UI, built
@@ -35,9 +31,6 @@ type theme struct {
 	// sevs is the diagnostics severity palette — good / warn / bad — held as a
 	// field so the gauges don't rebuild the triple on every row.
 	sevs [3]lipgloss.Style
-
-	trueColor     bool // terminal advertises 24-bit color (gates the half-block album art)
-	kittyGraphics bool // terminal supports the Kitty graphics protocol (true-pixel album art)
 
 	btnOn  lipgloss.Style // focused button
 	btnOff lipgloss.Style // unfocused button
@@ -90,8 +83,6 @@ func newThemeFor(dark bool) *theme {
 		t.segOff = lipgloss.NewStyle().Foreground(lipgloss.Color("#2a313b")).Background(lipgloss.Color("#e3e7ec"))
 	}
 	t.sevs = [3]lipgloss.Style{t.sAcc, stWarn, stRed}
-	t.trueColor = colorprofile.Detect(os.Stdout, os.Environ()) == colorprofile.TrueColor
-	t.kittyGraphics = detectKittyGraphics()
 	return t
 }
 
@@ -114,40 +105,9 @@ func (m *model) ensureTheme() {
 	if m.sty == nil || m.themeDark != dark {
 		m.sty, m.themeDark = newThemeFor(dark), dark
 		// What was painted in the old palette goes with it. The volume rail
-		// is cached by volume, mute and height alone, so it is dropped here;
-		// the ambient tint derives from the palette and is resolved again for
-		// the cover on show, which needs ambKey cleared too — refreshAmbient
-		// skips a cover it has already resolved.
+		// is cached by volume, mute and height alone, so it is dropped here.
 		m.volBlk = nil
-		m.amb, m.ambKey = nil, ""
 	}
-}
-
-// detectKittyGraphics reports whether the terminal is known to support the Kitty
-// graphics protocol with Unicode placeholders. There's no in-band capability
-// query before Bubble Tea seizes the terminal, so this goes by environment
-// fingerprint: Ghostty and kitty both implement it; everything else falls back
-// to the half-block raster. A false negative just means half-blocks (still real
-// art); kitty/auto can be forced via the art_mode config.
-func detectKittyGraphics() bool {
-	// A multiplexer inherits the host terminal's env (KITTY_WINDOW_ID, GHOSTTY_*)
-	// but doesn't pass the graphics protocol through, so don't trust those vars
-	// under tmux/screen — the half-block raster renders correctly there.
-	if os.Getenv("TMUX") != "" {
-		return false
-	}
-	if t := os.Getenv("TERM"); strings.HasPrefix(t, "screen") || strings.HasPrefix(t, "tmux") {
-		return false
-	}
-	if os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("GHOSTTY_RESOURCES_DIR") != "" || os.Getenv("GHOSTTY_BIN_DIR") != "" {
-		return true
-	}
-	switch strings.ToLower(os.Getenv("TERM_PROGRAM")) {
-	case "ghostty", "kitty":
-		return true
-	}
-	term := strings.ToLower(os.Getenv("TERM"))
-	return strings.Contains(term, "kitty") || strings.Contains(term, "ghostty")
 }
 
 // ---- per-cell painting ---------------------------------------------------------
@@ -167,7 +127,7 @@ func detectKittyGraphics() bool {
 
 // paintCell / paintEndLine paint glyphs whose colour differs every cell,
 // writing the 24-bit SGR directly and resetting once per line instead of once
-// per cell (the same shape artwork.HalfBlock already ships). Under
+// per cell. Under
 // lipgloss/bubbletea v2 this is universally correct: styles always emit the
 // colour as specified and the program's renderer downsamples for the actual
 // terminal (v1 needed a profile-gated lipgloss fallback here).
@@ -311,59 +271,6 @@ func (ps *penSet) brandPen(name string) pen {
 		return p
 	}
 	return ps.acc
-}
-
-// ambientTint is a per-album recolouring derived from the cover's dominant hue:
-// a fill gradient + head for the seek bar, plus a dim pen for the cover frame.
-// nil means "use the theme defaults" (no cover, a greyscale cover, or art
-// disabled). The connected status dot deliberately stays the theme green — it's a
-// status light, so it must not drift to an album hue that reads as a warning.
-type ambientTint struct {
-	fill  []lipgloss.Style
-	head  lipgloss.Style
-	frame lipgloss.Style
-
-	// flattened forms for the per-frame paths (seek bar, cover frame), built
-	// once by ensure() — the ambient analogue of the theme's penSet.
-	mFill    []string
-	mHead    string
-	framePen pen
-}
-
-// ensure builds the tint's cached cells on first use.
-func (at *ambientTint) ensure() {
-	if at.mHead != "" {
-		return
-	}
-	at.mHead = at.head.Render("●")
-	at.framePen = stylePen(at.frame)
-	at.mFill = make([]string, len(at.fill))
-	for i := range at.fill {
-		at.mFill[i] = at.fill[i].Render("━")
-	}
-}
-
-// tint derives an ambientTint from a cover's representative colour c. Only the
-// hue (and a clamped saturation) ride along from c; lightness is swept across a
-// fixed dark→bright ramp, so the seek bar keeps the same readable contrast as the
-// default teal — just in the album's colour. Saturation is floored so even a
-// muted cover still reads as tinted, and ceilinged so a neon cover never glares.
-func (t *theme) tint(c color.RGBA) *ambientTint {
-	h, s, _ := artwork.RGBToHSL(c.R, c.G, c.B)
-	s = clampRange(s, 0.35, 0.85)
-	pen := func(h, s, l float64) lipgloss.Style {
-		// lipgloss v2 takes a color.Color directly — no hex string round-trip.
-		pr, pg, pb := hslRGB(h, s, l)
-		return lipgloss.NewStyle().Foreground(color.RGBA{R: pr, G: pg, B: pb, A: 0xff})
-	}
-	at := &ambientTint{
-		head:  pen(h, math.Min(s+0.1, 1), 0.78),
-		frame: pen(h, s*0.55, 0.44),
-	}
-	for _, l := range []float64{0.26, 0.34, 0.44, 0.55, 0.68} {
-		at.fill = append(at.fill, pen(h, s, l))
-	}
-	return at
 }
 
 func clampRange(v, lo, hi float64) float64 { return max(lo, min(hi, v)) }
@@ -554,7 +461,7 @@ func (t *theme) searchBox(w, h, frame int) []string {
 }
 
 // hslRGB converts HSL (h in degrees, s and l in 0..1) to 8-bit RGB, feeding the
-// per-cell painters and the ambient tint (as a color.RGBA) directly.
+// per-cell painters directly.
 func hslRGB(h, s, l float64) (uint8, uint8, uint8) {
 	c := (1 - math.Abs(2*l-1)) * s
 	hp := math.Mod(h/60, 6)
@@ -611,28 +518,6 @@ func lineMeterCells(frac float64, cells int, fillCells []string, headCell, track
 		case i < h-1:
 			b.WriteString(fillCells[rampIdx(len(fillCells), i, h)])
 		default:
-			b.WriteString(trackCell)
-		}
-	}
-	return b.String()
-}
-
-// gaugeBar renders a horizontal LINE meter cells wide — a heavy rule (GL["fill"]
-// "━") in the health colour over a light rule (GL["track"] "─") in dim grey, like
-// the seek bar and EQ sliders. A thin centred line (rather than a full-height
-// block) keeps vertically-stacked gauges from merging into one solid region, and
-// the heavy/light weight difference still distinguishes fill from track on a
-// no-colour terminal. The caller picks the fill colour for health.
-func (t *theme) gaugeBar(frac float64, cells int, fillPen lipgloss.Style) string {
-	frac = clampF(frac)
-	n := int(math.Round(frac * float64(cells)))
-	fillCell, trackCell := fillPen.Render(GL["fill"]), t.track.Render(GL["track"])
-	var b strings.Builder
-	b.Grow(cells * cellSGRBytes)
-	for i := range cells {
-		if i < n {
-			b.WriteString(fillCell)
-		} else {
 			b.WriteString(trackCell)
 		}
 	}

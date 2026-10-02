@@ -2,23 +2,25 @@ package sweep
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/discovery"
@@ -26,408 +28,714 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
-// The device script's output as the box printed it on 2026-09-12, with the
-// syslog history and the vendor app's MsgBox-223 report in the shape of
-// 2026-09-23 (hashes shortened, one MAC-free line each). The rotated files come
-// out of rotation order on purpose (the glob's order), with the box's stamps
-// in its UTC-3: the oldest (Sep 1 19:00) only starts the history, one hour
-// (Sep 4 02) spans a rotation, and three headers are dropped with their hours
-// — a pre-NTP 1970 clock and two date -r failures. Every counted stamp falls
-// days after the start in any zone, so the totals hold wherever the suite runs.
-const deviceOut = `build=AR241CE_8530
-build_date=2026-01-12
-svn=318
-fw=AR241CE_8530
-mcu=23
-kernel=5.15.137
-vapp=32
-vapp_md5=9aa7f360179db64ab10853182555d032
-sha:luciserver=465c90d4bde741acbfed09c5b1d94de1ba4d6647cdf3c71817968a7caa6d0a35
-sha:factoryEnv.conf=f11a5e6953ed64de04863d00b1221c4311babf4df34384d5751d7fe89531d988
-sha:missing=
-btime=1788544542
-rboot=cold_boot
-uptime=692428
-tcp=22 23 80 2018 2345 5037 5555 7000 7777 9095 33719 49494
-udp=68 123 1800 1900 3721 5353
-SpotifyEnabled=0
-SpotifyProEnabled=1
-run=spotifymusicpro
-run=airplaydemo
-dirty=33
-ota_last=[2026-09-23 14:56:15.634] [DEBUG] [luci-rx] normalized_kind=unknown normalized=None remote_id=0 command_type=2 command=223 command_status=0 crc=16846 data_length=9 payload="NO_UPDATE"
-rot=1788890000
-h=      5 Sep  4 02
-h=     40 Sep  7 09
-h=     11 Sep  8 14
-rot=1788300000
-h=    183 Sep  1 18
-rot=1788500000
-h=     60 Sep  3 08
-h=     42 Sep  4 02
-rot=5
-h=      9 Dec 31 21
-rot=abc
-h=      3 Sep  5 10
-rot=
-h=      1 Sep  5 11
-live=Sep 23 17:18:30
-h=      2 Sep 23 17
-h=x Sep 23 17
-h=     -2 Sep 23 17
-h=      4 Sep 99 17
-junk line without an equals sign
-end=1
-`
-
-// boxZone is the box's zone (it keeps the room's, UTC-3): the tests that read
-// its hour stamps pin it, so they read the same wherever the suite runs.
-var boxZone = time.FixedZone("-03", -3*60*60)
-
-func TestParseDevice(t *testing.T) {
-	r := Report{At: time.Date(2026, 9, 23, 17, 30, 0, 0, boxZone), Hashes: map[string]string{}}
-	parseDevice(&r, deviceOut)
-	if r.Build != "AR241CE_8530" || r.BuildDate != "2026-01-12" || r.SVN != "318" || r.Firmware != "AR241CE_8530" || r.MCU != "23" || r.Kernel != "5.15.137" {
-		t.Errorf("identity = %+v", r)
-	}
-	if r.VendorApp != "32" || !strings.HasPrefix(r.VendorMD5, "9aa7f360") {
-		t.Errorf("vendor app = %q %q", r.VendorApp, r.VendorMD5)
-	}
-	if len(r.Hashes) != 2 || r.Hashes["luciserver"] == "" || r.Hashes["missing"] != "" {
-		t.Errorf("hashes = %v (an unreadable file must not record an empty hash)", r.Hashes)
-	}
-	if r.BootAt.Unix() != 1788544542 || r.Reboot != "cold_boot" || r.Uptime != 692428 {
-		t.Errorf("boot = %v %q %d", r.BootAt, r.Reboot, r.Uptime)
-	}
-	if fmtPorts(r.TCP) != "22 23 80 2018 2345 5037 5555 7000 7777 9095 33719 49494" || fmtPorts(r.UDP) != "68 123 1800 1900 3721 5353" {
-		t.Errorf("ports = %v / %v", r.TCP, r.UDP)
-	}
-	if r.SpotifyFlags != "0/1" {
-		t.Errorf("flags = %q, want 0/1", r.SpotifyFlags)
-	}
-	if strings.Join(r.Running, " ") != "airplaydemo spotifymusicpro" {
-		t.Errorf("running = %v (sorted)", r.Running)
-	}
-	if r.DirtyKeys != 33 {
-		t.Errorf("dirty = %d", r.DirtyKeys)
-	}
-	// the oldest plausible rotation only starts the history; the later files
-	// and the live one are counted, the hour across a rotation summed; a 1970
-	// clock, a failed date -r and junk lines are dropped
-	if r.Reconnects != 60+42+5+40+11+2 || r.SyslogFiles != 3 || !r.ReconnectsSince.Equal(time.Unix(1788300000, 0)) {
-		t.Errorf("history = %d over %d files since %v", r.Reconnects, r.SyslogFiles, r.ReconnectsSince)
-	}
-	if r.Last24h != 2 {
-		t.Errorf("last 24 h = %d, want the live file's 2", r.Last24h)
-	}
-	if len(r.ReconnectsByDay) != 23 || r.ReconnectsByDay["2026-09-01"] != 0 || r.ReconnectsByDay["2026-09-03"] != 60 ||
-		r.ReconnectsByDay["2026-09-04"] != 47 || r.ReconnectsByDay["2026-09-07"] != 40 || r.ReconnectsByDay["2026-09-08"] != 11 ||
-		r.ReconnectsByDay["2026-09-23"] != 2 {
-		t.Errorf("by day = %v (Sep 1 through Sep 23, zeros included)", r.ReconnectsByDay)
-	}
-	if r.OTALast != "NO_UPDATE" || !r.OTAAt.Equal(time.Date(2026, 9, 23, 14, 56, 15, 0, time.Local)) {
-		t.Errorf("box's own verdict = %q at %v", r.OTALast, r.OTAAt)
-	}
+// liveAnswers are the :2018 getters' answers as the box gave them on
+// 2026-10-01, on AR241CP_8747 / MCU 29.
+var liveAnswers = map[string]string{
+	"VER": "29-1d316f0c-10", "STA": "NET,0,83,0,0,3,0,0,1,0", "SRC": "NET", "LST": "NET,BT,LINE-IN,USBPLAY",
+	"MXV": "100", "PEQ": "0@Flat,1@Classical,2@Pop,3@Jazz,4@Rock,5@Vocal", "EQE": "0", "EQS": "0",
+	"BAS": "0", "MID": "0", "TRE": "0", "VBS": "0", "VBI": "50", "BAL": "0",
 }
 
-// With no rotated file the live syslog alone is the history: its first stamp
-// starts it — or the boot, when that stamp is the pre-NTP clock a boot's first
-// lines carry, whose hour ("Dec 31 21", last December) is dropped. With no
-// syslog at all nothing is claimed.
-func TestHistoryLiveOnly(t *testing.T) {
-	boot := time.Date(2026, 9, 4, 14, 55, 42, 0, time.Local)
-	at := time.Date(2026, 9, 23, 17, 30, 0, 0, time.Local)
-	r := Report{At: at, BootAt: boot}
-	history(&r, nil, &logFile{stamp: "Sep 23 17:18:30", hours: []hourCount{{"Sep 23 17", 2}}})
-	if r.Reconnects != 2 || r.Last24h != 2 || r.SyslogFiles != 0 || !r.ReconnectsSince.Equal(time.Date(2026, 9, 23, 17, 18, 30, 0, time.Local)) {
-		t.Errorf("live only = %+v", r)
-	}
-	if got := reconnectFact(r); got != "2 since Sep 23 17:18 · the live syslog only" {
-		t.Errorf("fact = %q (under an hour: no rate)", got)
-	}
-	if label, val := dayFact(r); label != "" || val != "" {
-		t.Errorf("one day of history printed a day line: %q %q", label, val)
-	}
-	r = Report{At: at, BootAt: boot}
-	history(&r, nil, &logFile{stamp: "Dec 31 21:00:08", hours: []hourCount{{"Dec 31 21", 1}, {"Sep 23 17", 1}}})
-	if !r.ReconnectsSince.Equal(boot) || r.Reconnects != 1 || r.ReconnectsByDay["2026-09-23"] != 1 || len(r.ReconnectsByDay) != 20 {
-		t.Errorf("pre-NTP stamp: since %v, %d reconnects by day %v; want the boot, the pre-NTP hour dropped", r.ReconnectsSince, r.Reconnects, r.ReconnectsByDay)
-	}
-	r = Report{At: at, BootAt: boot}
-	history(&r, nil, nil)
-	if !r.ReconnectsSince.IsZero() || r.ReconnectsByDay != nil || reconnectFact(r) != "syslog not read" {
-		t.Errorf("no syslog = %+v / %q", r, reconnectFact(r))
-	}
+// appIndexJSON is the vendor's app-0.json as its CDN served it on 2026-10-01.
+const appIndexJSON = `[{"name":"rakoit_app","md5":"b1dadf706b06ee96e73eee90a65d53b2","param":"","version":"42"}]`
+
+// upnpXML is a DLNA renderer's description in the usual shape: the default
+// UPnP namespace, a DLNA one beside it, and one embedded device whose services
+// repeat one of the root's.
+const upnpXML = `<?xml version="1.0" encoding="UTF-8"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">
+  <specVersion><major>1</major><minor>0</minor></specVersion>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+    <friendlyName>Living</friendlyName>
+    <manufacturer>Arylic</manufacturer>
+    <modelDescription>Wireless Audio Streamer</modelDescription>
+    <modelName>LP10</modelName>
+    <modelNumber>AR241CP</modelNumber>
+    <dlna:X_DLNADOC>DMR-1.50</dlna:X_DLNADOC>
+    <serviceList>
+      <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType></service>
+      <service><serviceType>urn:schemas-upnp-org:service:ConnectionManager:1</serviceType></service>
+      <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType></service>
+    </serviceList>
+    <deviceList>
+      <device>
+        <friendlyName>embedded</friendlyName>
+        <serviceList>
+          <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType></service>
+          <service><serviceType>urn:schemas-wiimu-com:service:PlayQueue:1</serviceType></service>
+        </serviceList>
+      </device>
+    </deviceList>
+  </device>
+</root>`
+
+// livePorts is the scan of the box on 2026-10-01: no ssh, telnet or adb, and
+// rakoit_app's second listener on a dynamic port.
+var livePorts = []int{80, 2018, 2345, 7000, 7777, 9095, 44317, 49494}
+
+// ---- the :2018 tunnel ----
+
+// fastTunnel is the tunnel client's timing in tests: the live one's shape,
+// scaled down so a silent connection costs half a second, not three.
+var fastTunnel = tunnelTiming{dial: time.Second, wake: 500 * time.Millisecond, retry: 50 * time.Millisecond,
+	spacing: 20 * time.Millisecond, reply: 200 * time.Millisecond}
+
+// fakeTunnel is a :2018 stand-in on 127.0.0.1. serve runs once per accepted
+// connection, numbered from 1; every query a connection sends is recorded,
+// with when it arrived.
+type fakeTunnel struct {
+	addr    string
+	mu      sync.Mutex
+	queries []string
+	at      []time.Time
+	conns   []net.Conn
 }
 
-// Across a New Year the hours still land in the right year and day: summed
-// across the rotation that splits one, kept when they end after the history
-// starts (the oldest file's own hours never count), and split into the last
-// 24 clock hours — the sweep's and the 23 before it — and one count per local
-// day, the quiet days as zero. The per-day line shows the last seven.
-func TestHistoryPerHourAndDay(t *testing.T) {
-	at := time.Date(2027, 1, 2, 10, 20, 0, 0, boxZone)
-	rots := []*logFile{
-		{end: time.Date(2027, 1, 1, 3, 15, 0, 0, boxZone), hours: []hourCount{{"Dec 29 23", 1}, {"Dec 31 23", 6}, {"Jan  1 00", 9}, {"Jan  1 03", 2}}},
-		{end: time.Date(2026, 12, 26, 9, 30, 0, 0, boxZone), hours: []hourCount{{"Dec 26 08", 7}, {"Dec 26 09", 2}}},
-		{end: time.Date(2026, 12, 29, 23, 40, 0, 0, boxZone), hours: []hourCount{{"Dec 26 09", 3}, {"Dec 27 14", 20}, {"Dec 29 23", 4}}},
+func newFakeTunnel(t *testing.T, serve func(ft *fakeTunnel, n int, c net.Conn)) *fakeTunnel {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
-	live := &logFile{stamp: "Jan  1 03:15:02", hours: []hourCount{{"Jan  1 03", 1}, {"Jan  1 10", 5}, {"Jan  1 11", 2}, {"Jan  2 09", 4}, {"Jan  2 10", 1}}}
-	r := Report{At: at}
-	history(&r, rots, live)
-	if r.Reconnects != 3+20+4+1+6+9+2+1+5+2+4+1 || !r.ReconnectsSince.Equal(time.Date(2026, 12, 26, 9, 30, 0, 0, boxZone)) || r.SyslogFiles != 3 {
-		t.Errorf("history = %d since %v over %d files", r.Reconnects, r.ReconnectsSince, r.SyslogFiles)
-	}
-	// Jan 1 10:00 is 24 hours before the sweep's hour: out; Jan 1 11:00 is in
-	if r.Last24h != 2+4+1 {
-		t.Errorf("last 24 h = %d, want 7", r.Last24h)
-	}
-	want := map[string]int{"2026-12-26": 3, "2026-12-27": 20, "2026-12-28": 0, "2026-12-29": 5, "2026-12-30": 0,
-		"2026-12-31": 6, "2027-01-01": 9 + 3 + 5 + 2, "2027-01-02": 5}
-	if !maps.Equal(r.ReconnectsByDay, want) {
-		t.Errorf("by day = %v\nwant %v", r.ReconnectsByDay, want)
-	}
-	if label, val := dayFact(r); label != "last 7 days" || val != "20 0 5 0 6 19 5 (Dec 27 → Jan 2)" {
-		t.Errorf("day line = %q %q", label, val)
-	}
-	if got := reconnectFact(r); got != "58 since Dec 26 09:30 · 0.3/h over 7d 0h · 7 in the last 24 h · 3 rotated files" {
-		t.Errorf("fact = %q", got)
-	}
-	// a short history shows only the days it reaches
-	r.ReconnectsByDay = map[string]int{"2027-01-01": 4, "2027-01-02": 9}
-	if label, val := dayFact(r); label != "last 2 days" || val != "4 9 (Jan 1 → Jan 2)" {
-		t.Errorf("two-day line = %q %q", label, val)
-	}
-}
-
-// The syslog comes last in the device output, so an output cut at the ssh cap
-// loses its tail: without the closing line the history is unread — never a
-// short count over some of the files.
-func TestHistoryCutOffIsUnread(t *testing.T) {
-	cut := strings.Replace(deviceOut, "end=1\n", "", 1)
-	r := Report{At: time.Date(2026, 9, 23, 17, 30, 0, 0, boxZone), Hashes: map[string]string{}}
-	parseDevice(&r, cut)
-	if r.Build != "AR241CE_8530" || !r.ReconnectsSince.IsZero() || r.Reconnects != 0 || r.ReconnectsByDay != nil {
-		t.Errorf("a cut-off output = build %q, %d reconnects since %v", r.Build, r.Reconnects, r.ReconnectsSince)
-	}
-}
-
-func TestReconnectFactRate(t *testing.T) {
-	since := time.Date(2026, 9, 1, 22, 20, 0, 0, time.Local)
-	r := Report{At: since.Add(100 * time.Hour), Reconnects: 150, ReconnectsSince: since, SyslogFiles: 49, Last24h: 41}
-	if got := reconnectFact(r); got != "150 since Sep 1 22:20 · 1.5/h over 4d 4h · 41 in the last 24 h · 49 rotated files" {
-		t.Errorf("fact = %q", got)
-	}
-	r.SyslogFiles = 1
-	if got := reconnectFact(r); !strings.HasSuffix(got, " · 1 rotated file") {
-		t.Errorf("one file = %q", got)
-	}
-	// under a day, the last 24 hours are the whole count: not repeated
-	r.At = since.Add(20 * time.Hour)
-	if got := reconnectFact(r); strings.Contains(got, "last 24 h") {
-		t.Errorf("under a day = %q", got)
-	}
-}
-
-func TestPortsRejectJunk(t *testing.T) {
-	got := fmtPorts(ports("80 22 abc 70000 0 22 -5 443"))
-	if got != "22 80 443" {
-		t.Errorf("ports = %q", got)
-	}
-	if fmtPorts(nil) != "" {
-		t.Error("no ports should format empty (Diff relies on it)")
-	}
-}
-
-func TestDiffNamesWhatMoved(t *testing.T) {
-	base := Report{Build: "AR241CE_8530", MCU: "23", VendorApp: "32",
-		Hashes: map[string]string{"luciserver": "aaa", "rakoit_app": "bbb"},
-		BootAt: time.Date(2026, 9, 4, 14, 55, 42, 0, time.Local), Reboot: "cold_boot",
-		TCP: []int{22, 80, 9095}, SpotifyFlags: "0/1", Running: []string{"spotifymusicpro"},
-		LSSDP:    LSSDPFacts{OK: true, FW: "AR241CE_8530.23.2", NetMode: "ETH0"},
-		ZeroConf: ZCFacts{OK: true, Port: 9095, LibraryVersion: "3.211.130"},
-		Manifest: ManifestFacts{Asked: true, UpToDate: true},
-		Bundle:   BundleFacts{Build: "AR241CE_8530", ETag: "6a86"},
-	}
-	same := base
-	if ch := Diff(base, same); len(ch) != 0 {
-		t.Errorf("identical sweeps differ: %+v", ch)
-	}
-	next := base
-	next.Build, next.MCU, next.VendorApp = "AR241CE_9000", "24", "33"
-	next.Hashes = map[string]string{"luciserver": "ccc", "rakoit_app": "bbb", "new": "ddd"}
-	next.BootAt = base.BootAt.Add(36 * time.Hour)
-	next.Reboot = "normal"
-	next.TCP = []int{22, 80, 9096}
-	next.SpotifyFlags = "1/0"
-	next.Running = []string{"newspotifyhifi"}
-	next.LSSDP.FW, next.LSSDP.NetMode = "AR241CE_9000.24.2", "WLAN0"
-	next.ZeroConf.Port, next.ZeroConf.LibraryVersion = 9096, "3.203.239"
-	next.Manifest = ManifestFacts{Asked: true, Offered: "AR241CE_9100"}
-	next.Bundle = BundleFacts{Build: "AR241CE_9100", ETag: "ffff"}
-	ch := Diff(base, next)
-	var fields []string
-	for _, c := range ch {
-		fields = append(fields, c.Field)
-	}
-	want := "firmware build mcu vendor app sha256 luciserver boot tcp listeners spotify flags running lssdp firmware lssdp netmode zeroconf port spotify eSDK vendor verdict newest bundle bundle etag"
-	if got := strings.Join(fields, " "); got != want {
-		t.Errorf("changed fields:\n got %s\nwant %s", got, want)
-	}
-	// a hash that only the new sweep has is not a change; a probe that did
-	// not answer this time is not a change either
-	unanswered := next
-	unanswered.LSSDP.OK, unanswered.ZeroConf.OK = false, false
-	unanswered.Manifest.Asked = false
-	unanswered.Bundle.Err = "cdn unreachable"
-	for _, c := range Diff(base, unanswered) {
-		if strings.HasPrefix(c.Field, "lssdp") || strings.HasPrefix(c.Field, "zeroconf") || c.Field == "vendor verdict" || strings.HasPrefix(c.Field, "bundle") || c.Field == "newest bundle" {
-			t.Errorf("unanswered probe reported as a change: %+v", c)
+	ft := &fakeTunnel{addr: ln.Addr().String()}
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		ln.Close()
+		ft.mu.Lock()
+		for _, c := range ft.conns {
+			c.Close()
 		}
-	}
-	// the boot moving by less than the clock's slop is not a reboot
-	jitter := base
-	jitter.BootAt = base.BootAt.Add(30 * time.Second)
-	if ch := Diff(base, jitter); len(ch) != 0 {
-		t.Errorf("boot-time jitter reported: %+v", ch)
-	}
+		ft.mu.Unlock()
+		wg.Wait()
+	})
+	wg.Go(func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			ft.mu.Lock()
+			ft.conns = append(ft.conns, c)
+			n := len(ft.conns)
+			ft.mu.Unlock()
+			wg.Go(func() {
+				defer c.Close()
+				serve(ft, n, c)
+			})
+		}
+	})
+	return ft
 }
 
-func TestBaselineRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sweep-test.json")
-	if Load(path) != nil {
-		t.Error("missing baseline should load as nil")
-	}
-	r := Report{At: time.Date(2026, 9, 12, 15, 38, 0, 0, time.Local), Host: "h", Build: "AR241CE_8530",
-		Hashes: map[string]string{"luciserver": "aaa"}, TCP: []int{22}, SpotifyFlags: "0/1"}
-	if err := Save(path, r); err != nil {
-		t.Fatal(err)
-	}
-	got := Load(path)
-	if got == nil || !got.At.Equal(r.At) || got.Build != r.Build || got.Hashes["luciserver"] != "aaa" || got.SpotifyFlags != "0/1" {
-		t.Errorf("round trip = %+v", got)
-	}
-	// garbage is nil, never a panic
-	if err := Save(path, Report{}); err != nil {
-		t.Fatal(err)
-	}
-	if Load(path) != nil {
-		t.Error("a baseline with no timestamp should load as nil")
-	}
-	if Save("", r) == nil {
-		t.Error("saving with no state dir should fail loudly")
-	}
-}
-
-// Run with every probe faked: the ssh inventory parses, the LAN answers land,
-// the vendor is asked twice (the running build, then an old one to learn the
-// newest bundle) and the CDN HEAD fills the bundle facts.
-func TestRunAssemblesTheReport(t *testing.T) {
-	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodHead {
-			w.WriteHeader(405)
+// eachQuery reads "CODE;" queries from c until it closes, records each, and
+// hands it to answer.
+func (ft *fakeTunnel) eachQuery(c net.Conn, answer func(q string)) {
+	var carry []byte
+	b := make([]byte, 256)
+	for {
+		n, err := c.Read(b)
+		carry = append(carry, b[:n]...)
+		for {
+			i := bytes.IndexByte(carry, ';')
+			if i < 0 {
+				break
+			}
+			q := string(carry[:i])
+			carry = carry[i+1:]
+			ft.mu.Lock()
+			ft.queries, ft.at = append(ft.queries, q), append(ft.at, time.Now())
+			ft.mu.Unlock()
+			answer(q)
+		}
+		if err != nil {
 			return
 		}
-		w.Header().Set("Content-Length", "89751552")
-		w.Header().Set("Last-Modified", "Thu, 20 Aug 2026 07:55:48 GMT")
-		w.Header().Set("ETag", `"6a86b304-5598000"`)
-	}))
-	defer cdn.Close()
-	var asked []string
-	pr := Probes{
-		SSH: func(context.Context, config.Config, string) (string, error) { return deviceOut, nil },
-		LSSDP: func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-			return discovery.LSSDPInfo{FW: "AR241CE_8530.23.2", State: "S", NetMode: "ETH0", Name: "Living\x1b[31m"}, true
-		},
-		FindZC: func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
-			return discovery.SpotifyEndpoint{Host: "living.local.", Port: 9095}, true
-		},
-		ProbeZC: func(_ context.Context, addr string, _ time.Duration) (discovery.SpotifyZCInfo, bool) {
-			if addr != "living.local:9095" {
-				t.Errorf("getInfo addr = %q", addr)
-			}
-			return discovery.SpotifyZCInfo{Status: 101, LibraryVersion: "3.211.130-g110e3e03", Version: "2.10.0"}, true
-		},
-		Manifest: func(_ context.Context, url, build string) protocol.OTAInfo {
-			asked = append(asked, build)
-			if build == "AR241CE_8530" {
-				return protocol.OTAInfo{Asked: build, UpToDate: true}
-			}
-			return protocol.OTAInfo{Asked: build, Offered: "AR241CE_8530", PackageURL: cdn.URL + "/lp10/x.swu"}
-		},
-		Head:      func(ctx context.Context, url string) (*http.Response, error) { return http.DefaultClient.Head(url) },
-		Manifest0: "https://manifest.example/v1",
 	}
-	r := Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
-	if r.SSHErr != "" || r.Build != "AR241CE_8530" || r.MCU != "23" {
-		t.Errorf("ssh side = %q %q %q", r.SSHErr, r.Build, r.MCU)
-	}
-	if !r.LSSDP.OK || r.LSSDP.FW != "AR241CE_8530.23.2" || r.LSSDP.Name != "Living[31m" {
-		t.Errorf("lssdp = %+v (values must be control-stripped)", r.LSSDP)
-	}
-	if !r.ZeroConf.OK || r.ZeroConf.Port != 9095 || r.ZeroConf.Version != "2.10.0" {
-		t.Errorf("zeroconf = %+v", r.ZeroConf)
-	}
-	if strings.Join(asked, ",") != "AR241CE_8530,AR241CE_1" {
-		t.Errorf("manifest asked for %v", asked)
-	}
-	if !r.Manifest.Asked || !r.Manifest.UpToDate {
-		t.Errorf("manifest = %+v", r.Manifest)
-	}
-	if r.Bundle.Err != "" || r.Bundle.Build != "AR241CE_8530" || r.Bundle.Size != 89751552 || r.Bundle.ETag != "6a86b304-5598000" || !strings.HasPrefix(r.Bundle.LastModified, "Thu, 20 Aug") {
-		t.Errorf("bundle = %+v", r.Bundle)
-	}
+}
 
-	// the report reads as prose and names the first sweep
-	var out bytes.Buffer
-	Write(&out, r, nil, time.Now())
-	for _, want := range []string{
-		"firmware       AR241CE_8530 · mcu 23",
-		// btime renders in the reader's zone, so the expectation must too (CI runs in UTC)
-		"boot           " + time.Unix(1788544542, 0).Format("Jan 2 15:04") + " · power-on · up 8d 0h",
-		"vendor app     v32 · md5 9aa7f360179d…",
-		"manifest       no update for AR241CE_8530",
-		"newest bundle  AR241CE_8530 · " + cdn.URL,
-		"89751552 bytes · Thu, 20 Aug 2026 07:55:48 GMT · etag 6a86b304-5598000",
-		"lssdp          AR241CE_8530.23.2 · S · ETH0 · Living",
-		"spotify        :9095 · eSDK 3.211.130-g110e3e03 · zeroconf 2.10.0",
-		"spotify flags  0/1",
-		"env store      33 keys set at runtime",
-		"reconnects     160 since " + time.Unix(1788300000, 0).Format("Jan 2 15:04") + " · ",
-		" · 3 rotated files\n  last 7 days    ",
-		"box's own check no update · Sep 23 14:56 (it asks every 4 h)",
-		"first sweep — nothing to compare with yet",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("report missing %q:\n%s", want, out.String())
+func (ft *fakeTunnel) stats() (queries []string, at []time.Time, conns int) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return slices.Clone(ft.queries), slices.Clone(ft.at), len(ft.conns)
+}
+
+// boxLike answers like the box: every query it has an answer for, as
+// "CODE:VALUE;" — STA behind two unsolicited frames, PEQ split across two
+// writes, LST followed by a remote key, the streaming source and an MXV the
+// sweep has not asked for yet.
+func boxLike(answers map[string]string) func(ft *fakeTunnel, n int, c net.Conn) {
+	return func(ft *fakeTunnel, _ int, c net.Conn) {
+		ft.eachQuery(c, func(q string) {
+			v, ok := answers[q]
+			if !ok {
+				return // the device drops a query now and then
+			}
+			frame := q + ":" + v + ";"
+			switch q {
+			case "STA":
+				c.Write([]byte("TIT:Song\x1b[31m;PLA:1;" + frame))
+			case "PEQ":
+				c.Write([]byte(frame[:9]))
+				time.Sleep(5 * time.Millisecond)
+				c.Write([]byte(frame[9:]))
+			case "LST":
+				c.Write([]byte(frame + "RAW:NEXT;VND:spotify;MXV:5;"))
+			default:
+				c.Write([]byte(frame))
+			}
+		})
+	}
+}
+
+// silent accepts and reads, and never answers: the live box's stuck connection.
+func silent(ft *fakeTunnel, _ int, c net.Conn) { ft.eachQuery(c, func(string) {}) }
+
+// The sweep reads the box's getters over one connection, one query at a
+// time, and sends nothing else: no set, no action code, nothing twice. The
+// answers come back whole, however the device interleaves its own frames or
+// splits one across writes; a query the device drops is left out.
+func TestTunnelReadsOnlyTheGetters(t *testing.T) {
+	answers := maps.Clone(liveAnswers)
+	delete(answers, "MID")
+	ft := newFakeTunnel(t, boxLike(answers))
+	start := time.Now()
+	got, err := readTunnel(context.Background(), ft.addr, fastTunnel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(got, answers) {
+		t.Errorf("answers = %v\nwant %v", got, answers)
+	}
+	queries, at, conns := ft.stats()
+	// STA wakes the connection and is answered then; every other getter once,
+	// in order
+	want := []string{"STA", "VER", "SRC", "LST", "MXV", "PEQ", "EQE", "EQS", "BAS", "MID", "TRE", "VBS", "VBI", "BAL"}
+	if !slices.Equal(queries, want) || conns != 1 {
+		t.Errorf("sent %v over %d connections, want %v over one", queries, conns, want)
+	}
+	for _, q := range queries {
+		if !slices.Contains(tunnelQueries, q) {
+			t.Errorf("sent %q: not a getter the sweep may send", q)
 		}
 	}
-	// against a baseline, the diff — or its absence — is the last section
-	prev := r
-	prev.At = r.At.Add(-49 * time.Hour)
-	out.Reset()
-	Write(&out, r, &prev, r.At)
-	if !strings.Contains(out.String(), "since the last sweep") || !strings.Contains(out.String(), "nothing changed") || !strings.Contains(out.String(), "2d 1h ago") {
-		t.Errorf("unchanged report:\n%s", out.String())
+	// the device drops back-to-back queries: they go out spacing apart (the
+	// first arrival can lag its send, so the bound allows for that once)
+	if span := at[len(at)-1].Sub(at[0]); span < time.Duration(len(at)-1)*fastTunnel.spacing-10*time.Millisecond {
+		t.Errorf("%d queries in %v: closer than %v apart", len(at), span, fastTunnel.spacing)
 	}
-	prev.Build, prev.VendorApp = "AR241CE_9243", "31"
-	out.Reset()
-	Write(&out, r, &prev, r.At)
-	for _, want := range []string{"firmware build   AR241CE_9243 → AR241CE_8530", "vendor app       31 → 32"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("diff missing %q:\n%s", want, out.String())
+	if took := time.Since(start); took < fastTunnel.reply {
+		t.Errorf("took %v: the missing MID answer was not waited for", took)
+	}
+	tf := tunnelFacts(got, nil)
+	if !tf.OK || tf.Err != "" || tf.MCU != "29" || tf.Ver != "29-1d316f0c-10" || tf.Presets != liveAnswers["PEQ"] ||
+		tf.Sources != "NET,BT,LINE-IN,USBPLAY" || len(tf.Settings) != 10 || tf.Settings["VBI"] != "50" ||
+		!slices.Equal(tf.Unanswered, []string{"MID"}) {
+		t.Errorf("facts = %+v", tf)
+	}
+}
+
+// A fresh connection can be accepted and never served (the live box,
+// 2026-10-01): after the wake wait the client closes it, pauses, and tries
+// once more — and only once.
+func TestTunnelRetriesASilentConnectionOnce(t *testing.T) {
+	ft := newFakeTunnel(t, func(ft *fakeTunnel, n int, c net.Conn) {
+		if n == 1 {
+			silent(ft, n, c)
+			return
+		}
+		boxLike(liveAnswers)(ft, n, c)
+	})
+	start := time.Now()
+	got, err := readTunnel(context.Background(), ft.addr, fastTunnel)
+	if err != nil || !maps.Equal(got, liveAnswers) {
+		t.Fatalf("after a silent first connection: %v, %v", got, err)
+	}
+	if took := time.Since(start); took < fastTunnel.wake+fastTunnel.retry {
+		t.Errorf("took %v: the silent connection was not waited for, or the retry not paused", took)
+	}
+	if _, _, conns := ft.stats(); conns != 2 {
+		t.Errorf("%d connections, want 2", conns)
+	}
+
+	dead := newFakeTunnel(t, silent)
+	got, err = readTunnel(context.Background(), dead.addr, fastTunnel)
+	if !errors.Is(err, errSilentTunnel) || !strings.HasPrefix(err.Error(), "after a retry: ") || len(got) != 0 {
+		t.Errorf("two silent connections: %v, %v", got, err)
+	}
+	if queries, _, conns := dead.stats(); conns != 2 || !slices.Equal(queries, []string{"STA", "STA"}) {
+		t.Errorf("against a dead tunnel: %d connections, sent %v; want 2 and one STA each", conns, queries)
+	}
+	tf := tunnelFacts(got, err)
+	if tf.OK || !strings.Contains(tf.Err, "sent nothing") || tf.Unanswered != nil {
+		t.Errorf("facts of a dead tunnel = %+v", tf)
+	}
+}
+
+// A connection the device closes halfway keeps what it answered, and says why
+// the rest is missing; one it refuses is retried once, then is the error.
+func TestTunnelLostHalfway(t *testing.T) {
+	ft := newFakeTunnel(t, func(ft *fakeTunnel, _ int, c net.Conn) {
+		ft.eachQuery(c, func(q string) {
+			c.Write([]byte(q + ":" + liveAnswers[q] + ";"))
+			if q == "LST" {
+				c.Close()
+			}
+		})
+	})
+	got, err := readTunnel(context.Background(), ft.addr, fastTunnel)
+	if err == nil || len(got) != 4 || got["LST"] == "" {
+		t.Fatalf("a connection closed after LST = %v, %v", got, err)
+	}
+	tf := tunnelFacts(got, err)
+	if !tf.OK || tf.Err == "" || tf.Ver == "" || tf.Presets != "" || len(tf.Unanswered) != 10 {
+		t.Errorf("facts = %+v", tf)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // nothing listens there now: a refused connect
+	if _, err := readTunnel(context.Background(), addr, fastTunnel); !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("a refused tunnel = %v", err)
+	}
+	if tf := tunnelFacts(nil, nil); tf.OK || tf.Err != "no answer to any query" {
+		t.Errorf("a tunnel that answered nothing = %+v", tf)
+	}
+}
+
+// Ctrl-C ends a tunnel read at once, even one blocked waiting on a silent
+// connection, and even in the pause before the retry.
+func TestTunnelStopsOnCancel(t *testing.T) {
+	ft := newFakeTunnel(t, silent)
+	for _, c := range []struct{ wake, after time.Duration }{
+		{5 * time.Second, 50 * time.Millisecond},         // during the wake wait
+		{100 * time.Millisecond, 300 * time.Millisecond}, // during the pause before the retry
+	} {
+		slow := fastTunnel
+		slow.wake, slow.retry = c.wake, 5*time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), c.after)
+		start := time.Now()
+		_, err := readTunnel(ctx, ft.addr, slow)
+		cancel()
+		if err == nil || time.Since(start) > c.after+time.Second {
+			t.Errorf("cancelled after %v: %v, took %v", c.after, err, time.Since(start))
 		}
 	}
 }
 
-// A dead ssh, a silent LAN and no vendor: the report still prints, says what
-// is missing, and the exit code says the inventory is incomplete.
-func TestRunDegradesWithoutSSHOrVendor(t *testing.T) {
-	pr := Probes{
-		SSH: func(context.Context, config.Config, string) (string, error) {
-			return "", errors.New("ssh: Connection timed out")
+// A device that floods without a ';' never grows the carry past its bound,
+// and a connection that sends more than maxTunnelRead is given up.
+func TestTunnelFloodIsBounded(t *testing.T) {
+	ft := newFakeTunnel(t, func(ft *fakeTunnel, _ int, c net.Conn) {
+		ft.eachQuery(c, func(string) {
+			junk := bytes.Repeat([]byte("A"), 16<<10)
+			for range (maxTunnelRead >> 14) + 2 {
+				if _, err := c.Write(junk); err != nil {
+					return
+				}
+			}
+		})
+	})
+	start := time.Now()
+	got, err := readTunnel(context.Background(), ft.addr, fastTunnel)
+	if !errors.Is(err, errTunnelFlood) || len(got) != 0 {
+		t.Errorf("a flood = %v, %v", got, err)
+	}
+	if took := time.Since(start); took > 2*fastTunnel.wake+fastTunnel.retry {
+		t.Errorf("a flood took %v: the read cap did not end it", took)
+	}
+
+	// the carry itself, over a pipe: a run without ';' is dropped at the
+	// bound, its tail up to the next ';' with it, and the next frame still
+	// parses whole
+	a, b := net.Pipe()
+	defer a.Close()
+	tc := &tunnelConn{conn: a, asked: map[string]bool{"VER": true}, stop: func() bool { return true }}
+	go func() {
+		b.Write(bytes.Repeat([]byte("A"), 10<<10))
+		b.Write([]byte("AAAA;VER:29-1d316f0c-10;"))
+		b.Write(bytes.Repeat([]byte("B"), 3<<10))
+	}()
+	got = map[string]string{}
+	if ok, err := tc.await("VER", time.Now().Add(time.Second), got); !ok || err != nil || got["VER"] != "29-1d316f0c-10" {
+		t.Fatalf("the frame after a flood = %v, %v, %v", ok, err, got)
+	}
+	if ok, err := tc.await("PEQ", time.Now().Add(100*time.Millisecond), got); ok || err != nil || len(tc.buf) > maxTunnelCarry {
+		t.Errorf("a partial run: %v, %v, carry %d bytes (bound %d)", ok, err, len(tc.buf), maxTunnelCarry)
+	}
+	b.Close()
+	if _, err := tc.await("PEQ", time.Now().Add(100*time.Millisecond), got); err == nil {
+		t.Error("a closed pipe read as a timeout")
+	}
+}
+
+// A frame is "CODE:VALUE" with a code of capitals and digits; the value is
+// control-stripped and bounded. Anything else — an echoed bare query, a code
+// in lower case or too long — is not an answer.
+func TestParseTunnelFrame(t *testing.T) {
+	code, val, ok := parseTunnelFrame("PEQ:\x1b[31m0@Flat\u202e," + strings.Repeat("x", 500))
+	if !ok || code != "PEQ" || strings.ContainsAny(val, "\x1b\u202e") || utf8.RuneCountInString(val) != maxField+1 || !strings.HasSuffix(val, "…") {
+		t.Errorf("a hostile PEQ = %q %q %v", code, val, ok)
+	}
+	for _, f := range []string{"VER", "ver:29", "V:1", "TOOLONGCODE:1", "VE R:1", ":29", ""} {
+		if _, _, ok := parseTunnelFrame(f); ok {
+			t.Errorf("%q parsed as an answer", f)
+		}
+	}
+	if code, val, ok := parseTunnelFrame("MXV:"); !ok || code != "MXV" || val != "" {
+		t.Errorf("an empty value = %q %q %v", code, val, ok)
+	}
+}
+
+// ---- the port scan ----
+
+// fakeDial answers a connect by port: what returns is what the box would.
+func fakeDial(answer func(ctx context.Context, port int) (net.Conn, error)) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, _, addr string) (net.Conn, error) {
+		_, p, _ := net.SplitHostPort(addr)
+		var port int
+		fmt.Sscan(p, &port)
+		return answer(ctx, port)
+	}
+}
+
+func openConn() net.Conn {
+	a, b := net.Pipe()
+	b.Close()
+	return a
+}
+
+// A real scan of loopback listeners: the open ports, sorted; a port nothing
+// listens on is not one of them.
+func TestScanPortsFindsTheListeners(t *testing.T) {
+	var ls []net.Listener
+	var p int
+	for try := 0; try < 20 && ls == nil; try++ {
+		l0, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		p = l0.Addr().(*net.TCPAddr).Port
+		run := []net.Listener{l0}
+		for i := 1; i <= 3 && p+3 <= 65535; i++ {
+			l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p+i))
+			if err != nil {
+				break
+			}
+			run = append(run, l)
+		}
+		if len(run) == 4 {
+			ls = run
+			continue
+		}
+		for _, l := range run {
+			l.Close()
+		}
+	}
+	if ls == nil {
+		t.Skip("no run of four free loopback ports")
+	}
+	ls[2].Close() // p+2: free, and nothing listens there
+	defer func() {
+		for _, l := range ls {
+			l.Close()
+		}
+	}()
+	open, _, err := scanPorts(context.Background(), "127.0.0.1", scanSpec{lo: p, hi: p + 3, workers: 2, timeout: time.Second, budget: 5 * time.Second})
+	if err != nil || !slices.Equal(open, []int{p, p + 1, p + 3}) {
+		t.Errorf("scan of %d..%d = %v, %v; want %d %d %d", p, p+3, open, err, p, p+1, p+3)
+	}
+}
+
+// A refused or timed-out connect is a closed port; any other failure says
+// nothing about the port and stops the scan with that error; a scan cut off
+// by its budget keeps what it found and says how far it got. The debug ports
+// go first, so a cut-off scan can still say they all answered.
+func TestScanPortsAnswers(t *testing.T) {
+	var mu sync.Mutex
+	var order []int
+	spec := scanSpec{lo: 1, hi: 40, workers: 1, timeout: time.Second, budget: 5 * time.Second}
+	spec.dial = fakeDial(func(_ context.Context, port int) (net.Conn, error) {
+		mu.Lock()
+		order = append(order, port)
+		mu.Unlock()
+		switch {
+		case port == 22 || port == 7:
+			return openConn(), nil
+		case port%2 == 0:
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+		}
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	})
+	open, debug, err := scanPorts(context.Background(), "192.0.2.13", spec)
+	if err != nil || !debug || !slices.Equal(open, []int{7, 22}) {
+		t.Errorf("refused and dropped ports = %v, %v, %v; want 7 22, the debug ports checked", open, debug, err)
+	}
+	sorted := slices.Sorted(slices.Values(order))
+	if len(order) != 40 || order[0] != 22 || order[1] != 23 || order[2] != 1 || len(slices.Compact(sorted)) != 40 {
+		t.Errorf("connect order = %v; want 22 23 first, then the range without them", order)
+	}
+
+	dials := 0
+	spec.hi, spec.workers = 5000, 4
+	spec.dial = fakeDial(func(context.Context, int) (net.Conn, error) {
+		mu.Lock()
+		dials++
+		mu.Unlock()
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.EHOSTUNREACH)}
+	})
+	if _, debug, err := scanPorts(context.Background(), "192.0.2.13", spec); !errors.Is(err, syscall.EHOSTUNREACH) || debug {
+		t.Errorf("no route to host = %v, debug checked %v", err, debug)
+	}
+	if dials > 100 {
+		t.Errorf("%d connects after the first no-route: the scan did not stop", dials)
+	}
+
+	spec.hi, spec.budget = 50, 100*time.Millisecond
+	spec.dial = fakeDial(func(ctx context.Context, port int) (net.Conn, error) {
+		switch {
+		case port == 5:
+			return openConn(), nil
+		case port <= 10 || port == 22 || port == 23:
+			return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+		}
+		<-ctx.Done() // a box that drops the rest, past the budget
+		return nil, ctx.Err()
+	})
+	open, debug, err = scanPorts(context.Background(), "192.0.2.13", spec)
+	if !slices.Equal(open, []int{5}) || !debug || err == nil || err.Error() != "scan cut off: 12 of 50 ports answered in 100ms" {
+		t.Errorf("a cut-off scan = %v, %v, %v", open, debug, err)
+	}
+	// the debug ports themselves unanswered: not checked
+	spec.dial = fakeDial(func(ctx context.Context, port int) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if _, debug, err := scanPorts(context.Background(), "192.0.2.13", spec); debug || err == nil {
+		t.Errorf("a scan that heard nothing = debug %v, %v", debug, err)
+	}
+}
+
+// The host resolves once, to an IPv4 address when it has one.
+func TestResolveHost(t *testing.T) {
+	for host, want := range map[string]string{"127.0.0.1": "127.0.0.1", "::1": "::1", "localhost": "127.0.0.1"} {
+		if got, err := resolveHost(context.Background(), host); err != nil || got != want {
+			t.Errorf("%s = %q, %v; want %s", host, got, err, want)
+		}
+	}
+}
+
+// Listeners in the Linux ephemeral range move on every start — rakoit_app's
+// second listener went 46835 → 44317 — so Diff compares the scans without
+// them. dmr's 49494 is fixed inside the range, and every port below it
+// counts; a scan with nothing fixed is an answer, a failed one is not.
+func TestDiffIgnoresDynamicPorts(t *testing.T) {
+	before := Report{Ports: PortFacts{OK: true, Open: []int{80, 2018, 2345, 7000, 7777, 9095, 46835, 49494}}}
+	after := Report{Ports: PortFacts{OK: true, Open: livePorts}}
+	if ch := Diff(before, after); len(ch) != 0 {
+		t.Errorf("a dynamic port reads as a change: %+v", ch)
+	}
+	moved := Report{Ports: PortFacts{OK: true, Open: []int{22, 80, 2018, 2345, 7000, 7777, 9096, 44317}}}
+	ch := Diff(after, moved)
+	if len(ch) != 1 || ch[0].Field != "tcp ports" || ch[0].Was != "80 2018 2345 7000 7777 9095 49494" || ch[0].Now != "22 80 2018 2345 7000 7777 9096" {
+		t.Errorf("fixed ports moved = %+v", ch)
+	}
+	bare := Report{Ports: PortFacts{OK: true, Open: []int{40000}}}
+	if ch := Diff(after, bare); len(ch) != 1 || ch[0].Now != "none" {
+		t.Errorf("a scan with nothing fixed = %+v", ch)
+	}
+	failed := Report{Ports: PortFacts{Err: "scan cut off", Open: []int{80}}}
+	if ch := Diff(after, failed); len(ch) != 0 {
+		t.Errorf("a failed scan reads as a change: %+v", ch)
+	}
+}
+
+// The scan's lines: the fixed ports, the dynamic ones apart, and the debug
+// listeners' state — "answer again" whenever one is open, even in a scan cut
+// off; "closed" only when all four answered.
+func TestWritePortsCallsOutDebugPorts(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		p     PortFacts
+		want  []string
+		never string
+	}{
+		{"live", PortFacts{OK: true, Open: livePorts, DebugChecked: true}, []string{
+			"tcp            80 2018 2345 7000 7777 9095 49494\n",
+			"dynamic tcp    44317 (they move with each app restart; not compared)\n",
+			"ssh/telnet/adb closed (22 23 5037 5555)\n"}, "answer again"},
+		{"back", PortFacts{OK: true, Open: []int{22, 80, 5555}, DebugChecked: true}, []string{
+			"tcp            22 80 5555\n", "ssh/telnet/adb answer again: 22 (ssh) · 5555 (adb)\n"}, "closed"},
+		{"cut off", PortFacts{Open: []int{23, 80}, Err: "scan cut off: 900 of 65535 ports answered in 30s"}, []string{
+			"tcp            23 80 · so far: scan cut off", "ssh/telnet/adb answer again: 23 (telnet)\n"}, "closed"},
+		{"cut off, debug heard", PortFacts{Open: []int{80}, DebugChecked: true, Err: "scan cut off: 900 of 65535 ports answered in 30s"}, []string{
+			"tcp            80 · so far: scan cut off", "ssh/telnet/adb closed (22 23 5037 5555)\n"}, "answer again"},
+		{"failed", PortFacts{Err: "connect: no route to host"}, []string{"tcp            scan failed · connect: no route to host\n"}, "ssh/telnet/adb"},
+		{"dynamic only", PortFacts{OK: true, Open: []int{44317}}, []string{"tcp            nothing fixed open\n"}, "answer again"},
+	} {
+		var out bytes.Buffer
+		writePorts(func(label, val string) {
+			if val != "" {
+				fmt.Fprintf(&out, "  %-14s %s\n", label, val)
+			}
+		}, c.p)
+		for _, w := range c.want {
+			if !strings.Contains(out.String(), w) {
+				t.Errorf("%s: missing %q:\n%s", c.name, w, out.String())
+			}
+		}
+		if strings.Contains(out.String(), c.never) {
+			t.Errorf("%s: says %q:\n%s", c.name, c.never, out.String())
+		}
+	}
+}
+
+// ---- the UPnP description, the app index, bounded GETs ----
+
+// The description's names and services come out whatever namespaces it
+// declares; the services of embedded devices count too, once each, sorted.
+func TestParseUPnP(t *testing.T) {
+	u := parseUPnP([]byte(upnpXML))
+	want := []string{"urn:schemas-upnp-org:service:AVTransport:1", "urn:schemas-upnp-org:service:ConnectionManager:1",
+		"urn:schemas-upnp-org:service:RenderingControl:1", "urn:schemas-wiimu-com:service:PlayQueue:1"}
+	if !u.OK || u.FriendlyName != "Living" || u.Manufacturer != "Arylic" || u.ModelName != "LP10" || u.ModelNumber != "AR241CP" ||
+		u.ModelDescription != "Wireless Audio Streamer" || !slices.Equal(u.Services, want) {
+		t.Errorf("description = %+v", u)
+	}
+	if got := servicesFact(u.Services); got != "AVTransport:1 ConnectionManager:1 RenderingControl:1 urn:schemas-wiimu-com:service:PlayQueue:1" {
+		t.Errorf("display = %q", got)
+	}
+	// XML forbids C0 controls (Go's decoder refuses the document); a bidi
+	// override or a line separator is legal XML and is stripped here
+	hostile := strings.Replace(upnpXML, "<friendlyName>Living", "<friendlyName>Living\u202e[31m\u2028"+strings.Repeat("y", 300), 1)
+	if u := parseUPnP([]byte(hostile)); !u.OK || strings.ContainsAny(u.FriendlyName, "\u202e\u2028") || utf8.RuneCountInString(u.FriendlyName) != maxField+1 {
+		t.Errorf("a hostile name = %q", u.FriendlyName)
+	}
+	var many strings.Builder
+	many.WriteString(`<root><device><friendlyName>x</friendlyName><serviceList>`)
+	for i := range 100 {
+		fmt.Fprintf(&many, "<service><serviceType>urn:x:service:S%03d:1</serviceType></service>", i)
+	}
+	many.WriteString(`</serviceList></device></root>`)
+	if u := parseUPnP([]byte(many.String())); !u.OK || len(u.Services) != maxServices {
+		t.Errorf("100 services kept %d, want %d", len(u.Services), maxServices)
+	}
+	for in, err := range map[string]string{
+		`<root><device><friendlyName>x`:                                        "unreadable description",
+		"<root><device><friendlyName>a\x1b[2Jb</friendlyName></device></root>": "unreadable description",
+		`garbage`: "unreadable description",
+		``:        "unreadable description",
+		`<html><device><friendlyName>x</friendlyName></device></html>`: "not a device description",
+		`<root xmlns="urn:schemas-upnp-org:device-1-0"></root>`:        "not a device description",
+	} {
+		if u := parseUPnP([]byte(in)); u.OK || u.Err != err {
+			t.Errorf("%q = %+v, want %q", in, u, err)
+		}
+	}
+}
+
+// The app index's rakoit_app entry, wherever it is in the list; anything else
+// is an error fact.
+func TestParseAppIndex(t *testing.T) {
+	if v := parseAppIndex([]byte(appIndexJSON)); !v.OK || v.Name != "rakoit_app" || v.Version != "42" || v.MD5 != "b1dadf706b06ee96e73eee90a65d53b2" {
+		t.Errorf("live index = %+v", v)
+	}
+	two := `[{"name":"other","version":"9"},{"name":"rakoit_app","md5":"aa\u001b[2J","version":"43\u202e` + strings.Repeat("9", 300) + `"}]`
+	if v := parseAppIndex([]byte(two)); !v.OK || v.MD5 != "aa[2J" || strings.ContainsRune(v.Version, '\u202e') || utf8.RuneCountInString(v.Version) != maxField+1 {
+		t.Errorf("second entry = %+v", v)
+	}
+	for in, err := range map[string]string{
+		`[{"name":"other","version":"9"}]`: "no rakoit_app entry",
+		`[]`:                               "no rakoit_app entry",
+		`{"name":"rakoit_app"}`:            "unexpected reply",
+		`<html>`:                           "unexpected reply",
+	} {
+		if v := parseAppIndex([]byte(in)); v.OK || v.Err != err {
+			t.Errorf("%q = %+v, want %q", in, v, err)
+		}
+	}
+}
+
+// A bounded GET: the body of a 200, an error for anything else — another
+// status, a body over the limit (cut, it would parse as a different answer),
+// and, from the box, a redirect, which is never followed.
+func TestGetBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/ok":
+			w.Write([]byte(appIndexJSON))
+		case "/full":
+			w.Write(bytes.Repeat([]byte("x"), maxBody))
+		case "/over":
+			w.Write(bytes.Repeat([]byte("x"), maxBody+1))
+		case "/away":
+			http.Redirect(w, req, "/ok", http.StatusFound)
+		default:
+			http.Error(w, "no", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	if b, err := getBounded(ctx, http.DefaultClient, srv.URL+"/ok", maxBody); err != nil || string(b) != appIndexJSON {
+		t.Errorf("ok = %q, %v", b, err)
+	}
+	if b, err := getBounded(ctx, http.DefaultClient, srv.URL+"/full", maxBody); err != nil || len(b) != maxBody {
+		t.Errorf("a body at the limit = %d bytes, %v", len(b), err)
+	}
+	if _, err := getBounded(ctx, http.DefaultClient, srv.URL+"/over", maxBody); err == nil || err.Error() != "reply over 64 KiB" {
+		t.Errorf("a body over the limit = %v", err)
+	}
+	if _, err := getBounded(ctx, http.DefaultClient, srv.URL+"/gone", maxBody); err == nil || err.Error() != "answered 404 Not Found" {
+		t.Errorf("a 404 = %v", err)
+	}
+	if _, err := getBounded(ctx, lanClient, srv.URL+"/away", maxBody); err == nil || err.Error() != "answered 302 Found" {
+		t.Errorf("the box's redirect = %v", err)
+	}
+	if _, err := getBounded(ctx, http.DefaultClient, "http://\x7f", maxBody); err == nil {
+		t.Error("a bad url fetched")
+	}
+	if got := upnpURL("192.168.0.13"); got != "http://192.168.0.13:49494/description.xml" {
+		t.Errorf("upnp url = %q", got)
+	}
+	if got := upnpURL("fe80::1"); got != "http://[fe80::1]:49494/description.xml" {
+		t.Errorf("upnp url for v6 = %q", got)
+	}
+}
+
+// The default probes: the tunnel client with the live timing, the UPnP GET
+// against dmr's port, and the vendor switched off by LP10_OTA_URL="".
+func TestDefaultProbes(t *testing.T) {
+	ft := newFakeTunnel(t, boxLike(liveAnswers))
+	pr := DefaultProbes()
+	if got, err := pr.Tunnel(context.Background(), ft.addr); err != nil || !maps.Equal(got, liveAnswers) {
+		t.Errorf("tunnel = %v, %v", got, err)
+	}
+	if _, err := pr.UPnP(context.Background(), "127.0.0.1"); err == nil {
+		t.Error("a description from a port nothing listens on") // nothing serves dmr's port on a test host
+	}
+	if pr.Ports == nil || pr.AppIndex == nil || pr.Head == nil || pr.Manifest == nil || pr.LSSDP == nil || pr.FindZC == nil || pr.ProbeZC == nil {
+		t.Errorf("a default probe is missing: %+v", pr)
+	}
+	t.Setenv("LP10_OTA_URL", "")
+	if DefaultProbes().Manifest0 != "" {
+		t.Error("LP10_OTA_URL=\"\" should switch the vendor probes off")
+	}
+}
+
+// ---- Run, Write, Main ----
+
+// quietLAN is a probe set where nothing answers: the tunnel silent, the scan
+// with no route, no description, no LSSDP, no ZeroConf, and no vendor.
+func quietLAN() Probes {
+	return Probes{
+		Ports: func(context.Context, string) ([]int, bool, error) {
+			return nil, false, errors.New("dial tcp 192.0.2.13:1: connect: no route to host")
 		},
+		Tunnel: func(context.Context, string) (map[string]string, error) { return nil, errSilentTunnel },
+		UPnP:   func(context.Context, string) ([]byte, error) { return nil, errors.New("connection refused") },
 		LSSDP: func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
 			return discovery.LSSDPInfo{}, false
 		},
@@ -435,95 +743,240 @@ func TestRunDegradesWithoutSSHOrVendor(t *testing.T) {
 			return discovery.SpotifyEndpoint{}, false
 		},
 		ProbeZC: func(context.Context, string, time.Duration) (discovery.SpotifyZCInfo, bool) {
-			t.Fatal("getInfo without an endpoint")
 			return discovery.SpotifyZCInfo{}, false
 		},
-		Manifest: func(context.Context, string, string) protocol.OTAInfo {
-			t.Fatal("the vendor was asked with no build to ask about")
-			return protocol.OTAInfo{}
-		},
-		Manifest0: "https://manifest.example/v1",
+		AppIndex: func(context.Context) ([]byte, error) { return nil, errors.New("cdn unreachable") },
+	}
+}
+
+// boxProbes is the box as it answered on 2026-10-01, and a vendor that says
+// AR241CP_8747 is current and offers it to an old build. answers is what the
+// tunnel gives (nil: it is silent); the vendor is off without a manifest URL.
+func boxProbes(answers map[string]string, manifest string) Probes {
+	pr := quietLAN()
+	pr.Ports = func(context.Context, string) ([]int, bool, error) { return livePorts, true, nil }
+	pr.Tunnel = func(ctx context.Context, _ string) (map[string]string, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if answers == nil {
+			return nil, errSilentTunnel
+		}
+		return maps.Clone(answers), nil
+	}
+	pr.UPnP = func(context.Context, string) ([]byte, error) { return []byte(upnpXML), nil }
+	pr.LSSDP = func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
+		return discovery.LSSDPInfo{FW: "AR241CP_8747.29.2", State: "S", NetMode: "ETH0", Name: "Living"}, true
+	}
+	pr.FindZC = func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
+		return discovery.SpotifyEndpoint{Host: "living.local.", Port: 9095}, true
+	}
+	pr.ProbeZC = func(context.Context, string, time.Duration) (discovery.SpotifyZCInfo, bool) {
+		return discovery.SpotifyZCInfo{Status: 101, LibraryVersion: "3.211.130-g110e3e03", Version: "2.10.0"}, true
+	}
+	pr.AppIndex = func(context.Context) ([]byte, error) { return []byte(appIndexJSON), nil }
+	pr.Manifest = func(_ context.Context, _, build string) protocol.OTAInfo {
+		if build == "AR241CP_8747" {
+			return protocol.OTAInfo{Asked: build, UpToDate: true}
+		}
+		return protocol.OTAInfo{Asked: build, Offered: "AR241CP_8747", PackageURL: "https://cdn.example/lp10_AR241CP_8747_29_6701c857.swu"}
+	}
+	pr.Head = func(context.Context, string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: http.NoBody, ContentLength: 89527296,
+			Header: http.Header{"Etag": {`"6abcc3dc-5561400"`}, "Last-Modified": {"Wed, 30 Sep 2026 08:10:00 GMT"}}}, nil
+	}
+	pr.Manifest0 = manifest
+	return pr
+}
+
+// Run with every probe faked: each source lands in its facts, the vendor is
+// asked twice (the build LSSDP reports, then an old one to learn the newest
+// bundle) and the CDN HEAD fills the bundle facts; the report reads as prose.
+func TestRunAssemblesTheReport(t *testing.T) {
+	pr := boxProbes(liveAnswers, "https://manifest.example/v1")
+	var asked []string
+	manifest := pr.Manifest
+	pr.Manifest = func(ctx context.Context, url, build string) protocol.OTAInfo {
+		asked = append(asked, build)
+		return manifest(ctx, url, build)
+	}
+	tunnel := pr.Tunnel
+	pr.Tunnel = func(ctx context.Context, addr string) (map[string]string, error) {
+		if addr != "192.0.2.13:2018" {
+			t.Errorf("tunnel addr = %q", addr)
+		}
+		return tunnel(ctx, addr)
 	}
 	r := Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
-	if r.SSHErr == "" || r.Manifest.Asked || r.LSSDP.OK || r.ZeroConf.OK {
+	if !r.Ports.OK || !slices.Equal(r.Ports.Open, livePorts) {
+		t.Errorf("ports = %+v", r.Ports)
+	}
+	if !r.Tunnel.OK || r.Tunnel.MCU != "29" || r.Tunnel.Ver != "29-1d316f0c-10" || r.Tunnel.Unanswered != nil {
+		t.Errorf("tunnel = %+v", r.Tunnel)
+	}
+	if !r.UPnP.OK || r.UPnP.ModelNumber != "AR241CP" || len(r.UPnP.Services) != 4 {
+		t.Errorf("upnp = %+v", r.UPnP)
+	}
+	if !r.VendorApp.OK || r.VendorApp.Version != "42" {
+		t.Errorf("vendor app = %+v", r.VendorApp)
+	}
+	if strings.Join(asked, ",") != "AR241CP_8747,AR241CP_1" || !r.Manifest.UpToDate || r.Manifest.Build != "AR241CP_8747" {
+		t.Errorf("manifest asked for %v: %+v", asked, r.Manifest)
+	}
+	if r.Bundle.Err != "" || r.Bundle.Build != "AR241CP_8747" || r.Bundle.Size != 89527296 || r.Bundle.ETag != "6abcc3dc-5561400" {
+		t.Errorf("bundle = %+v", r.Bundle)
+	}
+
+	var out bytes.Buffer
+	Write(&out, r, nil, time.Now())
+	for _, want := range []string{
+		"device\n  firmware       AR241CP_8747.29.2 · mcu 29-1d316f0c-10\n",
+		"  sources        NET,BT,LINE-IN,USBPLAY · now NET\n",
+		"  eq presets     0@Flat,1@Classical,2@Pop,3@Jazz,4@Rock,5@Vocal\n",
+		"  status         source=NET mute=0 volume=83 treble=0 bass=0 net=3 internet=0 playing=0 led=1 upgrading=0\n",
+		"  settings       MXV:100 EQE:0 EQS:0 BAS:0 MID:0 TRE:0 VBS:0 VBI:50 BAL:0\n",
+		"  upnp           Living · Arylic · LP10 AR241CP · Wireless Audio Streamer\n",
+		"  upnp services  AVTransport:1 ConnectionManager:1 RenderingControl:1 urn:schemas-wiimu-com:service:PlayQueue:1\n",
+		"  manifest       no update for AR241CP_8747\n",
+		"  newest bundle  AR241CP_8747 · https://cdn.example/lp10_AR241CP_8747_29_6701c857.swu\n",
+		"89527296 bytes · Wed, 30 Sep 2026 08:10:00 GMT · etag 6abcc3dc-5561400\n",
+		"  vendor app     the vendor serves rakoit_app v42 · md5 b1dadf706b06…\n",
+		"  lssdp          AR241CP_8747.29.2 · S · ETH0 · Living\n",
+		"  spotify        :9095 · eSDK 3.211.130-g110e3e03 · zeroconf 2.10.0\n",
+		"  tcp            80 2018 2345 7000 7777 9095 49494\n",
+		"  ssh/telnet/adb closed (22 23 5037 5555)\n",
+		"first sweep — nothing to compare with yet",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("report missing %q:\n%s", want, out.String())
+		}
+	}
+	for _, never := range []string{"tunnel ", "no answer", "ssh "} {
+		if strings.Contains(out.String(), never) {
+			t.Errorf("a full report says %q:\n%s", never, out.String())
+		}
+	}
+	// against a baseline, the diff — or its absence — is the last section
+	prev := r
+	prev.At = r.At.Add(-49 * time.Hour)
+	out.Reset()
+	Write(&out, r, &prev, r.At)
+	if !strings.HasSuffix(out.String(), "since the last sweep ("+prev.At.Format("2006-01-02 15:04")+", 2d 1h ago)\n  nothing changed\n") {
+		t.Errorf("unchanged report:\n%s", out.String())
+	}
+	prev.Tunnel.Ver, prev.VendorApp.Version = "23-4ef47210-9", "41"
+	prev.Tunnel.Settings = map[string]string{"MXV": "60"} // a setting: never a change
+	out.Reset()
+	Write(&out, r, &prev, r.At)
+	for _, want := range []string{"  mcu              23-4ef47210-9 → 29-1d316f0c-10\n", "  vendor app       41 → 42\n"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("diff missing %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "MXV:60") || strings.Contains(out.String(), "nothing changed") {
+		t.Errorf("a setting reads as a change:\n%s", out.String())
+	}
+}
+
+// Nothing answers: the report still prints and says what is missing — no
+// claim about the debug ports — the vendor is not asked with no build, and
+// the exit code says the inventory is incomplete.
+func TestRunDegrades(t *testing.T) {
+	pr := quietLAN()
+	pr.Manifest0 = "https://manifest.example/v1"
+	pr.Manifest = func(context.Context, string, string) protocol.OTAInfo {
+		t.Fatal("the vendor was asked with no build to ask about")
+		return protocol.OTAInfo{}
+	}
+	r := Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
+	if r.Tunnel.OK || r.Ports.OK || r.UPnP.OK || r.LSSDP.OK || r.ZeroConf.OK || r.VendorApp.OK || r.Manifest.Asked {
 		t.Errorf("degraded run = %+v", r)
 	}
 	var out bytes.Buffer
 	Write(&out, r, nil, time.Now())
-	for _, want := range []string{"ssh            ssh: Connection timed out", "lssdp          no answer", "spotify        not advertised", "manifest       not asked"} {
+	for _, want := range []string{
+		"  tunnel         the tunnel accepted the connection but sent nothing (the mcu, its presets, sources and settings are unread)\n",
+		"  upnp           no description · connection refused\n",
+		"  manifest       not asked (no build to ask about)\n",
+		"  vendor app     index unread · cdn unreachable\n",
+		"  lssdp          no answer\n",
+		"  spotify        not advertised",
+		"  tcp            scan failed · dial tcp 192.0.2.13:1: connect: no route to host\n",
+	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("degraded report missing %q:\n%s", want, out.String())
 		}
 	}
-	// with LSSDP up but ssh down, the build comes from the responder and the
-	// vendor IS asked
-	pr.LSSDP = func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-		return discovery.LSSDPInfo{FW: "AR241CE_8530.23.2"}, true
+	if strings.Contains(out.String(), "ssh/telnet/adb") || strings.Contains(out.String(), "firmware") {
+		t.Errorf("a degraded report claims what it did not read:\n%s", out.String())
 	}
-	var asked []string
-	pr.Manifest = func(_ context.Context, _, build string) protocol.OTAInfo {
-		asked = append(asked, build)
-		return protocol.OTAInfo{Asked: build, Err: "vendor unreachable"}
+	// no vendor at all: neither the manifest nor the app index is asked
+	pr = boxProbes(liveAnswers, "")
+	pr.AppIndex = func(context.Context) ([]byte, error) {
+		t.Fatal("the app index was fetched with the vendor switched off")
+		return nil, nil
 	}
 	r = Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
-	if strings.Join(asked, ",") != "AR241CE_8530,AR241CE_1" || r.Manifest.Err != "vendor unreachable" || r.Bundle.Err != "vendor unreachable" {
-		t.Errorf("lssdp-only run asked %v, manifest %+v bundle %+v", asked, r.Manifest, r.Bundle)
+	out.Reset()
+	Write(&out, r, nil, time.Now())
+	if r.Manifest.Asked || r.VendorApp.OK || !strings.Contains(out.String(), "  vendor app     not asked\n") {
+		t.Errorf("vendor off: %+v\n%s", r.VendorApp, out.String())
+	}
+	// a tunnel that answered some: the missing codes are named, with the reason
+	r.Tunnel = tunnelFacts(map[string]string{"VER": "29-1d316f0c-10", "STA": "NET,0"}, errors.New("EOF"))
+	out.Reset()
+	Write(&out, r, nil, time.Now())
+	if !strings.Contains(out.String(), "  no answer      SRC LST MXV PEQ EQE EQS BAS MID TRE VBS VBI BAL (EOF)\n") ||
+		!strings.Contains(out.String(), "  status         NET,0\n") {
+		t.Errorf("a half-read tunnel:\n%s", out.String())
 	}
 }
 
 // Main: flags, the exit codes, and the baseline landing in LP10_STATE_DIR.
 func TestMainFlagsAndExitCodes(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	// no network from a unit test: a dead ssh, a silent LAN, no vendor
+	box := false
 	probesFor = func() Probes {
-		return Probes{
-			SSH: func(context.Context, config.Config, string) (string, error) {
-				return "", errors.New("ssh: Connection timed out")
-			},
-			LSSDP: func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-				return discovery.LSSDPInfo{}, false
-			},
-			FindZC: func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
-				return discovery.SpotifyEndpoint{}, false
-			},
-			ProbeZC: func(context.Context, string, time.Duration) (discovery.SpotifyZCInfo, bool) {
-				return discovery.SpotifyZCInfo{}, false
-			},
+		if box {
+			return boxProbes(liveAnswers, "")
 		}
+		return quietLAN()
 	}
 	t.Cleanup(func() { probesFor = DefaultProbes })
+	cfg := config.Config{Host: "192.0.2.13"}
 	var stdout, stderr bytes.Buffer
-	if code := Main(context.Background(), config.Config{Host: "192.0.2.13"}, []string{"--bogus"}, &stdout, &stderr); code != 2 {
+	if code := Main(context.Background(), cfg, []string{"--bogus"}, &stdout, &stderr); code != 2 {
 		t.Errorf("bad flag exit = %d, want 2", code)
 	}
-	if code := Main(context.Background(), config.Config{Host: "192.0.2.13"}, []string{"extra"}, &stdout, &stderr); code != 2 {
+	if code := Main(context.Background(), cfg, []string{"extra"}, &stdout, &stderr); code != 2 {
 		t.Errorf("positional arg exit = %d, want 2", code)
 	}
 	// a run against nothing: the report prints, exit 1, and --no-save leaves
 	// no baseline
 	stdout.Reset()
-	ctx := context.Background()
-	code := Main(ctx, config.Config{Host: "192.0.2.13", User: "root"}, []string{"--no-save"}, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stdout.String(), "ssh ") {
+	if code := Main(context.Background(), cfg, []string{"--no-save"}, &stdout, &stderr); code != 1 || !strings.Contains(stdout.String(), "tunnel ") {
 		t.Errorf("unreachable box: exit %d, out:\n%s\nerr:\n%s", code, stdout.String(), stderr.String())
 	}
-	if Load(config.SweepPath(config.Config{Host: "192.0.2.13"})) != nil {
+	if Load(config.SweepPath(cfg)) != nil {
 		t.Error("--no-save wrote a baseline")
 	}
-	// --json prints the baseline's shape; a run whose ssh inventory failed
-	// still exits 1, and still saves what it did read — here, with nothing
-	// before it and nothing else answering, a baseline with no ssh facts
+	// --json prints the baseline's shape; an incomplete run still exits 1 and
+	// still saves what it read — here nothing, with nothing before it
 	stdout.Reset()
 	stderr.Reset()
-	code = Main(ctx, config.Config{Host: "192.0.2.13", User: "root"}, []string{"--json"}, &stdout, &stderr)
-	if code != 1 || !strings.Contains(stdout.String(), `"host": "192.0.2.13"`) {
+	if code := Main(context.Background(), cfg, []string{"--json"}, &stdout, &stderr); code != 1 || !strings.Contains(stdout.String(), `"host": "192.0.2.13"`) {
 		t.Errorf("--json: exit %d, out:\n%s", code, stdout.String())
 	}
-	if b := Load(config.SweepPath(config.Config{Host: "192.0.2.13"})); b == nil || b.Build != "" || b.SSHErr == "" || b.Carried != nil {
-		t.Errorf("an ssh-failed first sweep should save as it is: %+v", b)
+	if b := Load(config.SweepPath(cfg)); b == nil || b.Tunnel.OK || b.Tunnel.Err == "" || b.Carried != nil {
+		t.Errorf("an empty first sweep should save as it is: %+v", b)
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("a saved sweep has nothing for stderr, got:\n%s", stderr.String())
+	}
+	// the box answers: exit 0
+	box = true
+	if code := Main(context.Background(), cfg, []string{"--no-save"}, &stdout, &stderr); code != 0 {
+		t.Errorf("a full sweep exit %d", code)
 	}
 }
 
@@ -533,26 +986,12 @@ func TestMainFlagsAndExitCodes(t *testing.T) {
 // baseline must survive it.
 func TestMainInterruptedKeepsBaseline(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	probesFor = func() Probes {
-		return Probes{
-			SSH: func(ctx context.Context, _ config.Config, _ string) (string, error) {
-				return "", ctx.Err()
-			},
-			LSSDP: func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-				return discovery.LSSDPInfo{}, false
-			},
-			FindZC: func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
-				return discovery.SpotifyEndpoint{}, false
-			},
-			ProbeZC: func(context.Context, string, time.Duration) (discovery.SpotifyZCInfo, bool) {
-				return discovery.SpotifyZCInfo{}, false
-			},
-		}
-	}
+	probesFor = func() Probes { return boxProbes(liveAnswers, "") }
 	t.Cleanup(func() { probesFor = DefaultProbes })
-	cfg := config.Config{Host: "192.0.2.13", User: "root"}
+	cfg := config.Config{Host: "192.0.2.13"}
 	path := config.SweepPath(cfg)
-	seed := Report{At: time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC), Host: cfg.Host, Build: "AR241CE_8530", MCU: "23"}
+	seed := fullReport(time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC))
+	seed.Tunnel.Ver = "23-4ef47210-9"
 	if err := Save(path, seed); err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +1000,7 @@ func TestMainInterruptedKeepsBaseline(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	Main(ctx, cfg, nil, &stdout, &stderr)
 	got := Load(path)
-	if got == nil || got.Build != seed.Build || got.MCU != seed.MCU || !got.At.Equal(seed.At) {
+	if got == nil || got.Tunnel.Ver != seed.Tunnel.Ver || !got.At.Equal(seed.At) {
 		t.Fatalf("interrupted sweep replaced the baseline: %+v\nstderr:\n%s", got, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "interrupted") {
@@ -569,212 +1008,115 @@ func TestMainInterruptedKeepsBaseline(t *testing.T) {
 	}
 }
 
-// quietLAN is a probe set with the given ssh and nothing else answering: no
-// LSSDP, no ZeroConf, no vendor.
-func quietLAN(ssh func(context.Context, config.Config, string) (string, error)) Probes {
-	return Probes{
-		SSH: ssh,
-		LSSDP: func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-			return discovery.LSSDPInfo{}, false
-		},
-		FindZC: func(context.Context, string, net.IP, time.Duration) (discovery.SpotifyEndpoint, bool) {
-			return discovery.SpotifyEndpoint{}, false
-		},
-		ProbeZC: func(context.Context, string, time.Duration) (discovery.SpotifyZCInfo, bool) {
-			return discovery.SpotifyZCInfo{}, false
-		},
-	}
-}
-
-// A sweep whose ssh failed (dropbear stalls rapid reconnects) has an empty ssh
-// side, and Diff skips every empty pair: saved as it is, it would make the
-// next good sweep miss what moved — a vendor-app update would read "nothing
-// changed". Kept whole instead, the old baseline would drop this sweep's fresh
-// LAN answers. The merge saves those answers and carries every ssh fact from
-// the sweep that read it, dated to that sweep; the next report names the date
-// in its header, and the update still shows.
-func TestMainSSHFailureCarriesTheSSHFacts(t *testing.T) {
+// A sweep whose tunnel never answered has no MCU version, and Diff skips every
+// empty pair: saved as it is, it would make the next good sweep miss what
+// moved — an MCU update would read "nothing changed". The merge saves this
+// sweep's fresh answers and carries the tunnel's facts from the sweep that
+// read them, dated; the next report names the date in its header, and the
+// update still shows.
+func TestMainTunnelFailureCarriesTheTunnelFacts(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	out, sshErr, state := deviceOut, error(nil), "S"
+	answers := liveAnswers
+	state := "S"
 	probesFor = func() Probes {
-		pr := quietLAN(func(context.Context, config.Config, string) (string, error) {
-			if sshErr != nil {
-				return "", sshErr
-			}
-			return out, nil
-		})
+		pr := boxProbes(answers, "")
 		pr.LSSDP = func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-			return discovery.LSSDPInfo{FW: "AR241CE_8530.23.2", State: state, NetMode: "ETH0"}, true
+			return discovery.LSSDPInfo{FW: "AR241CP_8747.29.2", State: state, NetMode: "ETH0"}, true
 		}
 		return pr
 	}
 	t.Cleanup(func() { probesFor = DefaultProbes })
-	cfg := config.Config{Host: "192.0.2.13", User: "root"}
+	cfg := config.Config{Host: "192.0.2.13"}
 	var stdout, stderr bytes.Buffer
 	if code := Main(context.Background(), cfg, nil, &stdout, &stderr); code != 0 { // 1. full sweep → baseline
 		t.Fatalf("full sweep exit %d:\n%s", code, stderr.String())
 	}
 	first := Load(config.SweepPath(cfg))
-	if first == nil || first.Carried != nil {
+	if first == nil || first.Carried != nil || first.Tunnel.MCU != "29" || first.VendorApp.Version != "" {
 		t.Fatalf("a full first sweep carries nothing: %+v", first)
 	}
-	sshErr, state = errors.New("ssh: Connection timed out"), "P"
+	answers, state = nil, "P"
 	stdout.Reset()
-	if code := Main(context.Background(), cfg, nil, &stdout, &stderr); code != 1 { // 2. sshd stalled
-		t.Errorf("ssh-failed sweep exit %d, want 1", code)
+	if code := Main(context.Background(), cfg, nil, &stdout, &stderr); code != 1 { // 2. the tunnel stays silent
+		t.Errorf("tunnel-less sweep exit %d, want 1", code)
 	}
 	b := Load(config.SweepPath(cfg))
-	if b == nil || !b.At.After(first.At) || b.LSSDP.State != "P" || b.SSHErr == "" {
-		t.Fatalf("the ssh-free answers should be this sweep's: %+v", b)
+	if b == nil || !b.At.After(first.At) || b.LSSDP.State != "P" || b.Tunnel.OK || b.Tunnel.Err == "" {
+		t.Fatalf("the other answers should be this sweep's: %+v", b)
 	}
-	if b.Build != "AR241CE_8530" || b.MCU != "23" || b.VendorApp != "32" || b.Hashes["luciserver"] == "" || b.SpotifyFlags != "0/1" ||
-		b.DirtyKeys != 33 || b.Reconnects != first.Reconnects || !maps.Equal(b.ReconnectsByDay, first.ReconnectsByDay) || b.OTALast != "NO_UPDATE" {
-		t.Errorf("the ssh facts should be the first sweep's: %+v", b)
+	if b.Tunnel.Ver != "29-1d316f0c-10" || b.Tunnel.MCU != "29" || b.Tunnel.Presets == "" || b.Tunnel.Sources == "" || b.Tunnel.Settings["MXV"] != "100" {
+		t.Errorf("the tunnel's facts should be the first sweep's: %+v", b.Tunnel)
 	}
-	for _, k := range []string{"identity", "mcu", "vendorApp", "hashes.luciserver", "hashes.factoryEnv.conf", "spotifyFlags", "dirtyKeys", "reconnects", "otaLast"} {
+	for _, k := range []string{"tunnel.ver", "tunnel.peq", "tunnel.lst", "tunnel.settings"} {
 		if at, ok := b.Carried[k]; !ok || !at.Equal(first.At) {
 			t.Errorf("carried %s = %v, %v; want the first sweep's %v", k, at, ok, first.At)
 		}
 	}
-	if len(b.Carried) != 9 {
-		t.Errorf("carried %v: only the ssh facts", b.Carried)
+	if len(b.Carried) != 4 {
+		t.Errorf("carried %v: only the tunnel's facts", b.Carried)
 	}
-	asOf := "ssh facts as of " + first.At.Format("Jan 2 15:04")
+	asOf := "mcu, eq presets, sources, settings as of " + first.At.Format("Jan 2 15:04")
 	if !strings.Contains(stdout.String(), "\nbaseline saved (kept from earlier sweeps: "+asOf+"); run again") {
 		t.Errorf("the save should say what it kept:\n%s", stdout.String())
 	}
-	sshErr, out = nil, strings.Replace(deviceOut, "vapp=32", "vapp=33", 1)
+	answers = maps.Clone(liveAnswers)
+	answers["VER"] = "30-9a8b7c6d-10"
 	stdout.Reset()
-	Main(context.Background(), cfg, nil, &stdout, &stderr) // 3. the app loader updated rakoit_app
-	if !strings.Contains(stdout.String(), "vendor app       32 → 33") {
-		t.Errorf("the vendor-app update is invisible after an ssh-failed sweep:\n%s", stdout.String())
+	Main(context.Background(), cfg, nil, &stdout, &stderr) // 3. the MCU took an update
+	if !strings.Contains(stdout.String(), "  mcu              29-1d316f0c-10 → 30-9a8b7c6d-10\n") {
+		t.Errorf("the MCU update is invisible after a tunnel-less sweep:\n%s", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), " ago · "+asOf+")\n") {
-		t.Errorf("the header should say the ssh side is compared with older facts:\n%s", stdout.String())
+		t.Errorf("the header should say the tunnel's facts are older:\n%s", stdout.String())
 	}
-	if b := Load(config.SweepPath(cfg)); b == nil || b.Carried != nil || b.VendorApp != "33" {
+	if b := Load(config.SweepPath(cfg)); b == nil || b.Carried != nil || b.Tunnel.MCU != "30" {
 		t.Errorf("read again, nothing is carried: %+v", b)
 	}
 }
 
-// A sweep that reads the box but not all of it — getenv, sqlite3 and the
-// syslog give nothing — keeps those three facts from the sweep before it,
-// dated to that sweep, and takes everything else fresh. The next sweep
-// compares the Spotify pair with the carried one, so a switch made while it
-// was unreadable still shows.
-func TestMainPartlyReadRunCarriesWhatItMissed(t *testing.T) {
+// A tunnel that drops one query keeps that one fact from the sweep before,
+// and only that one: the other answers are this sweep's.
+func TestMainPartlyReadTunnelCarriesWhatItMissed(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
-	out := deviceOut
-	probesFor = func() Probes {
-		return quietLAN(func(context.Context, config.Config, string) (string, error) { return out, nil })
-	}
+	answers := liveAnswers
+	probesFor = func() Probes { return boxProbes(answers, "") }
 	t.Cleanup(func() { probesFor = DefaultProbes })
-	cfg := config.Config{Host: "192.0.2.13", User: "root"}
+	cfg := config.Config{Host: "192.0.2.13"}
 	var stdout, stderr bytes.Buffer
 	Main(context.Background(), cfg, nil, &stdout, &stderr)
 	first := Load(config.SweepPath(cfg))
-	var kept []string
-	for ln := range strings.SplitSeq(deviceOut, "\n") {
-		switch {
-		case strings.HasPrefix(ln, "Spotify"):
-			kept = append(kept, strings.SplitAfter(ln, "=")[0]) // getenv printed no value
-		case strings.HasPrefix(ln, "dirty="):
-			kept = append(kept, "dirty=") // no sqlite3
-		case !strings.HasPrefix(ln, "rot=") && !strings.HasPrefix(ln, "h=") && !strings.HasPrefix(ln, "live="):
-			kept = append(kept, ln) // the syslog unreadable: no files at all
-		}
-	}
-	out = strings.Join(kept, "\n")
+	answers = maps.Clone(liveAnswers)
+	delete(answers, "PEQ")
+	answers["MXV"] = "80"
 	stdout.Reset()
 	if code := Main(context.Background(), cfg, nil, &stdout, &stderr); code != 0 {
 		t.Fatalf("a partly-read sweep exit %d:\n%s", code, stderr.String())
 	}
 	b := Load(config.SweepPath(cfg))
-	if b == nil || b.SpotifyFlags != "0/1" || !b.DirtyKeysOK || b.DirtyKeys != 33 || b.Reconnects != first.Reconnects || !b.ReconnectsSince.Equal(first.ReconnectsSince) {
-		t.Fatalf("the three unread facts should be the first sweep's: %+v", b)
+	if b == nil || b.Tunnel.Presets != liveAnswers["PEQ"] || b.Tunnel.Settings["MXV"] != "80" || len(b.Carried) != 1 || !b.Carried["tunnel.peq"].Equal(first.At) {
+		t.Fatalf("only PEQ should be carried: %+v", b)
 	}
-	if len(b.Carried) != 3 || !b.Carried["spotifyFlags"].Equal(first.At) || !b.Carried["dirtyKeys"].Equal(first.At) || !b.Carried["reconnects"].Equal(first.At) {
-		t.Errorf("carried = %v, want the three, dated %v", b.Carried, first.At)
-	}
-	asOf := "spotify flags, env store, reconnects as of " + first.At.Format("Jan 2 15:04")
-	if !strings.Contains(stdout.String(), "reconnects     syslog not read\n") || !strings.Contains(stdout.String(), "(kept from earlier sweeps: "+asOf+")") {
-		t.Errorf("the report is this sweep's, the save names what it kept:\n%s", stdout.String())
-	}
-	out = strings.Replace(deviceOut, "SpotifyEnabled=0\nSpotifyProEnabled=1", "SpotifyEnabled=1\nSpotifyProEnabled=0", 1)
-	stdout.Reset()
-	Main(context.Background(), cfg, nil, &stdout, &stderr)
-	if !strings.Contains(stdout.String(), " ago · "+asOf+")\n") || !strings.Contains(stdout.String(), "spotify flags    0/1 → 1/0") {
-		t.Errorf("the switch made while getenv was unreadable is invisible:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), "  no answer      PEQ\n") || !strings.Contains(stdout.String(), "  nothing changed\n") {
+		t.Errorf("the report is this sweep's, and a setting is not a change:\n%s", stdout.String())
 	}
 }
 
-// Listeners in the Linux ephemeral range move on every start — rakoit_app's
-// second tcp listener went 43761 → 33719 → 46835, and three udp sockets do the
-// same — so Diff compares the lists without them. A fixed port inside the
-// range (dmr's tcp 49494) and every port below it still count, a read list of
-// nothing but dynamic ports is still an answer, and the report still prints
-// the whole list.
-func TestDiffIgnoresDynamicListeners(t *testing.T) {
-	before := Report{TCP: []int{22, 23, 80, 2018, 2345, 5037, 5555, 7000, 7777, 9095, 43761, 49494},
-		UDP: []int{68, 123, 1800, 1900, 3721, 5353, 38001, 41234, 52000}}
-	after := Report{TCP: []int{22, 23, 80, 2018, 2345, 5037, 5555, 7000, 7777, 9095, 33719, 49494},
-		UDP: []int{68, 123, 1800, 1900, 3721, 5353, 33333, 44444, 60999}}
-	if ch := Diff(before, after); len(ch) != 0 {
-		t.Errorf("a per-boot dynamic port reads as a change: %+v", ch)
-	}
-	moved := after
-	moved.TCP = []int{22, 23, 80, 2018, 2345, 5037, 5555, 7000, 7777, 9096, 33719}
-	ch := Diff(before, moved)
-	if len(ch) != 1 || ch[0].Field != "tcp listeners" || ch[0].Was != "22 23 80 2018 2345 5037 5555 7000 7777 9095 49494" || ch[0].Now != "22 23 80 2018 2345 5037 5555 7000 7777 9096" {
-		t.Errorf("fixed ports moved = %+v", ch)
-	}
-	bare := after
-	bare.UDP = []int{40000}
-	if ch := Diff(before, bare); len(ch) != 1 || ch[0].Field != "udp listeners" || ch[0].Now != "none fixed" {
-		t.Errorf("an all-dynamic list = %+v", ch)
-	}
-	var out bytes.Buffer
-	Write(&out, after, &before, time.Now())
-	if !strings.Contains(out.String(), "tcp            22 23 80 2018 2345 5037 5555 7000 7777 9095 33719 49494") {
-		t.Errorf("the report must print the whole list:\n%s", out.String())
-	}
-}
-
-// getenv answering for neither flag, or for one, is a missing read, not a
-// state: the pair is left unset, so it cannot diff as a flag change.
-func TestPartialSpotifyFlagsAreNotAChange(t *testing.T) {
-	prev := Report{SpotifyFlags: "0/1"}
-	for _, in := range []string{
-		"SpotifyEnabled=\nSpotifyProEnabled=\n",
-		"SpotifyEnabled=0\nSpotifyProEnabled=\n",
-		"SpotifyEnabled=\nSpotifyProEnabled=1\n",
-		"SpotifyProEnabled=1\n",
-	} {
-		cur := Report{Hashes: map[string]string{}}
-		parseDevice(&cur, in)
-		if ch := Diff(prev, cur); cur.SpotifyFlags != "" || len(ch) != 0 {
-			t.Errorf("%q: flags %q diff as %+v", in, cur.SpotifyFlags, ch)
-		}
-	}
-	cur := Report{Hashes: map[string]string{}}
-	parseDevice(&cur, "SpotifyProEnabled=1\nSpotifyEnabled=0\n")
-	if cur.SpotifyFlags != "0/1" {
-		t.Errorf("flags in either order = %q, want 0/1", cur.SpotifyFlags)
-	}
-}
-
-// Every outside string reaches the report control-stripped, as in the TUI
-// (SetOTA, Note): ssh's stderr, the vendor's version, package URL and error,
-// and the CDN's status line and headers — Go's HTTP client passes a status
-// line's ESC and a header's bidi override through as-is. The HEAD still asks
-// for the package as the vendor named it.
-func TestVendorAndSSHStringsAreControlStripped(t *testing.T) {
+// Every outside string reaches the report control-stripped: the tunnel's
+// answers, the description, the app index, the scan's error, the vendor's
+// version, package URL and error, and the CDN's status line and headers — Go's
+// HTTP client passes a status line's ESC and a header's bidi override through
+// as-is. The HEAD still asks for the package as the vendor named it.
+func TestOutsideStringsAreControlStripped(t *testing.T) {
 	var reply, headed string
 	manifest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Write([]byte(reply))
 	}))
 	defer manifest.Close()
-	offer := `{"errorCode":1000,"errorString":"SUCCESS","version":"AR241CE_9999\u001b]8;;https://evil.example/\u0007","url":"https://cdn.example/x\u202e.swu"}`
+	offer := `{"errorCode":1000,"errorString":"SUCCESS","version":"AR241CP_9999\u001b]8;;https://evil.example/\u0007","url":"https://cdn.example/x\u202e.swu"}`
+	hostile := map[string]string{}
+	for code, v := range liveAnswers {
+		hostile[code] = v + "\x1b[2J\u202e\u2028"
+	}
 	for _, c := range []struct {
 		name  string
 		reply string
@@ -794,13 +1136,20 @@ func TestVendorAndSSHStringsAreControlStripped(t *testing.T) {
 		{"vendor error", `{"errorCode":7,"errorString":"busy\u001b[2J\u2028"}`, nil},
 	} {
 		reply = c.reply
-		pr := quietLAN(func(context.Context, config.Config, string) (string, error) {
-			return "", errors.New("ssh: \x1b[2Jbanner")
-		})
-		pr.LSSDP = func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-			return discovery.LSSDPInfo{FW: "AR241CE_8530.23.2"}, true
+		pr := boxProbes(hostile, manifest.URL)
+		pr.Ports = func(context.Context, string) ([]int, bool, error) {
+			return []int{22}, false, errors.New("cut \x1b[2J off\u2028")
 		}
-		pr.Manifest, pr.Manifest0, pr.Head = workers.OTACheck, manifest.URL, c.head
+		pr.UPnP = func(context.Context, string) ([]byte, error) {
+			return []byte(strings.Replace(upnpXML, "<manufacturer>Arylic", "<manufacturer>Arylic\u202e[31m\u2028", 1)), nil
+		}
+		pr.AppIndex = func(context.Context) ([]byte, error) {
+			return []byte(`[{"name":"rakoit_app","md5":"b1\u001b[2J","version":"42\u202e"}]`), nil
+		}
+		pr.LSSDP = func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
+			return discovery.LSSDPInfo{FW: "AR241CP_8747.29.2", Name: "Living\x1b[31m"}, true
+		}
+		pr.Manifest, pr.Head = workers.OTACheck, c.head
 		r := Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
 		var out bytes.Buffer
 		Write(&out, r, nil, time.Now())
@@ -815,23 +1164,13 @@ func TestVendorAndSSHStringsAreControlStripped(t *testing.T) {
 
 // The report never claims a save that did not happen: Main says "baseline
 // saved" only after it wrote one — never under --no-save, an interrupt or a
-// failed save — and never into --json's stdout. A sweep that lost ssh still
-// saves, and its claim says which facts the baseline kept, as of when.
+// failed save — and never into --json's stdout. A sweep that lost a read
+// still saves, and its claim says which facts the baseline kept, as of when.
 func TestMainClaimsOnlyTheSaveItMade(t *testing.T) {
-	var sshErr error
-	probesFor = func() Probes {
-		return quietLAN(func(ctx context.Context, _ config.Config, _ string) (string, error) {
-			if err := ctx.Err(); err != nil {
-				return "", err
-			}
-			if sshErr != nil {
-				return "", sshErr
-			}
-			return deviceOut, nil
-		})
-	}
+	answers := liveAnswers
+	probesFor = func() Probes { return boxProbes(answers, "") }
 	t.Cleanup(func() { probesFor = DefaultProbes })
-	cfg := config.Config{Host: "192.0.2.13", User: "root"}
+	cfg := config.Config{Host: "192.0.2.13"}
 	run := func(ctx context.Context, args ...string) (string, string) {
 		var stdout, stderr bytes.Buffer
 		Main(ctx, cfg, args, &stdout, &stderr)
@@ -842,15 +1181,13 @@ func TestMainClaimsOnlyTheSaveItMade(t *testing.T) {
 
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
 	for _, c := range []struct {
-		name   string
-		ctx    context.Context
-		sshErr error
-		args   []string
+		name string
+		ctx  context.Context
+		args []string
 	}{
-		{"--no-save", context.Background(), nil, []string{"--no-save"}},
-		{"interrupted", interrupted, nil, nil},
+		{"--no-save", context.Background(), []string{"--no-save"}},
+		{"interrupted", interrupted, nil},
 	} {
-		sshErr = c.sshErr
 		stdout, _ := run(c.ctx, c.args...)
 		if Load(config.SweepPath(cfg)) != nil {
 			t.Fatalf("%s saved a baseline", c.name)
@@ -860,21 +1197,20 @@ func TestMainClaimsOnlyTheSaveItMade(t *testing.T) {
 		}
 	}
 
-	sshErr = nil
 	stdout, _ := run(context.Background())
 	first := Load(config.SweepPath(cfg))
 	if first == nil || !strings.HasSuffix(stdout, "first sweep — nothing to compare with yet\n\nbaseline saved; run again after a suspected update\n") {
 		t.Errorf("a saved sweep should end by saying so:\n%s", stdout)
 	}
-	sshErr = errors.New("ssh: Connection timed out")
+	answers = nil
 	stdout, _ = run(context.Background())
-	if !strings.HasSuffix(stdout, "\n\nbaseline saved (kept from earlier sweeps: ssh facts as of "+first.At.Format("Jan 2 15:04")+"); run again after a suspected update\n") {
-		t.Errorf("an ssh-failed sweep should save and say what it kept:\n%s", stdout)
+	if !strings.HasSuffix(stdout, "\n\nbaseline saved (kept from earlier sweeps: mcu, eq presets, sources, settings as of "+first.At.Format("Jan 2 15:04")+"); run again after a suspected update\n") {
+		t.Errorf("a tunnel-less sweep should save and say what it kept:\n%s", stdout)
 	}
-	sshErr = nil
+	answers = liveAnswers
 	stdout, _ = run(context.Background(), "--json")
 	var r Report
-	if err := json.Unmarshal([]byte(stdout), &r); err != nil || r.Build != "AR241CE_8530" {
+	if err := json.Unmarshal([]byte(stdout), &r); err != nil || r.Tunnel.MCU != "29" {
 		t.Errorf("--json stdout must stay the bare report (%v):\n%s", err, stdout)
 	}
 
@@ -890,67 +1226,36 @@ func TestMainClaimsOnlyTheSaveItMade(t *testing.T) {
 	}
 }
 
-// With ssh down the build comes from LSSDP and the vendor IS asked; the
-// verdict line names that build, not the report's empty ssh-side one.
-func TestVerdictNamesTheBuildAsked(t *testing.T) {
-	pr := quietLAN(func(context.Context, config.Config, string) (string, error) {
-		return "", errors.New("ssh: Connection timed out")
-	})
-	pr.LSSDP = func(context.Context, string, time.Duration) (discovery.LSSDPInfo, bool) {
-		return discovery.LSSDPInfo{FW: "AR241CE_8530.23.2"}, true
-	}
-	pr.Manifest = func(_ context.Context, _, build string) protocol.OTAInfo {
-		return protocol.OTAInfo{Asked: build, UpToDate: true}
-	}
-	pr.Manifest0 = "https://manifest.example/v1"
-	r := Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
-	var out bytes.Buffer
-	Write(&out, r, nil, time.Now())
-	if r.Manifest.Build != "AR241CE_8530" || !strings.Contains(out.String(), "manifest       no update for AR241CE_8530\n") {
-		t.Errorf("verdict line lost the build it asked about (%q):\n%s", r.Manifest.Build, out.String())
-	}
-	pr.Manifest = func(_ context.Context, _, build string) protocol.OTAInfo {
-		return protocol.OTAInfo{Asked: build, Offered: "AR241CE_9000"}
-	}
-	r = Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
-	out.Reset()
-	Write(&out, r, nil, time.Now())
-	if !strings.Contains(out.String(), "manifest       AR241CE_9000 offered for AR241CE_8530\n") {
-		t.Errorf("offer line lost the build it asked about:\n%s", out.String())
-	}
-}
+// ---- baseline ----
 
-// A count the box did not give prints as unread, never as a measured zero:
-// with no sqlite3 the env-store count is empty, with no syslog the reconnect
-// history is. A count the box did give — zero included — still prints.
-func TestUnreadCountsAreNotZero(t *testing.T) {
-	var kept []string
-	for ln := range strings.SplitSeq(deviceOut, "\n") {
-		switch {
-		case strings.HasPrefix(ln, "dirty="):
-			kept = append(kept, "dirty=")
-		case !strings.HasPrefix(ln, "rot=") && !strings.HasPrefix(ln, "h=") && !strings.HasPrefix(ln, "live="):
-			kept = append(kept, ln)
-		}
+func TestBaselineRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sweep-test.json")
+	if Load(path) != nil {
+		t.Error("missing baseline should load as nil")
 	}
-	r := Report{At: time.Now(), Hashes: map[string]string{}}
-	parseDevice(&r, strings.Join(kept, "\n"))
-	var out bytes.Buffer
-	Write(&out, r, nil, time.Now())
-	for _, want := range []string{"env store      not read\n", "reconnects     syslog not read\n"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("report missing %q:\n%s", want, out.String())
-		}
+	r := fullReport(time.Date(2026, 10, 1, 15, 38, 0, 0, time.Local))
+	if err := Save(path, r); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "0 keys set at runtime") {
-		t.Errorf("an unread count prints as zero:\n%s", out.String())
+	if got := Load(path); got == nil || mustJSON(t, *got) != mustJSON(t, r) {
+		t.Errorf("round trip = %+v", got)
 	}
-	r = Report{At: time.Now(), Hashes: map[string]string{}}
-	parseDevice(&r, "dirty=0\n")
-	out.Reset()
-	Write(&out, r, nil, time.Now())
-	if !r.DirtyKeysOK || !strings.Contains(out.String(), "env store      0 keys set at runtime\n") {
-		t.Errorf("a measured zero must still print:\n%s", out.String())
+	// garbage is nil, never a panic
+	if err := Save(path, Report{}); err != nil {
+		t.Fatal(err)
+	}
+	if Load(path) != nil {
+		t.Error("a baseline with no timestamp should load as nil")
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if Load(path) != nil || Load("") != nil {
+		t.Error("a garbled baseline should load as nil")
+	}
+	if Save("", r) == nil {
+		t.Error("saving with no state dir should fail loudly")
 	}
 }
 
@@ -961,7 +1266,7 @@ func TestUnreadCountsAreNotZero(t *testing.T) {
 func TestSaveReplacesTheBaselineAtomically(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sweep-test.json")
-	old := Report{At: time.Date(2026, 9, 12, 15, 38, 0, 0, time.Local), Host: "h", Build: "AR241CE_8530"}
+	old := fullReport(time.Date(2026, 9, 12, 15, 38, 0, 0, time.Local))
 	if err := Save(path, old); err != nil {
 		t.Fatal(err)
 	}
@@ -971,15 +1276,15 @@ func TestSaveReplacesTheBaselineAtomically(t *testing.T) {
 	}
 	defer held.Close()
 	next := old
-	next.At, next.Build = old.At.Add(time.Hour), "AR241CE_9000"
+	next.At, next.Tunnel.Ver = old.At.Add(time.Hour), "30-9a8b7c6d-10"
 	if err := Save(path, next); err != nil {
 		t.Fatal(err)
 	}
 	var was Report
-	if err := json.NewDecoder(held).Decode(&was); err != nil || was.Build != old.Build {
+	if err := json.NewDecoder(held).Decode(&was); err != nil || was.Tunnel.Ver != old.Tunnel.Ver {
 		t.Errorf("the old baseline was rewritten in place: %+v (%v)", was, err)
 	}
-	if got := Load(path); got == nil || got.Build != next.Build {
+	if got := Load(path); got == nil || got.Tunnel.Ver != next.Tunnel.Ver {
 		t.Errorf("new baseline = %+v", got)
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
@@ -994,69 +1299,77 @@ func TestSaveReplacesTheBaselineAtomically(t *testing.T) {
 	}
 }
 
-// fullReport is a sweep that read every fact once, at at, of a box that has
-// been up since its Sep 4 power-on.
+// fullReport is a sweep that read every fact once, at at.
 func fullReport(at time.Time) Report {
 	return Report{At: at, Host: "192.0.2.13",
-		Build: "AR241CE_8530", BuildDate: "2026-01-12", SVN: "318", Firmware: "AR241CE_8530", MCU: "23", Kernel: "5.15.137",
-		VendorApp: "42", VendorMD5: "b1dadf70", Hashes: map[string]string{"luciserver": "465c", "rakoit_app": "6ab0"},
-		BootAt: time.Unix(1788544542, 0), Reboot: "cold_boot", Uptime: int(at.Sub(time.Unix(1788544542, 0)).Seconds()),
-		TCP: []int{22, 80, 9095}, UDP: []int{1800}, SpotifyFlags: "0/1", Running: []string{"spotifymusicpro"},
-		DirtyKeys: 33, DirtyKeysOK: true,
-		Reconnects: 950, ReconnectsSince: at.Add(-21 * 24 * time.Hour), SyslogFiles: 49, Last24h: 41,
-		ReconnectsByDay: map[string]int{"2026-09-22": 42}, OTALast: "NO_UPDATE", OTAAt: at.Add(-time.Hour),
-		LSSDP:    LSSDPFacts{OK: true, FW: "AR241CE_8530.23.2", State: "S", NetMode: "ETH0", Name: "Living"},
-		ZeroConf: ZCFacts{OK: true, Port: 9095, LibraryVersion: "3.211.130", Version: "2.10.0"},
-		Manifest: ManifestFacts{Asked: true, Build: "AR241CE_8530", UpToDate: true},
-		Bundle:   BundleFacts{None: true},
+		Ports: PortFacts{OK: true, Open: livePorts, DebugChecked: true},
+		Tunnel: TunnelFacts{OK: true, MCU: "29", Ver: "29-1d316f0c-10", Presets: liveAnswers["PEQ"], Sources: liveAnswers["LST"],
+			Settings: map[string]string{"STA": liveAnswers["STA"], "SRC": "NET", "MXV": "100"}},
+		UPnP: UPnPFacts{OK: true, FriendlyName: "Living", Manufacturer: "Arylic", ModelName: "LP10", ModelNumber: "AR241CP",
+			Services: []string{"urn:schemas-upnp-org:service:AVTransport:1"}},
+		LSSDP:     LSSDPFacts{OK: true, FW: "AR241CP_8747.29.2", State: "S", NetMode: "ETH0", Name: "Living"},
+		ZeroConf:  ZCFacts{OK: true, Port: 9095, LibraryVersion: "3.211.130", Version: "2.10.0"},
+		VendorApp: VendorAppFacts{OK: true, Name: "rakoit_app", Version: "42", MD5: "b1dadf706b06ee96e73eee90a65d53b2"},
+		Manifest:  ManifestFacts{Asked: true, Build: "AR241CP_8747", UpToDate: true},
+		Bundle:    BundleFacts{Build: "AR241CP_8747", ETag: "6abcc3dc-5561400"},
 	}
+}
+
+// blankReport is a sweep at at that read nothing: every probe failed.
+func blankReport(at time.Time) Report {
+	return Report{At: at, Host: "192.0.2.13",
+		Ports:     PortFacts{Err: "connect: no route to host"},
+		Tunnel:    TunnelFacts{Err: errSilentTunnel.Error()},
+		UPnP:      UPnPFacts{Err: "connection refused"},
+		ZeroConf:  ZCFacts{Port: 9095},
+		VendorApp: VendorAppFacts{Err: "cdn unreachable"},
+		Manifest:  ManifestFacts{Asked: true, Err: "vendor unreachable"},
+		Bundle:    BundleFacts{Err: "vendor unreachable"}}
 }
 
 // Every fact a sweep did not read comes from the baseline, dated to the sweep
 // that read it; every fact it did read is its own, and nothing is dated. A
 // fact neither read stays unread.
 func TestMergeKeepsWhatASweepCouldNotRead(t *testing.T) {
-	t0 := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 	prev := fullReport(t0)
-	blank := Report{At: t0.Add(24 * time.Hour), Host: "192.0.2.13", SSHErr: "ssh: Connection timed out", Hashes: map[string]string{},
-		ZeroConf: ZCFacts{Port: 9095}, Manifest: ManifestFacts{Asked: true, Err: "vendor unreachable"}, Bundle: BundleFacts{Err: "vendor unreachable"}}
+	blank := blankReport(t0.Add(24 * time.Hour))
 	m := merge(&prev, blank)
+	// the tunnel's status is the sweep's own; every fact is the baseline's
 	back := m
-	back.At, back.SSHErr, back.Carried = prev.At, "", nil
+	back.At, back.Carried = prev.At, nil
+	back.Tunnel.OK, back.Tunnel.Err = true, ""
 	if b1, b2 := mustJSON(t, back), mustJSON(t, prev); b1 != b2 {
 		t.Errorf("a sweep that read nothing should keep every fact:\n got %s\nwant %s", b1, b2)
 	}
-	want := []string{"bundle", "dirtyKeys", "hashes.luciserver", "hashes.rakoit_app", "identity", "lssdp", "manifest", "mcu",
-		"otaLast", "reconnects", "spotifyFlags", "vendorApp", "zeroconf"}
-	if got := strings.Join(slices.Sorted(maps.Keys(m.Carried)), " "); got != strings.Join(want, " ") {
-		t.Errorf("carried %s\n   want %s", got, strings.Join(want, " "))
+	want := "appIndex bundle lssdp manifest ports tunnel.lst tunnel.peq tunnel.settings tunnel.ver upnp zeroconf"
+	if got := strings.Join(slices.Sorted(maps.Keys(m.Carried)), " "); got != want {
+		t.Errorf("carried %s\n   want %s", got, want)
 	}
 	for k, at := range m.Carried {
 		if !at.Equal(t0) {
 			t.Errorf("carried %s dated %v, want %v", k, at, t0)
 		}
 	}
-	if !m.At.Equal(blank.At) || m.SSHErr != blank.SSHErr {
-		t.Errorf("the merge is this sweep's: at %v, ssh %q", m.At, m.SSHErr)
+	if !m.At.Equal(blank.At) || m.Tunnel.OK || m.Tunnel.Err == "" {
+		t.Errorf("the merge is this sweep's: at %v, tunnel %+v", m.At, m.Tunnel)
 	}
-	if len(blank.Hashes) != 0 {
-		t.Errorf("merging wrote into the fresh sweep's hashes: %v", blank.Hashes)
+	m.Tunnel.Settings["MXV"] = "5"
+	if prev.Tunnel.Settings["MXV"] != "100" {
+		t.Error("the merge shares its settings with the baseline it came from")
 	}
 	// read again: all of it fresh, nothing dated
 	next := fullReport(t0.Add(48 * time.Hour))
-	next.VendorApp = "43"
-	if m2 := merge(&m, next); m2.Carried != nil || m2.VendorApp != "43" || !m2.At.Equal(next.At) {
+	next.VendorApp.Version = "43"
+	if m2 := merge(&m, next); m2.Carried != nil || m2.VendorApp.Version != "43" || !m2.At.Equal(next.At) {
 		t.Errorf("a full sweep carries nothing: %+v", m2.Carried)
 	}
 	// neither read it: nothing to carry
-	if m3 := merge(&blank, blank); m3.Carried != nil || m3.Build != "" {
+	if m3 := merge(&blank, blank); m3.Carried != nil || m3.Tunnel.Ver != "" {
 		t.Errorf("an unread fact came from nowhere: %+v", m3)
 	}
-	if m4 := merge(nil, blank); m4.Carried != nil || m4.Hashes == nil {
+	if m4 := merge(nil, blank); m4.Carried != nil {
 		t.Errorf("no baseline: %+v", m4)
-	}
-	if m5 := merge(nil, Report{At: t0}); m5.Hashes == nil {
-		t.Error("a merged baseline always has a hash map")
 	}
 }
 
@@ -1079,18 +1392,18 @@ func TestCarriedTwiceKeepsItsFirstDate(t *testing.T) {
 	if err := Save(path, merge(nil, fullReport(t0))); err != nil {
 		t.Fatal(err)
 	}
-	for day := 1; day <= 2; day++ { // two sweeps in a row lose ssh; the LAN answers
-		lost := Report{At: t0.Add(time.Duration(day) * 24 * time.Hour), SSHErr: "ssh: Connection timed out", Hashes: map[string]string{},
-			LSSDP: LSSDPFacts{OK: true, FW: "AR241CE_8530.23.2", NetMode: "ETH0", State: []string{"", "P", "S"}[day]}}
+	for day := 1; day <= 2; day++ { // two sweeps in a row lose all but LSSDP
+		lost := blankReport(t0.Add(time.Duration(day) * 24 * time.Hour))
+		lost.LSSDP = LSSDPFacts{OK: true, FW: "AR241CP_8747.29.2", NetMode: "ETH0", State: []string{"", "P", "S"}[day]}
 		if err := Save(path, merge(Load(path), lost)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	b := Load(path)
-	if b == nil || !b.At.Equal(t0.Add(48*time.Hour)) || b.Build != "AR241CE_8530" || b.LSSDP.State != "S" {
-		t.Fatalf("after two ssh-less sweeps: %+v", b)
+	if b == nil || !b.At.Equal(t0.Add(48*time.Hour)) || b.Tunnel.MCU != "29" || b.LSSDP.State != "S" {
+		t.Fatalf("after two blank sweeps: %+v", b)
 	}
-	for _, k := range []string{"identity", "dirtyKeys", "reconnects", "hashes.rakoit_app"} {
+	for _, k := range []string{"ports", "tunnel.ver", "upnp", "appIndex"} {
 		if !b.Carried[k].Equal(t0) {
 			t.Errorf("carried %s dated %v, want the sweep that read it, %v", k, b.Carried[k], t0)
 		}
@@ -1098,7 +1411,7 @@ func TestCarriedTwiceKeepsItsFirstDate(t *testing.T) {
 	if _, ok := b.Carried["lssdp"]; ok {
 		t.Error("lssdp was read each time: it is not carried")
 	}
-	if got := carriedNote(*b); got != "ssh facts, zeroconf, manifest, newest bundle as of Sep 20 10:00" {
+	if got := carriedNote(*b); got != "tcp ports, mcu, eq presets, sources, settings, upnp, zeroconf, vendor app, manifest, newest bundle as of Sep 20 10:00" {
 		t.Errorf("note = %q", got)
 	}
 	if m := merge(b, fullReport(t0.Add(72*time.Hour))); m.Carried != nil {
@@ -1108,22 +1421,23 @@ func TestCarriedTwiceKeepsItsFirstDate(t *testing.T) {
 
 // Diff compares the fresh sweep with the merged baseline, so what the last
 // sweep could not read is compared with its last known value: a vendor-app
-// update behind one lost ssh still shows, where the hollow report it merged
-// over would hide it. The report's header says which facts are older.
+// update behind one failed fetch still shows, where the hollow report it
+// merged over would hide it. The report's header says which facts are older.
 func TestDiffAgainstMergedBaseline(t *testing.T) {
 	t0 := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
 	read := fullReport(t0)
-	lost := Report{At: t0.Add(24 * time.Hour), SSHErr: "ssh: Connection timed out", Hashes: map[string]string{},
-		LSSDP: LSSDPFacts{OK: true, FW: "AR241CE_8530.23.2", NetMode: "WLAN0"}}
+	lost := fullReport(t0.Add(24 * time.Hour))
+	lost.VendorApp = VendorAppFacts{Err: "cdn unreachable"}
+	lost.LSSDP.NetMode = "WLAN0"
 	base := merge(&read, lost)
 	now := fullReport(t0.Add(48 * time.Hour))
-	now.VendorApp, now.Hashes = "43", map[string]string{"luciserver": "465c", "rakoit_app": "9f1b"}
+	now.VendorApp.Version, now.VendorApp.MD5 = "43", "9f1b"
 	now.LSSDP.NetMode = "WLAN0"
 	var fields []string
 	for _, c := range Diff(base, now) {
 		fields = append(fields, c.Field+" "+c.Was+" → "+c.Now)
 	}
-	if got := strings.Join(fields, "; "); got != "vendor app 42 → 43; sha256 rakoit_app 6ab0 → 9f1b" {
+	if got := strings.Join(fields, "; "); got != "vendor app 42 → 43; vendor app md5 b1dadf706b06ee96e73eee90a65d53b2 → 9f1b" {
 		t.Errorf("diff against the merge = %q (lssdp was fresh: WLAN0 both times)", got)
 	}
 	if ch := Diff(lost, now); len(ch) != 0 {
@@ -1131,44 +1445,71 @@ func TestDiffAgainstMergedBaseline(t *testing.T) {
 	}
 	var out bytes.Buffer
 	Write(&out, now, &base, now.At)
-	if !strings.Contains(out.String(), "since the last sweep (2026-09-22 10:00, 1d 0h ago · ssh facts, zeroconf, manifest, newest bundle as of Sep 21 10:00)\n") {
+	if !strings.Contains(out.String(), "since the last sweep (2026-09-22 10:00, 1d 0h ago · vendor app as of Sep 21 10:00)\n") {
 		t.Errorf("header:\n%s", out.String())
 	}
 }
 
-// The header's note groups the older facts by the sweep that read them: the
-// ssh-side ones sharing the identity's date fold into "ssh facts", the rest
-// are named, in report order. A baseline with no ssh facts at all says so,
-// since its "nothing changed" never saw the box's inside.
+// Diff names every firmware-side fact that moved, in report order, and none
+// that a probe failed to read.
+func TestDiffNamesWhatMoved(t *testing.T) {
+	base := fullReport(time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC))
+	if ch := Diff(base, base); len(ch) != 0 {
+		t.Errorf("identical sweeps differ: %+v", ch)
+	}
+	next := fullReport(base.At.Add(time.Hour))
+	next.Ports.Open = []int{22, 80, 2018}
+	next.Tunnel.Ver, next.Tunnel.Presets, next.Tunnel.Sources = "30-9a8b7c6d-10", "0@Flat", "NET,BT"
+	next.Tunnel.Settings = map[string]string{"MXV": "60"}
+	next.UPnP.ModelNumber, next.UPnP.Services = "AR241CQ", []string{"urn:schemas-upnp-org:service:RenderingControl:1"}
+	next.LSSDP.FW, next.LSSDP.NetMode = "AR241CP_9000.30.2", "WLAN0"
+	next.ZeroConf.Port, next.ZeroConf.LibraryVersion = 9096, "3.203.239"
+	next.VendorApp.Version, next.VendorApp.MD5 = "43", "9f1b"
+	next.Manifest = ManifestFacts{Asked: true, Offered: "AR241CP_9100"}
+	next.Bundle = BundleFacts{Build: "AR241CP_9100", ETag: "ffff"}
+	var fields []string
+	for _, c := range Diff(base, next) {
+		fields = append(fields, c.Field)
+	}
+	want := "tcp ports mcu eq presets sources upnp model upnp services lssdp firmware lssdp netmode zeroconf port spotify eSDK vendor app vendor app md5 vendor verdict newest bundle bundle etag"
+	if got := strings.Join(fields, " "); got != want {
+		t.Errorf("changed fields:\n got %s\nwant %s", got, want)
+	}
+	unanswered := next
+	unanswered.Ports, unanswered.Tunnel = PortFacts{Err: "x"}, TunnelFacts{Err: "x"}
+	unanswered.UPnP.OK, unanswered.LSSDP.OK, unanswered.ZeroConf.OK = false, false, false
+	unanswered.VendorApp = VendorAppFacts{Err: "x"}
+	unanswered.Manifest.Asked = false
+	unanswered.Bundle.Err = "cdn unreachable"
+	if ch := Diff(base, unanswered); len(ch) != 0 {
+		t.Errorf("unanswered probes reported as changes: %+v", ch)
+	}
+}
+
+// The header's note groups the older facts by the sweep that read them, in
+// report order; a key this version does not know — one the ssh sweeps wrote —
+// is ignored.
 func TestCarriedNoteGroupsByDate(t *testing.T) {
 	d1 := time.Date(2026, 9, 21, 9, 0, 0, 0, time.UTC)
 	d2 := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
-	b := Report{At: d2.Add(24 * time.Hour), Hashes: map[string]string{"airplaydemo": "a", "luciserver": "b"}, Carried: map[string]time.Time{
-		"identity": d2, "mcu": d2, "hashes.luciserver": d2, "dirtyKeys": d1, "hashes.airplaydemo": d1, "lssdp": d2, "bundle": d1,
-		"retired": d1, // a key this version does not know is ignored
+	b := Report{At: d2.Add(24 * time.Hour), Carried: map[string]time.Time{
+		"tunnel.ver": d2, "tunnel.peq": d2, "upnp": d1, "lssdp": d2, "bundle": d1,
+		"identity": d1, "hashes.luciserver": d2, // the ssh sweeps' keys
 	}}
-	if got := carriedNote(b); got != "ssh facts, lssdp as of Sep 22 10:00 · sha256 airplaydemo, env store, newest bundle as of Sep 21 09:00" {
+	if got := carriedNote(b); got != "mcu, eq presets, lssdp as of Sep 22 10:00 · upnp, newest bundle as of Sep 21 09:00" {
 		t.Errorf("note = %q", got)
-	}
-	delete(b.Carried, "identity")
-	if got := carriedNote(b); got != "mcu, sha256 luciserver, lssdp as of Sep 22 10:00 · sha256 airplaydemo, env store, newest bundle as of Sep 21 09:00" {
-		t.Errorf("without the identity = %q", got)
 	}
 	if got := carriedNote(Report{At: d2}); got != "" {
 		t.Errorf("nothing carried = %q", got)
 	}
-	var out bytes.Buffer
-	prev := Report{At: d1, LSSDP: LSSDPFacts{OK: true, FW: "AR241CE_8530.23.2"}}
-	Write(&out, fullReport(d2), &prev, d2)
-	if !strings.Contains(out.String(), "since the last sweep (2026-09-21 09:00, 1d 1h ago · no ssh facts to compare with)\n") {
-		t.Errorf("header:\n%s", out.String())
-	}
 }
 
-// A baseline written before the merge — no carried dates, and the reconnects
-// without the per-day series — still loads, merges and diffs: all of it dates
-// from its own sweep.
-func TestLoadAcceptsABaselineWithoutCarried(t *testing.T) {
+// The baseline the ssh sweeps saved on 2026-09-23 still loads — its
+// "vendorApp" and "mcu" were strings, which the new report must not try to
+// read into a struct — and still compares: the facts both sweeps have
+// (LSSDP, ZeroConf, the vendor's manifest and bundle) diff, the new ones are
+// named as read for the first time, and nothing is invented for them.
+func TestLoadAcceptsTheSSHEraBaseline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sweep-old.json")
 	const old = `{
   "at": "2026-09-23T19:05:12.123456-03:00",
@@ -1180,130 +1521,103 @@ func TestLoadAcceptsABaselineWithoutCarried(t *testing.T) {
   "mcu": "23",
   "kernel": "5.15.137",
   "vendorApp": "42",
-  "vendorMd5": "b1dadf70",
+  "vendorMd5": "b1dadf706b06ee96e73eee90a65d53b2",
   "hashes": {"luciserver": "465c90d4"},
   "bootAt": "2026-09-04T14:55:42-03:00",
   "reboot": "cold_boot",
   "uptime": 1656570,
-  "tcp": [22, 80, 9095],
-  "udp": [1800],
+  "tcp": [22, 23, 80, 2018, 2345, 5037, 5555, 7000, 7777, 9095, 46835, 49494],
+  "udp": [68, 123, 1800, 1900, 3721, 5353],
   "spotifyFlags": "0/1",
-  "running": ["spotifymusicpro"],
+  "running": ["airplaydemo", "bluetoothd", "dmr", "spotifymusicpro"],
   "dirtyKeys": 33,
   "dirtyKeysOk": true,
   "reconnects": 950,
   "reconnectsSince": "2026-09-01T22:20:00-03:00",
   "syslogFiles": 49,
+  "reconnectsLast24h": 41,
+  "reconnectsByDay": {"2026-09-22": 42},
   "otaLast": "NO_UPDATE",
   "otaAt": "2026-09-23T14:56:15-03:00",
   "lssdp": {"ok": true, "fw": "AR241CE_8530.23.2", "state": "S", "netMode": "ETH0", "name": "Living"},
   "zeroconf": {"ok": true, "port": 9095, "libraryVersion": "3.211.130", "version": "2.10.0"},
   "manifest": {"asked": true, "build": "AR241CE_8530", "upToDate": true, "offered": ""},
-  "bundle": {"build": "", "url": "", "size": 0, "lastModified": "", "etag": "", "none": true}
+  "bundle": {"build": "", "url": "", "size": 0, "lastModified": "", "etag": "", "none": true},
+  "carried": {"identity": "2026-09-22T10:00:00-03:00"}
 }
 `
 	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	b := Load(path)
-	if b == nil || b.Carried != nil || b.Build != "AR241CE_8530" || b.Reconnects != 950 || b.ReconnectsByDay != nil || !b.Bundle.None {
-		t.Fatalf("an old baseline = %+v", b)
+	if b == nil || !b.LSSDP.OK || b.LSSDP.FW != "AR241CE_8530.23.2" || !b.ZeroConf.OK || !b.Manifest.UpToDate || !b.Bundle.None {
+		t.Fatalf("the ssh-era baseline = %+v", b)
 	}
-	cur := Report{At: b.At.Add(time.Hour), SSHErr: "ssh: Connection timed out", Hashes: map[string]string{}}
-	if m := merge(b, cur); !m.Carried["identity"].Equal(b.At) || m.Reconnects != 950 || m.VendorApp != "42" {
-		t.Errorf("merged over an old baseline: %+v", m)
+	if b.Ports.OK || b.Tunnel.MCU != "" || b.VendorApp.Version != "" || b.UPnP.OK {
+		t.Errorf("the old ssh facts leaked into the new ones: %+v", b)
 	}
+	cur := fullReport(b.At.Add(8*24*time.Hour + 2*time.Hour))
 	var out bytes.Buffer
 	Write(&out, cur, b, cur.At)
-	if !strings.Contains(out.String(), "since the last sweep (2026-09-23 19:05, 1h 0m ago)\n  nothing changed\n") {
-		t.Errorf("the old baseline's header:\n%s", out.String())
+	want := "since the last sweep (2026-09-23 19:05, 8d 2h ago)\n" +
+		"  lssdp firmware   AR241CE_8530.23.2 → AR241CP_8747.29.2\n" +
+		"  newest bundle    none offered → AR241CP_8747\n" +
+		"  first read       tcp ports, mcu, eq presets, sources, settings, upnp, vendor app (nothing to compare with yet)\n"
+	if !strings.HasSuffix(out.String(), want) {
+		t.Errorf("the first sweep against the ssh-era baseline ends:\n%s\nwant the suffix:\n%s", out.String(), want)
+	}
+	if m := merge(b, cur); m.Carried != nil {
+		t.Errorf("a full sweep over the old baseline carries %v", m.Carried)
+	}
+	m := merge(b, blankReport(cur.At))
+	if got := strings.Join(slices.Sorted(maps.Keys(m.Carried)), " "); got != "bundle lssdp manifest zeroconf" {
+		t.Errorf("a blank sweep over the old baseline carries %s, want the four facts both shapes share", got)
 	}
 }
 
-// The syslog half of the device script, run under sh against a fake /data and
-// /var/log (zcat and date -r stubbed: the host's zcat may not read gzip, and
-// BSD date -r takes seconds, not a file), gives parseDevice what the box
-// would — and nothing but counts and stamps: the login-blob line never comes
-// back, nor does any whole syslog line. The whole script must parse as shell.
-func TestDeviceScriptSyslogLines(t *testing.T) {
-	if err := exec.Command("sh", "-n", "-c", deviceScript).Run(); err != nil {
-		t.Fatalf("the device script is not valid shell: %v", err)
-	}
-	dir := t.TempDir()
-	rot := filepath.Join(dir, "rot")
-	if err := os.Mkdir(rot, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	const lost = " Living user.info spotifymusicpro[811]: The connection to Spotify has been lost"
-	gz := func(name string, lines ...string) {
-		var b bytes.Buffer
-		zw := gzip.NewWriter(&b)
-		zw.Write([]byte(strings.Join(lines, "\n") + "\n"))
-		zw.Close()
-		if err := os.WriteFile(filepath.Join(rot, name), b.Bytes(), 0o600); err != nil {
-			t.Fatal(err)
+// TestScanRechecksKnownPorts: a dropped SYN on a known listener during the
+// fast pass must not make it "closed" — the recheck finds it; a known port
+// that refuses every time stays closed, and an unknown one gets no recheck.
+func TestScanRechecksKnownPorts(t *testing.T) {
+	var mu sync.Mutex
+	tries := map[int]int{}
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		_, ps, _ := net.SplitHostPort(addr)
+		p, _ := strconv.Atoi(ps)
+		mu.Lock()
+		tries[p]++
+		n := tries[p]
+		mu.Unlock()
+		switch {
+		case p == 9095 && n >= 2: // dropped once, answers on the recheck
+			a, b := net.Pipe()
+			b.Close()
+			return a, nil
+		case p == 9095, p == 31000: // a dropped SYN looks like a timeout
+			return nil, &net.OpError{Op: "dial", Err: timeoutErr{}}
 		}
+		return nil, &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
 	}
-	// the oldest file, which only starts the history
-	gz("messages432.log.gz", "Sep  1 18:30:00"+lost, "Sep  1 18:31:00"+lost)
-	// a boot's first file: its first lines carry the pre-NTP clock
-	gz("messages433.log.gz", "Dec 31 21:00:08 Living kern.info kernel: Booting Linux", "Dec 31 21:00:40"+lost,
-		"Sep  3 08:15:00"+lost, "Sep  3 08:45:00"+lost)
-	// the newest rotated file, with the engine's login line among the losses
-	gz("messages434.log.gz", "Sep 22 20:10:00"+lost, "Sep 22 20:40:00 Living user.info spotifymusicpro[811]: SAME USERNAME IS THERE STORE THE BLOB c2VjcmV0",
-		"Sep 22 20:59:59"+lost, "Sep 22 21:05:00"+lost)
-	live := filepath.Join(dir, "messages.log")
-	if err := os.WriteFile(live, []byte("Sep 22 21:10:02 Living syslog.info syslogd started\nSep 22 21:20:00"+lost+"\nSep 23 17:20:00"+lost+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	start := strings.Index(deviceScript, "for g in /data/log/syslog/")
-	if start < 0 {
-		t.Fatal("the device script lost its syslog loop")
-	}
-	script := strings.NewReplacer("/data/log/syslog", rot, "/var/log/syslog/messages.log", live).Replace(deviceScript[start:])
-	// date -r gives each file's rotation time: Sep 1 19:00, Sep 3 09:00 and Sep 22 21:10 in the box's zone
-	const stub = `zcat() { gzip -dc "$1"; }; date() { case "$2" in */messages432.log.gz) echo 1788300000;; ` +
-		`*/messages433.log.gz) echo 1788436800;; *) echo 1790122200;; esac; }; `
-	out, err := exec.Command("sh", "-c", stub+script).Output()
+	s := scanSpec{lo: 9000, hi: 31000, workers: 64, timeout: time.Second, budget: 10 * time.Second,
+		recheck: []int{9095, 9096, 22}, recheckTimeout: time.Second, recheckTries: 2, dial: dial}
+	open, _, err := scanPorts(context.Background(), "127.0.0.1", s)
 	if err != nil {
-		t.Fatalf("sh: %v", err)
+		t.Fatal(err)
 	}
-	shape := regexp.MustCompile(`^(rot=\d+|live=.{0,15}|h= *\d+ [A-Z][a-z]{2} [ \d]\d \d\d|end=1)$`)
-	for ln := range strings.SplitSeq(strings.TrimSuffix(string(out), "\n"), "\n") {
-		if !shape.MatchString(ln) {
-			t.Errorf("the script printed more than a count or a stamp: %q", ln)
-		}
+	if !slices.Equal(open, []int{9095}) {
+		t.Errorf("open = %v, want [9095]", open)
 	}
-	r := Report{At: time.Date(2026, 9, 23, 17, 30, 0, 0, boxZone), Hashes: map[string]string{}}
-	parseDevice(&r, string(out))
-	// the oldest file only starts the history, the boot's pre-NTP hour is
-	// dropped, and Sep 22 21:00 spans the last rotation into the live file
-	if r.Reconnects != 2+2+1+1+1 || r.SyslogFiles != 3 || r.Last24h != 5 || !r.ReconnectsSince.Equal(time.Unix(1788300000, 0)) {
-		t.Errorf("history = %d over %d files since %v, %d in 24 h; output:\n%s", r.Reconnects, r.SyslogFiles, r.ReconnectsSince, r.Last24h, out)
-	}
-	if len(r.ReconnectsByDay) != 23 || r.ReconnectsByDay["2026-09-03"] != 2 || r.ReconnectsByDay["2026-09-22"] != 4 || r.ReconnectsByDay["2026-09-23"] != 1 {
-		t.Errorf("by day = %v", r.ReconnectsByDay)
+	mu.Lock()
+	defer mu.Unlock()
+	if tries[9096] != 1+2 || tries[31000] != 1 || tries[22] != 0 {
+		t.Errorf("dials: 9096 %d (want 3: the pass + 2 rechecks), 31000 %d (want 1: not known), 22 %d (want 0: out of range)",
+			tries[9096], tries[31000], tries[22])
 	}
 }
 
-// A hashed file that an update removed reads "gone": that is an answer, not a
-// missing read, so it shows once as a change and the merged baseline keeps it —
-// where an unreadable file (no value at all) stays unread and is carried.
-func TestHashedFileGoneIsAChangeOnce(t *testing.T) {
-	r := Report{Hashes: map[string]string{}}
-	parseDevice(&r, "sha:airplaydemo=gone\nsha:luciserver=\n")
-	if r.Hashes["airplaydemo"] != "gone" {
-		t.Fatalf("hashes = %v, want airplaydemo gone", r.Hashes)
-	}
-	if _, ok := r.Hashes["luciserver"]; ok {
-		t.Errorf("an unreadable file recorded a value: %v", r.Hashes)
-	}
-	prev := Report{Hashes: map[string]string{"airplaydemo": "c63a32640502", "luciserver": "465c90d4bde7"}}
-	ch := Diff(prev, r)
-	if len(ch) != 1 || ch[0].Field != "sha256 airplaydemo" || ch[0].Now != "gone" {
-		t.Fatalf("diff = %+v, want the one file gone", ch)
-	}
-	if again := Diff(Report{Hashes: map[string]string{"airplaydemo": "gone"}}, r); len(again) != 0 {
-		t.Errorf("gone twice reads as a change: %+v", again)
-	}
-}
+// timeoutErr is a net.Error that says it timed out, as a dropped SYN does.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }

@@ -6,23 +6,31 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-// otaServer answers like the vendor manifest: 1001 for the current build,
-// 1000 + an offered version for an older one, and whatever `reply` overrides.
-func otaServer(t *testing.T, hits *atomic.Int32, reply func(build string) (int, string)) *httptest.Server {
+// otaServer answers like the vendor manifest, through reply, and counts its
+// hits per asked build (hits("") is the total) — so parallel tests sharing one
+// server (LP10_OTA_URL is process-wide) each count only their own builds.
+func otaServer(t *testing.T, reply func(build string) (int, string)) (*httptest.Server, func(build string) int) {
 	t.Helper()
+	var mu sync.Mutex
+	counts := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
 		var body struct {
 			Device map[string]string `json:"device"`
 		}
 		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		counts[""]++
+		counts[body.Device["fwVersion"]]++
+		mu.Unlock()
 		if r.Method != http.MethodPost || json.Unmarshal(raw, &body) != nil || body.Device["model"] != "LP10" || body.Device["brand"] != "arylic" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -32,12 +40,16 @@ func otaServer(t *testing.T, hits *atomic.Int32, reply func(build string) (int, 
 		_, _ = w.Write([]byte(text))
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, func(build string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[build]
+	}
 }
 
 func TestOTACheckVerdicts(t *testing.T) {
-	var hits atomic.Int32
-	srv := otaServer(t, &hits, func(build string) (int, string) {
+	t.Parallel()
+	srv, hits := otaServer(t, func(build string) (int, string) {
 		switch build {
 		case "AR241CE_8530":
 			return 200, `{"errorCode":1001,"errorString":"No update available"}`
@@ -51,6 +63,8 @@ func TestOTACheckVerdicts(t *testing.T) {
 			return 200, `{"errorCode":2000}`
 		case "AR241CE_0004":
 			return 500, `oops`
+		case "AR241CE_0006":
+			return 200, `{"errorCode":1000,"errorString":"SUCCESS","url":"http://cdn/x.swu","version":"AR241CE_8530"}`
 		}
 		return 200, `not json`
 	})
@@ -58,8 +72,11 @@ func TestOTACheckVerdicts(t *testing.T) {
 	if v := OTACheck(ctx, srv.URL, "AR241CE_8530"); !v.UpToDate || v.Err != "" || v.Asked != "AR241CE_8530" || v.At.IsZero() {
 		t.Errorf("current build: %+v", v)
 	}
-	if v := OTACheck(ctx, srv.URL, "AR241CE_9243"); v.UpToDate || v.Offered != "AR241CE_8530" || v.Err != "" {
+	if v := OTACheck(ctx, srv.URL, "AR241CE_9243"); v.UpToDate || v.Offered != "AR241CE_8530" || v.Err != "" || v.PackageURL != "https://cdn/x.swu" {
 		t.Errorf("older build: %+v", v)
+	}
+	if v := OTACheck(ctx, srv.URL, "AR241CE_0006"); v.Offered != "AR241CE_8530" || v.PackageURL != "" {
+		t.Errorf("an offer naming a plain-http package: %+v, want the offer without the URL", v)
 	}
 	if v := OTACheck(ctx, srv.URL, "AR241CE_0001"); v.Offered != "a newer build" {
 		t.Errorf("offer without a version: %+v", v)
@@ -77,14 +94,14 @@ func TestOTACheckVerdicts(t *testing.T) {
 		t.Errorf("non-JSON: %+v", v)
 	}
 	// nothing leaves for a build that is missing or not build-shaped
-	before := hits.Load()
+	before := hits("")
 	if v := OTACheck(ctx, srv.URL, ""); v.Err != "unrecognised firmware string" {
 		t.Errorf("no build: %+v", v)
 	}
 	if v := OTACheck(ctx, srv.URL, "AR241CE_8530; drop"); v.Err != "unrecognised firmware string" {
 		t.Errorf("odd build: %+v", v)
 	}
-	if hits.Load() != before {
+	if hits("") != before {
 		t.Error("a request left for an unusable build")
 	}
 	if v := OTACheck(ctx, "http://127.0.0.1:1/v1", "AR241CE_8530"); v.Err != "vendor unreachable" {
@@ -93,8 +110,25 @@ func TestOTACheckVerdicts(t *testing.T) {
 	if v := OTACheck(ctx, "::not a url", "AR241CE_8530"); v.Err != "bad manifest url" {
 		t.Errorf("bad url: %+v", v)
 	}
+	// a reply cut short mid-body is a transport failure, not a verdict
+	cut := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errorCode":`))
+		if hj, ok := w.(http.Hijacker); ok {
+			if c, _, err := hj.Hijack(); err == nil {
+				c.Close()
+			}
+		}
+	}))
+	defer cut.Close()
+	if v := OTACheck(ctx, cut.URL, "AR241CE_8530"); v.Err != "vendor unreachable" {
+		t.Errorf("truncated reply: %+v", v)
+	}
 }
 
+// runOTA runs otaWorker on st until until holds (or 5 s pass) and returns
+// the diagnostics at that moment.
 func runOTA(t *testing.T, st *protocol.State, until func(d protocol.DiagnosticSnapshot) bool) protocol.DiagnosticSnapshot {
 	t.Helper()
 	control := newRunControl()
@@ -102,10 +136,10 @@ func runOTA(t *testing.T, st *protocol.State, until func(d protocol.DiagnosticSn
 	done := make(chan struct{})
 	go func() { otaWorker(ctx, control, st); close(done) }()
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && !until(st.DiagnosticView(time.Now())) {
+	for time.Now().Before(deadline) && !until(st.DiagnosticView()) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	d := st.DiagnosticView(time.Now())
+	d := st.DiagnosticView()
 	control.stop.Set()
 	cancel()
 	select {
@@ -116,114 +150,128 @@ func runOTA(t *testing.T, st *protocol.State, until func(d protocol.DiagnosticSn
 	return d
 }
 
-// The worker only ever asks on a request, serves a repeat request from a
-// fresh verdict without a second trip, and asks again when the build changed.
-func TestOTAWorkerOnDemandAndFresh(t *testing.T) {
-	var hits atomic.Int32
-	srv := otaServer(t, &hits, func(build string) (int, string) {
-		if build == "AR241CE_8530" {
+// TestOTAWorker runs the worker scenarios in parallel against one vendor
+// stand-in: the worker reads LP10_OTA_URL as it starts, and the env is
+// process-wide. Each subtest asks about builds no other one does.
+func TestOTAWorker(t *testing.T) {
+	srv, hits := otaServer(t, func(build string) (int, string) {
+		switch build {
+		case "AR241CE_8530", "AR241CE_7777":
 			return 200, `{"errorCode":1001,"errorString":"No update available"}`
 		}
 		return 200, `{"errorCode":1000,"errorString":"SUCCESS","version":"AR241CE_8530"}`
 	})
 	t.Setenv("LP10_OTA_URL", srv.URL)
-	st := protocol.NewState()
-	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
-	// no request: nothing happens
-	d := runOTA(t, st, func(d protocol.DiagnosticSnapshot) bool { return false })
-	if d.OTA != nil || hits.Load() != 0 {
-		t.Fatalf("unrequested check: %+v hits=%d", d.OTA, hits.Load())
-	}
-	st.RequestOTA()
-	if !st.DiagnosticView(time.Now()).OTAPending {
-		t.Fatal("request not pending")
-	}
-	d = runOTA(t, st, func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil })
-	if d.OTA == nil || !d.OTA.UpToDate || d.OTA.Asked != "AR241CE_8530" || d.OTAPending || hits.Load() != 1 {
-		t.Fatalf("first check: %+v pending=%v hits=%d", d.OTA, d.OTAPending, hits.Load())
-	}
-	// A second request within the fresh window is answered from the last
-	// verdict; the worker is a new instance here, so exercise the reuse inside
-	// one run: two requests back to back.
-	st2 := protocol.NewState()
-	st2.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
-	hits.Store(0)
-	st2.RequestOTA()
-	control := newRunControl()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { otaWorker(ctx, control, st2); close(done) }()
-	wait := func(cond func(protocol.DiagnosticSnapshot) bool) {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) && !cond(st2.DiagnosticView(time.Now())) {
-			time.Sleep(20 * time.Millisecond)
+
+	// The worker only ever asks on a request, serves a repeat request from a
+	// fresh verdict without a second trip, and asks again when the build
+	// changed.
+	t.Run("on demand, then from the fresh verdict", func(t *testing.T) {
+		t.Parallel()
+		st := protocol.NewState()
+		st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
+		start := time.Now()
+		d := runOTA(t, st, func(protocol.DiagnosticSnapshot) bool { return time.Since(start) > 3*otaPoll })
+		if d.OTA != nil || hits("AR241CE_8530") != 0 {
+			t.Fatalf("unrequested check: %+v hits=%d", d.OTA, hits("AR241CE_8530"))
 		}
-	}
-	wait(func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil })
-	first := st2.DiagnosticView(time.Now()).OTA
-	st2.RequestOTA()
-	wait(func(d protocol.DiagnosticSnapshot) bool { return !d.OTAPending })
-	if hits.Load() != 1 {
-		t.Errorf("a repeat request within the fresh window went to the vendor: hits=%d", hits.Load())
-	}
-	if again := st2.DiagnosticView(time.Now()).OTA; again == nil || first == nil || !again.At.Equal(first.At) {
-		t.Errorf("repeat verdict = %+v, want the first one (%+v) re-served", again, first)
-	}
-	// the build changing (the ssh stream now says an older build) forces a new ask
-	protocol.ApplyRecord(st2, protocol.Record{"s": {"100 0.5 0.4 0.3 137000 215000 2 AR241CE_9243.16 Linux-5.15.137"}})
-	st2.RequestOTA()
-	wait(func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil && d.OTA.Asked == "AR241CE_9243" })
-	if v := st2.DiagnosticView(time.Now()).OTA; v == nil || v.Offered != "AR241CE_8530" || hits.Load() != 2 {
-		t.Errorf("changed build: %+v hits=%d", v, hits.Load())
-	}
-	control.stop.Set()
-	cancel()
-	<-done
+		st.RequestOTA()
+		if !st.DiagnosticView().OTAPending {
+			t.Fatal("request not pending")
+		}
+		d = runOTA(t, st, func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil })
+		if d.OTA == nil || !d.OTA.UpToDate || d.OTA.Asked != "AR241CE_8530" || d.OTAPending || hits("AR241CE_8530") != 1 {
+			t.Fatalf("first check: %+v pending=%v hits=%d", d.OTA, d.OTAPending, hits("AR241CE_8530"))
+		}
+
+		// The reuse lives inside one worker run: two requests back to back.
+		st2 := protocol.NewState()
+		st2.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
+		st2.RequestOTA()
+		control := newRunControl()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { otaWorker(ctx, control, st2); close(done) }()
+		defer func() {
+			control.stop.Set()
+			cancel()
+			<-done
+		}()
+		eventually(t, "the first verdict", 5*time.Second, func() bool { return st2.DiagnosticView().OTA != nil })
+		first := st2.DiagnosticView().OTA
+		st2.RequestOTA()
+		eventually(t, "the repeat request answered", 5*time.Second, func() bool { return !st2.DiagnosticView().OTAPending })
+		if hits("AR241CE_8530") != 2 {
+			t.Errorf("a repeat request within the fresh window went to the vendor: hits=%d", hits("AR241CE_8530"))
+		}
+		if again := st2.DiagnosticView().OTA; again == nil || !again.At.Equal(first.At) {
+			t.Errorf("repeat verdict = %+v, want the first one (%+v) re-served", again, first)
+		}
+		// the box now names an older build: that forces a new ask
+		st2.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_9243.16"})
+		st2.RequestOTA()
+		eventually(t, "the changed build's verdict", 5*time.Second, func() bool {
+			v := st2.DiagnosticView().OTA
+			return v != nil && v.Asked == "AR241CE_9243"
+		})
+		if v := st2.DiagnosticView().OTA; v.Offered != "AR241CE_8530" || hits("AR241CE_9243") != 1 {
+			t.Errorf("changed build: %+v hits=%d", v, hits("AR241CE_9243"))
+		}
+	})
+
+	// Enabled but the firmware is unknown yet: the request is held (the
+	// overlay keeps "checking…"), nothing goes out — and the check runs the
+	// moment a build lands, from the same request.
+	t.Run("held until the build is known", func(t *testing.T) {
+		t.Parallel()
+		st := protocol.NewState()
+		st.RequestOTA()
+		control := newRunControl()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { otaWorker(ctx, control, st); close(done) }()
+		defer func() {
+			control.stop.Set()
+			cancel()
+			<-done
+		}()
+		time.Sleep(3 * otaPoll)
+		if d := st.DiagnosticView(); d.OTA != nil || !d.OTAPending || hits("AR241CE_7777") != 0 {
+			t.Errorf("unknown firmware: verdict %+v pending=%v hits=%d, want the request held", d.OTA, d.OTAPending, hits("AR241CE_7777"))
+		}
+		st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_7777.29.2"})
+		eventually(t, "the verdict once the build landed", 5*time.Second, func() bool { return st.DiagnosticView().OTA != nil })
+		if d := st.DiagnosticView(); !d.OTA.UpToDate || d.OTAPending || hits("AR241CE_7777") != 1 {
+			t.Errorf("build landed: verdict %+v pending=%v hits=%d, want one check", d.OTA, d.OTAPending, hits("AR241CE_7777"))
+		}
+	})
 }
 
-func TestOTAWorkerDisabledAndNoFirmware(t *testing.T) {
+// Set-but-empty LP10_OTA_URL disables the worker: it returns at once and
+// leaves the request pending. Unset, the checks go to the vendor manifest.
+func TestOTAWorkerDisabledAndURL(t *testing.T) {
 	t.Setenv("LP10_OTA_URL", "")
 	st := protocol.NewState()
 	st.RequestOTA()
-	control := newRunControl()
 	done := make(chan struct{})
-	go func() { otaWorker(context.Background(), control, st); close(done) }()
+	go func() { otaWorker(context.Background(), newRunControl(), st); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("a disabled worker should return at once")
 	}
-	if !st.DiagnosticView(time.Now()).OTAPending {
+	if !st.DiagnosticView().OTAPending {
 		t.Error("a disabled worker consumed the request")
 	}
-	// enabled but the firmware is unknown yet: the request is held (the
-	// overlay keeps "checking…"), nothing goes out — and the check runs the
-	// moment a build lands, from the same request.
-	var hits atomic.Int32
-	srv := otaServer(t, &hits, func(string) (int, string) { return 200, `{"errorCode":1001}` })
-	t.Setenv("LP10_OTA_URL", srv.URL)
-	st = protocol.NewState()
-	st.RequestOTA()
-	ctl := newRunControl()
-	wctx, wcancel := context.WithCancel(context.Background())
-	wdone := make(chan struct{})
-	go func() { otaWorker(wctx, ctl, st); close(wdone) }()
-	time.Sleep(3 * otaPoll)
-	if d := st.DiagnosticView(time.Now()); d.OTA != nil || !d.OTAPending || hits.Load() != 0 {
-		t.Errorf("unknown firmware: verdict %+v pending=%v hits=%d, want the request held", d.OTA, d.OTAPending, hits.Load())
+	if u, ok := ManifestURL(); ok || u != "" {
+		t.Errorf("ManifestURL disabled = %q %v", u, ok)
 	}
-	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && st.DiagnosticView(time.Now()).OTA == nil {
-		time.Sleep(20 * time.Millisecond)
+	t.Setenv("LP10_OTA_URL", "http://127.0.0.1:9/v1")
+	if u, ok := ManifestURL(); !ok || u != "http://127.0.0.1:9/v1" {
+		t.Errorf("ManifestURL override = %q %v", u, ok)
 	}
-	if d := st.DiagnosticView(time.Now()); d.OTA == nil || !d.OTA.UpToDate || d.OTAPending || hits.Load() != 1 {
-		t.Errorf("build landed: verdict %+v pending=%v hits=%d, want one check", d.OTA, d.OTAPending, hits.Load())
-	}
-	ctl.stop.Set()
-	wcancel()
-	<-wdone
-	if u, ok := otaURL(); !ok || u != srv.URL {
-		t.Errorf("otaURL override = %q %v", u, ok)
+	os.Unsetenv("LP10_OTA_URL") // t.Setenv restores the TestMain value afterwards
+	if u, ok := ManifestURL(); !ok || u != otaManifestURL {
+		t.Errorf("ManifestURL default = %q %v, want %q", u, ok, otaManifestURL)
 	}
 }

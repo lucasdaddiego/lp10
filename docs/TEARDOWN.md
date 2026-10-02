@@ -6,26 +6,38 @@
 > line-out + optical (TOSLINK) out**, plus a **3.5 mm line-in**. **No power amp** (no speaker
 > terminals) and **no phono stage** (line-level aux input, not RIAA).
 >
-> **This unit, as of 2026-09-23:** SoC Amlogic **A113L "A1"** (`a1-a113l-ad403-spk`) · platform **LibreWireless LS8** ·
-> serial `RKARYLLP10<redacted>` · firmware **`AR241CE_8530.23.2`** / MCU **v23** (the August-2026 OTA — the vendor has
-> nothing newer) · vendor app `rakoit_app` **v42** (since 2026-09-17) · Spotify on the **Pro engine** (eSDK 3.211.130,
-> ZeroConf `:9095`) · wired `eth0` at **`<device-ip>`** / `<device>.local` (over a TL-WPA4220 powerline link).
+> **This unit, as of 2026-10-01:** SoC Amlogic **A113L "A1"** (`a1-a113l-ad403-spk`) · platform **LibreWireless LS8** ·
+> serial `RKARYLLP10<redacted>` · firmware **`AR241CP_8747.29.2`** / MCU **v29** — a **production** build
+> (`libre_ls8_24G_v1_c4a_production_release_defconfig`; 8530 was the `…_debug_release` one), taken by the box's own OTA
+> check on 2026-09-30 (§14.5) · **no ssh, telnet or adb** (the build deleted `dropbear`, `telnetd` and `adbd`, §9) ·
+> vendor app `rakoit_app` **v42** (installed 2026-09-17; the vendor's CDN index still names v42 on 2026-10-01) · Spotify
+> on the **Pro engine** (eSDK **3.216.31**, ZeroConf `:9095`) · wired `eth0` at **`<device-ip>`** / `<device>.local`
+> (over a TL-WPA4220 powerline link).
 >
 > **How to read it.** Chapters 0–13 describe the device *as it is now*; where a fact changed with firmware, the old value
-> follows in parentheses with its date. §14 is the dated history (June baseline → August OTA → September re-sweep), §15
-> is how to re-verify any of it read-only, and the inspection log at the end records every pass and what it touched.
-> Everything was verified live on this unit (process table, `/proc`, `/sys`, ALSA, `iw`, binary `strings`, mDNS, the LUCI
-> bus, the `:2018` tunnel, on-device certs, the sqlite env store) and cross-checked against Arylic's published specs (§12)
-> and the `lp10` controller source (Appendix B). **Nothing was written to the device** on the read-only passes; the one
-> pass that wrote (2026-06-30, benign and reverted) is described in the log. Secrets (`SP_BLOB`, PSKs, passwords) were
-> never read — key names only.
+> follows in parentheses with its date. §14 is the dated history (June baseline → August OTA → September re-sweeps →
+> the 2026-09-30 OTA), §15 is how to re-verify any of it read-only, and the inspection log at the end records every pass
+> and what it touched. Everything up to 2026-09-23 was verified live on this unit over ssh (process table, `/proc`,
+> `/sys`, ALSA, `iw`, binary `strings`, mDNS, the LUCI bus, the `:2018` tunnel, on-device certs, the sqlite env store)
+> and cross-checked against Arylic's published specs (§12) and the `lp10` controller source (Appendix B). **8747 has no
+> ssh:** the chapters that rest on a shell read were verified on 8530 or earlier, and where a reader could take such a
+> fact for current it is marked *(verified on 8530 over ssh; not re-readable on 8747)*. The 8747 facts come from the
+> LAN (LSSDP, mDNS, a port scan, the `:2018` getters, UPnP, ZeroConf), a static diff of the two vendor bundles and the
+> web UI's log download (§14.5). **Nothing was written to the device** on the read-only passes; the passes that wrote
+> (2026-06-30, benign and reverted; the 2026-10-01 tunnel tests' transport, volume and mute) are described in the log.
+> Secrets (`SP_BLOB`, PSKs, passwords) were never read on the ssh passes — key names only; the 2026-10-01 log download
+> contains them (§10.4), and only its non-secret keys are quoted here.
 >
 > **Revision log** — 2026-06-27 Spotify chapter · 06-28→29 full teardown (4 passes, `AR241CE_9243.16.2` / MCU 16) ·
 > 06-30 control-plane writes (OLED via `-remote 42`) · 07-01 OTA endpoint probed, `mcu.bin` pulled and reversed, MsgBox
 > table reversed · 08-22 `:2018` identified as the Arylic UART API (`EQS`/`EQE` corrected) · 09-02 the 8530 OTA
 > re-analysed (bundle diff, MCU v23, `rakoit_app` v32) · 09-12 re-sweep: no newer OTA; env store decoded; Pro engine
-> since 09-04 · **09-23 re-sweep: `rakoit_app` v42; the manifest offers 8530 to no older build; the syslog's rotated
-> history on flash; eSDK reconnects on both engines.**
+> since 09-04 · 09-23 re-sweep: `rakoit_app` v42; the manifest offers 8530 to no older build; the syslog's rotated
+> history on flash; eSDK reconnects on both engines · **10-01 re-sweep without ssh (`AR241CP_8747.29.2` / MCU 29): the
+> production build drops dropbear, telnet and adb; the `:2018` tunnel pushes the track, play state and volume; the
+> Spotify app's volume no longer reaches the softvol; the web UI's log download read in place of ssh (§14.5).** · 10-01
+> later: the web UI's Spotify switch decoded (the HiFi flag only, §8.1); §0–§2 corrected to the August finding that the
+> WM8904 is absent and the BP10xx MCU is the DAC (§2).
 
 ---
 
@@ -36,13 +48,16 @@ A dual-core Amlogic A1 (32-bit ARMv7, Buildroot/Linux 5.15, Android-derived IPC)
 Connect, AirPlay 2, Google Cast, Roon (RAAT), Tidal Connect, Qobuz Connect, Bluetooth 5.0
 A2DP (sink + source), DLNA/UPnP, Airable/TuneIn radio, QPlay, Alexa/AVS, Matter** — each its
 own daemon, gated by a persistent env flag. **Enabled on this unit: Spotify, AirPlay 2, DLNA,
-Bluetooth** — the rest are installed but currently off (§8). Audio routes
-through the Amlogic **"AUGE"** complex: a **WM8904 codec** (DAC → 3.5 mm line-out; its ADC
-digitizes the line-in), an **S/PDIF** path to the optical out (up to **24-bit/192 kHz**),
-hardware **EQ/DRC (AED)**, and **two HiFi4 DSP cores**. There is **no power amp** — the loaded
+Bluetooth** — the rest are installed but currently off (§8). Audio leaves the Amlogic
+**"AUGE"** complex as I2S (TDM-B) for the front-panel **MCU (MVSilicon BP10xx), which is the DAC** and runs every
+tone / EQ / virtual-bass / balance / max-volume stage (§2, §6.3); an **S/PDIF** path feeds the optical out (up to
+**24-bit/192 kHz**). The device tree also declares a **WM8904 codec**, but no chip answers at its I2C address — its
+mixer controls reach nothing (§2). Of the SoC's **AED** EQ/DRC block only the multi-band DRC is audible, and the **two
+HiFi4 DSP cores** are not in the audio path. There is **no power amp** — the loaded
 `tas5707` driver is unused generic-image baggage (confirmed by the I2C scan and the line-only
-back panel). Control is the LibreWireless **LUCI/MsgBox** bus (what `~/.bin/lp10` drives) plus
-a **GoAhead web server**; the front **0.91″ OLED** + **4 touch buttons** are run by an on-board
+back panel). Control is the LibreWireless **LUCI/MsgBox** bus plus a **GoAhead web server**, and the
+**`:2018` tunnel** relays the MCU's Arylic UART API to the LAN (what `lp10` drives — since 8747 its only channel,
+§6.3); the front **0.91″ OLED** + **4 touch buttons** are run by an on-board
 **MCU** (MVSilicon **BP10xx**, C-SKY core) over serial (the `LP10` text itself is silkscreen). The
 host can drive **only the now-playing line** of the OLED — push MsgBox 42 (`RemoteUI`) via
 `LUCI_local -remote 42`; a **full-screen custom message is not host-reachable**, confirmed by
@@ -53,15 +68,19 @@ LibreWireless device cert (LWT Root CA), a Google Cast cert (RAKOIT), and a Spot
 check that carries the unit's MAC and serial and a 10-hourly app-index fetch that carries nothing; NTP and one
 `Date:` header from google.com at boot. No cloud relay, no remote syslog, no cron. A LibreWireless **log-report
 uploader is installed and armed** (crash / button / LUCI 651) and would ship the whole env store, encrypted, to the
-vendor — it has never fired here. The real exposure is LAN-side: **network ADB hands out a root shell with no
-authentication**.
+vendor — it had never fired here by 2026-09-13; the web UI's log download writes an env dump, secrets included, into
+the syslog (seen 2026-10-01, §10.4). 8747 adds a metrics uploader, dormant (`metrics_url` empty). The real exposure
+was LAN-side: through 8530 **network ADB handed out a root shell with no authentication**; the 8747 production build
+deleted `adbd`, `telnetd` and `dropbear` (§9). The unauthenticated `:2018` tunnel and a serial root console remain.
 
-> **State** below = verified on **this unit** (env flag **and** running daemon); first read 2026-06-28/29, last re-read **2026-09-23**.
+> **State** below = verified on **this unit** (env flag **and** running daemon); first read 2026-06-28/29, re-read over
+> ssh until 2026-09-23; on **2026-10-01** the running daemons and the Spotify / Qobuz / Roon flags were re-read from the
+> log download's `ps` and env dump (§14.5) — the other flags are as of 09-23.
 > Everything is installed in firmware; most services are env-gated and togglable via the app/web.
 
 | Capability | Daemon / mechanism | Port(s) | State (this unit) |
 |---|---|---|---|
-| Spotify Connect | two engines, one runs: `spotifymusicpro` (Pro, eSDK 3.211.130) **now**; `newspotifyhifi` (HiFi, eSDK 3.203.239) until 2026-09-04 — §8.1 | per engine on 8530: 9096 (HiFi) · 9095 (Pro), 5353 | **ON** — **Pro engine** since 2026-09-04 (`SpotifyEnabled=0 / SpotifyProEnabled=1`, switched from `lp10`'s services pane, §14.3; HiFi ran 1/0 before) |
+| Spotify Connect | two engines, one runs: `spotifymusicpro` (Pro, eSDK 3.216.31 on 8747, 3.211.130 on 8530) **now**; `newspotifyhifi` (HiFi, eSDK 3.203.239) until 2026-09-04 — §8.1 | per engine: 9096 (HiFi) · 9095 (Pro), 5353 | **ON** — **Pro engine** since 2026-09-04 (`SpotifyEnabled=0 / SpotifyProEnabled=1`, switched from `lp10`'s services pane, §14.3; HiFi ran 1/0 before); the pair held through the 8747 OTA |
 | AirPlay 2 | `airplaydemo` (Apple AccessorySDK, PTP) | 7000, 3721 (5000/WAC no longer bound since 8530) | **ON** (running) |
 | DLNA / UPnP renderer | `dmr` | 49494, 1900 (SSDP) | **ON** (running) |
 | Bluetooth 5.0 A2DP (sink + source) | `bluetoothd` + `bluealsa` (SBC/AAC) | — | **ON** (advertises as Loudspeaker) |
@@ -72,7 +91,7 @@ authentication**.
 | Amazon Alexa (AVS) / Matter | env `AVSEnabled=0` / `MatterEnabled=0` | — | **OFF** |
 | QPlay (QQ Music) | env `QPlay_*` | — | provisioned (off) |
 | Airable / TuneIn radio + services | `UIframework` (`auth.airable.io`) | — | in-app browse (per-service login) |
-| Line-in (3.5 mm) → stream/local | WM8904 ADC → `audionexus` | — | hardware-present |
+| Line-in (3.5 mm) → stream/local | ADC (not established) → `audionexus` | — | hardware-present |
 | USB-A flash playback | `UIframework` + GStreamer + `automount` | — | **OFF** (`USBEnable=0`) |
 
 ---
@@ -85,10 +104,10 @@ authentication**.
 |---|---|
 | **RJ45 Ethernet** | Wired LAN (`eth0`), 10/100M — the primary network path here (powerline-fed) |
 | **USB-A** | Host port — USB flash-drive playback (Arylic caps it at ~1000 songs / 16 GB; `USBEnable=0` at inspection) |
-| **3.5 mm line-in** (TRS, 1 Vrms) | **Line-level aux** input (not phono) → WM8904 ADC |
-| **3.5 mm line-out** (TRS, 1 Vrms) | Analog line output (WM8904 DAC) |
+| **3.5 mm line-in** (TRS, 1 Vrms) | **Line-level aux** input (not phono); which ADC digitizes it is not established (the WM8904 the DT names is absent, §2.1) |
+| **3.5 mm line-out** (TRS, 1 Vrms) | Analog line output from the **BP10xx MCU's DAC** (§2) |
 | **Optical out** (TOSLINK) | S/PDIF digital output, up to **24-bit/192 kHz** |
-| **USB-C** | Power (5 V/2 A) + the RNDIS/ADB service gadget (§7); Arylic also lists it as **"PC audio"** (USB-audio function) |
+| **USB-C** | Power (5 V/2 A) + the RNDIS/ADB service gadget (§7; on 8747 the RNDIS function gets no IP and `adbd` is gone); Arylic also lists it as **"PC audio"** (USB-audio function) |
 
 No speaker terminals (no power amp) and no optical/coax *input* jack (the SoC supports
 S/PDIF-in, but it isn't exposed). Ships with a 3.5 mm→2×RCA cable, so "RCA" in listings = via
@@ -102,16 +121,16 @@ that adapter.
 | **CPU** | 2× **ARM Cortex-A35** (part `0xd04`, r0p2), **32-bit ARMv7** (`armv7l`, gnueabihf). DVFS 128 MHz–**1.2 GHz**, governor `schedutil`, ~768 MHz idle |
 | **RAM** | **256 MB** DDR (~221 MB usable; rest reserved for DSP/CMA/secure) |
 | **Flash** | **512 MB SPI-NAND** (`spinand`), MTD-partitioned (§3) |
-| **Audio codec** | **Cirrus/Wolfson WM8904** (I2C `0x1a`, on TDM-B) — DAC → **3.5 mm line-out** (Line-Out + Headphone stages both on); its **ADC** (`IN2`, capture on) digitizes the **line-in**; on-chip EQ1-5 / DRC / HPF |
+| **DAC** | The **MVSilicon BP10xx MCU** (row below), fed I2S on TDM-B: its on-chip DAC drives the **3.5 mm line-out**, and it hosts the tone / EQ-preset / virtual-bass / balance / max-volume DSP (§6.3). The DT also declares a **Cirrus/Wolfson WM8904** at I2C `0x1a` and its driver binds, but the chip does not answer (`i2cget` on `0x1a` → ENXIO, 2026-08): its EQ1-5 / DRC / volume controls write a register cache and reach nothing (ear-tested) |
 | **Spare ADC (unused)** | A **TI PCM1863** stereo ADC sits at I2C `0x4a` (`status=okay`), but its `pcm186x` driver is **unbound** and it's absent from the ASoC graph → **not used** (LS8 reference-design leftover) |
 | **Power amp** | **None** — line-level device (`i2cdetect` finds no amp chip; `tas5707` module is unused baggage) |
-| **DSP** | Amlogic **AED** HW block (5-band EQ, multi-band + full-band DRC, crossover, limiter, 2×2 mixer) **+ two Tensilica HiFi4 cores** (`/dev/hifi4dsp0/1`); the boot script loads `dspbootA.bin` onto core A and starts its RTOS (`dsp_util`) |
+| **DSP** | Amlogic **AED** HW block (5-band EQ, multi-band + full-band DRC, crossover, limiter, 2×2 mixer — of these only the **multi-band DRC enable** is audible; the EQ / DRC / crossover coefficient tables accept writes and never change, 2026-08 ear tests) **+ two Tensilica HiFi4 cores** (`/dev/hifi4dsp0/1`, not in the audio path); the boot script loads `dspbootA.bin` onto core A and starts its RTOS (`dsp_util`) |
 | **Digital out** | **S/PDIF** DAI → the optical/TOSLINK jack (≤24-bit/192 kHz); internal **loopback** capture (for multiroom/cast) |
 | **Wi-Fi / BT** | **Dual-band 2.4 + 5 GHz 802.11ac/VHT** SDIO Wi-Fi (driver `aml_w1`/`amlogic_wireless`; `fwVersion.conf` tags `wifi_hw=NXP`; both bands live on phy0/phy1, ≈390 Mbps VHT) + UART **Bluetooth 5.0** (`hciattach … aml` on `ttyS1`, BlueZ) |
-| **MCU** | Companion microcontroller on **`/dev/ttyS2` @ 115200** (`MCUVersion`=23; 16 until the August-2026 OTA), owned host-side by `luciserver`. Drives the **OLED + touch buttons + IR remote + standby**; its firmware updates over this UART via XMODEM (§6.1) |
+| **MCU** | Companion microcontroller on **`/dev/ttyS2` @ 115200** (firmware **v29** since the 2026-09-30 OTA, `VER:29-1d316f0c-10`; 23 from the August-2026 OTA, 16 before), owned host-side by `luciserver`. Drives the **OLED + touch buttons + IR remote + standby**; its firmware updates over this UART via XMODEM (§6.1) |
 | **Controls** | **4 touch buttons** (Mode / Vol− / Play-Pause / Vol+ → `gpio_keypad`/`adc_keypad` → MCU → MsgBox 64) + the bundled **IR remote** (MCU-decoded — there is **no** Linux IR/lirc subsystem). An `input_btrcu` BT-HID remote input (under `aml_bt`) also exists. The `rotary-encoder` DT node is **`disabled`** — no knob |
 | **Front display** | **0.91″ 128×32 monochrome (blue) OLED**, **MCU-rendered** (§6.1). Not a Linux framebuffer, not `spi_led` |
-| **USB** | USB2/USB3 PHYs; **USB-A** host (flash-drive playback; `USBEnable=0`); **USB-C** = power + a device-gadget (**RNDIS + ADB**, `usb0`=192.168.5.1, §7). Arylic also lists USB-C "PC audio" (a USB-audio function); `snd_usb_audio` isn't a loaded module here |
+| **USB** | USB2/USB3 PHYs; **USB-A** host (flash-drive playback; `USBEnable=0`); **USB-C** = power + a device-gadget (**RNDIS + ADB**, `usb0`=192.168.5.1 through 8530; on 8747 no `usb0` IP and no `adbd`, §7). Arylic also lists USB-C "PC audio" (a USB-audio function); `snd_usb_audio` was not a loaded module on 8530 — 8747 ships `snd-usb-audio` and loads it at boot (§14.5) |
 | **Security HW** | OP-TEE secure world (`optee`, `tee-supplicant`), `secmon`, **eFuse** key store + `unifykey`, HW crypto DMA + RNG |
 | **Thermal** | single `soc_thermal` zone, ~**51–54 °C** |
 
@@ -128,7 +147,7 @@ A single ASoC card — **`AML-AUGESOUND`** (`auge_sound`) — exposes five DAIs:
 | PCM | DAI | Codec | Dir | Role |
 |---|---|---|---|---|
 | 00-00 | **TDM-A** | dummy | play+cap | Unused on this product (modelled as a "dummy" codec; nothing wired here) |
-| 00-01 | **TDM-B** | **wm8904** | play+cap | **WM8904** (0x1a): DAC → **3.5 mm line-out**; **ADC (`IN2`) = the line-in capture** |
+| 00-01 | **TDM-B** | **wm8904** (declared; chip absent) | play+cap | I2S → the **BP10xx MCU** (the DAC) → **3.5 mm line-out**. The DAI is bound to the WM8904 driver, but no WM8904 answers on I2C (§2.1) |
 | 00-02 | **PDM** | dummy | cap | Digital-mic port — supported, unused on the LP10 |
 | 00-03 | **SPDIF** | dummy | play+cap | **S/PDIF** → optical out (≤24-bit/192 kHz; the input side is unexposed) |
 | 00-04 | **LOOPBACK-A** | dummy | cap | Internal loopback (capture the mix → multiroom/cast) |
@@ -137,12 +156,12 @@ A single ASoC card — **`AML-AUGESOUND`** (`auge_sound`) — exposes five DAIs:
 
 ```
  NETWORK / USB / BT sources ─► sw decode ─┐
-                                          │  audionexus       ┌─► WM8904 DAC ─► 3.5mm LINE-OUT
- LINE-IN (3.5mm) ─► WM8904 ADC (IN2) ─────►│  (router +        │   (TDM-B, 0x1a)
-                                          │   AED EQ/DRC ──────┤
-                                          │   + HiFi4 DSP)    └─► S/PDIF ─► OPTICAL (TOSLINK) OUT
+                                          │  audionexus       ┌─► TDM-B (I2S) ─► BP10xx MCU ─► 3.5mm LINE-OUT
+ LINE-IN (3.5mm) ─► ADC (not established) ►│  (router +        │   (DAC + tone/EQ/vbass/balance/max-vol)
+                                          │   softvol +        │
+                                          │   AED DRC) ────────┴─► S/PDIF ─► OPTICAL (TOSLINK) OUT
  [loopback tap] ◄──────────────────────────                       (+ loopback → multiroom)
-        Volume = ALSA Master (WM8904)   ·   Source select = sourceswitchservice
+   Volume = softvol Master (SoC, set by sourceswitch from the MCU's level) · Source select = sourceswitchservice
 ```
 
 - **`audionexus`** is the central router/mixer (exposes `AUX_START/STOP`, `SPDIF_START/STOP`);
@@ -150,9 +169,10 @@ A single ASoC card — **`AML-AUGESOUND`** (`auge_sound`) — exposes five DAIs:
 - The line-in can be played locally and/or **streamed** to other LibreWireless rooms via the
   loopback tap.
 - **Sample rates:** optical out up to **24-bit/192 kHz** (Arylic spec); the analog line-out is
-  line-level (1 Vrms) via the WM8904 (≤24-bit/96 kHz per its datasheet). Observed live:
-  44.1 kHz/16-bit (Spotify's native Ogg/Vorbis).
-- **94 ALSA mixer elements**: **WM8904** (`Master`, `Headphone`, `Line Output`, `Capture`,
+  line-level (1 Vrms) from the MCU's DAC (its rate limit is not established). Observed live:
+  44.1 kHz/16-bit (Spotify's native Ogg/Vorbis — §8.1: no FLAC reached the box in 17 days of log).
+- **94 ALSA mixer elements** (93 at an idle boot: the softvol **`Master`**, numid 94, appears when the first stream
+  opens — it is the audible volume stage, 0–99 = volume − 1): the inert **WM8904** driver's (`Headphone`, `Line Output`, `Capture`,
   `EQ1-5`, `DRC`, `High Pass Filter`, `*Capture Mux/Mode`, `HPL/HPR/LINEL/LINER/DACL/DACR/
   AIFOUTL/R Mux`); **AED** HW DSP (`AED EQ/DC-cut/DRC/Noise-Detect/Crossover/Clip-THD/
   Mixer-Gain/master+L/R volume`); **SoC I/O** (`Audio In Source`, `Audio Out Sink`,
@@ -162,11 +182,16 @@ A single ASoC card — **`AML-AUGESOUND`** (`auge_sound`) — exposes five DAIs:
   `_tas5707` (loaded but **no chip**), `_tl1`, `_dummy`; WM8904 driver built-in. Local-file
   decode via FLAC / `faad` (AAC) / `mpg123` (MP3) / `sbc` (BT) + **GStreamer** + `aml_audio_player`.
 
-> **Live proof (during Spotify playback, 2026-06-28):** `pcm1` (TDM-B → WM8904) opens at
-> **44.1 kHz / `S16_LE` / stereo** while `pcm0p`/`pcm3p` stay `closed` — WM8904 is the active
-> DAC. Source was Ogg/Vorbis (`Mime: Ogg`, `SampleRate: 44100`). Idle → all `hw_params`
-> `closed`. dmesg also carries occasional benign `wm8904 … soc_component_read … -16` (EBUSY)
-> register-read warnings — periodic, playback unaffected.
+> **Live read (during Spotify playback, 2026-06-28):** `pcm1` (TDM-B) opens at **44.1 kHz / `S16_LE` / stereo** while
+> `pcm0p`/`pcm3p` stay `closed`. Source was Ogg/Vorbis (`Mime: Ogg`, `SampleRate: 44100`). Idle → all `hw_params`
+> `closed`. dmesg also carries periodic `wm8904 … soc_component_read … -16` (EBUSY) register-read warnings.
+>
+> **Corrected (2026-08 recon and ear tests, on 8530 over ssh):** the June reading took the open TDM-B stream for the
+> WM8904 at work. It is not: the chip does not answer at `0x1a` (`i2cget` → ENXIO; the EBUSY reads above fit a driver that
+> cannot reach its chip), its EQ / DRC / volume controls change nothing audible, and the stream on TDM-B reaches
+> the **BP10xx MCU**, which is the DAC and does all the tone / EQ / max-volume DSP (§6.3, §10.3). The SoC side's only
+> audible levers are the softvol `Master` and the AED multi-band DRC enable (the old night mode, which needed `amixer`
+> over ssh). Never `alsactl restore`: it rewrote `Master` from a stale state and dropped the room's volume.
 
 ### 2.1 I2C bus map (verified)
 
@@ -175,14 +200,14 @@ Checked two ways — `sysfs` (zero bus traffic) and a safe **`i2cdetect -y -r 0`
 
 | Addr | Result | Chip |
 |---|---|---|
-| `0x1a` | `UU` (driver-owned) | **WM8904** codec — active (`status=okay`, driver bound) |
+| `0x1a` | `UU` (driver-owned) | **WM8904** codec — declared (`status=okay`) and its driver bound, but the chip does not answer (`i2cget` → ENXIO, 2026-08): **absent**. `UU` only means the driver holds the address, so `i2cdetect` never probed it |
 | `0x4a` | `status=okay` but driver **unbound** | **PCM1863** stereo ADC — populated but **unused** (not in the ASoC graph) |
 | `0x10` | intermittent ACK, reads `0x00` | phantom (floating-bus read-byte artifact) |
 | TAS5707 addrs | nothing | no power-amp chip on the bus |
 
 The image bundles drivers for many board variants (`cs43130`, `pcm512x`, `pcm186x`, `tas5707`,
-`wm8904`, `rtc-pcf8563`, `meson_pmic6b`, a touchscreen…); on this LP10 only the **WM8904** is
-actually used — the PCM1863 is populated in DT but its driver never bound. The scan was
+`wm8904`, `rtc-pcf8563`, `meson_pmic6b`, a touchscreen…); on this LP10 the **WM8904** driver binds to a chip that
+is not there (above), and the PCM1863 is populated in DT but its driver never bound. The scan was
 harmless (device stayed ~51 °C, all daemons up).
 
 ---
@@ -215,22 +240,24 @@ writable volume** (227 MB, ~5% used). `/data` → `/lsync/shared`. Notably `/lsy
 (the main app) lives on the writable volume — updated by its own loader, independently of the rootfs (§10.2) — and so
 does the settings store, `/data/libre/env/env.db` (§5).
 
-**Versions** (`/etc/fwVersion.conf`): `build_number=AR241CE_8530`, `build_date=2026-01-12`, `app_svn_version=318`
-(June 2026: `AR241CE_9243` / `2025-12-24` / `312` — §14.1), `kernel=5.15` (5.15.137), `defconfig=libre_ls8_24G_v1_c4a_debug_release`,
-`platform=LS8`, `target=EVK`, `wifi_hw=NXP`, `ram=256MB`, `flash=512MB`. Userland =
-**Buildroot 2020.02.1**, shell **BusyBox v1.32.0** (built 2026-01-12; `lp10`'s loop tests run under the same version,
-`make busybox`). `reboot_mode=cold_boot` + empty `/sys/fs/pstore` = the last boot was
-a power-on, not a software reboot (true at every pass; the 2026-09-04 one was a power loss, §14.3). `fw_printenv` reports a bad-CRC U-Boot env → the real cmdline is baked into
-the boot image, not a live env. (The `24G` in the defconfig is a module tag — the radio is
-dual-band, §1.)
+**Versions** (`/etc/fwVersion.conf`, from the 8747 bundle): `build_number=AR241CP_8747`, `build_date=2026-09-29`,
+`app_svn_version=366`, new `ext_svn_version=4958`, `defconfig=libre_ls8_24G_v1_c4a_production_release_defconfig`
+(8530: `AR241CE_8530` / `2026-01-12` / `318` / `…_debug_release`; June 2026: `AR241CE_9243` / `2025-12-24` / `312` —
+§14.1), `kernel=5.15` (5.15.137), `platform=LS8`, `target=EVK`, `wifi_hw=NXP`, `ram=256MB`, `flash=512MB`. Userland =
+**Buildroot 2020.02.1** (`os-release` `svn366`, was `svn317`), shell **BusyBox v1.32.0** (rebuilt for 8747).
+`reboot_mode=cold_boot` (with an empty `/sys/fs/pstore` at every ssh pass) was read as "the last boot was a power-on,
+not a software reboot" — but the 2026-09-30 OTA's reboot logged the same flag (§14.5), so it does not tell a power loss
+from an OTA reboot (§11). `fw_printenv` reports a bad-CRC U-Boot env → the real cmdline is baked into
+the boot image, not a live env *(verified on 8530 over ssh; not re-readable on 8747)*. (The `24G` in the defconfig is a
+module tag — the radio is dual-band, §1.)
 
 ---
 
 ## 4. OS & service catalog
 
 Busybox `init` runs `/etc/init.d/S*` (~50 scripts). The stack is **Android-derived**: an
-Android `servicemanager` + `/dev/binder`, `adbd`, a `jdwp-control` socket, `android::` symbols
-across daemons. Live daemons and their roles:
+Android `servicemanager` + `/dev/binder`, `adbd` (through 8530), a `jdwp-control` socket, `android::` symbols
+across daemons. Live daemons and their roles (read over ssh through 8530; the 8747 process list is below the table):
 
 | Process | Role |
 |---|---|
@@ -252,9 +279,10 @@ across daemons. Live daemons and their roles:
 | `mdnsd` | Apple mDNSResponder (Bonjour) |
 | `librewebserver` | **Web UI + HTTP API** (GoAhead/Embedthis) — TCP 80 |
 | `ota` | **OTA updater** (drives SWUpdate) — §10 |
-| `tcptunnelling` | **Control tunnel + LAN alert relay** — TCP 2018: a plain-text tone/EQ/max-vol control protocol on the LAN (what `lp10`'s equalizer drives — §6.3) **and** a fan-out of LUCI alerts to whoever is connected. A boost.asio TCP **server**: it opens no outbound connection and knows no relay host (§10.4) |
-| `system_monitor` · `usb_monitor` + `automount` | health/watchdog · USB hotplug + mount |
-| `dropbear` · `inetd`→`telnetd` · `adbd` | **SSH 22** · **telnet 23 (root)** · **ADB 5555/5037** |
+| `tcptunnelling` | **Control tunnel + LAN alert relay** — TCP 2018: the MCU's plain-text UART API on the LAN — player, volume, mute, tone/EQ/max-vol (what `lp10` drives, since 8747 its only channel — §6.3) **and** a fan-out of LUCI alerts to whoever is connected. A boost.asio TCP **server**: it opens no outbound connection and knows no relay host (§10.4). 8747 rebuilt it with up to two listener slots (§6.3) |
+| `system_monitor` · `usb_monitor` + `automount` | crash collector and log-report agent (§10.4) — since 8747 also a **metrics server/uploader**, dormant while `metrics_url` is empty · USB hotplug + mount |
+| `io_handler` (new in 8747, `S38io_handler`) | GPIO / LED handler over LUCI — **inert**: env `iohandler=0`, it logs `Feature IO_handler is not Supported!!!` |
+| `dropbear` · `inetd`→`telnetd` · `adbd` | through 8530: **SSH 22** · **telnet 23 (root)** · **ADB 5555/5037**. **8747 deleted all three binaries**; `inetd` still runs with an empty `inetd.conf`, serving nothing (§9) |
 | `dhcpcd` · `ntpd` · `wpa_supplicant` · `netmonitor` | DHCP · NTP · Wi-Fi · link-event monitor |
 | `daemon` (`/factory/custom/csys/bin/daemon`, signed) | Arylic **app loader** ("rak-loader" since 8530): fetches/verifies `rakoit_app` from `cdn.rakoit-ota.com/download`, independent of the OTA (§10.2) |
 | `dbus-daemon`(×2) · `rsyslogd` · `mdev` · `getty`(×2) | system plumbing |
@@ -266,6 +294,14 @@ UDP** surface (port 3721).
 > engine — `newspotifyhifi` until 2026-09-04), `airplaydemo`, `dmr`, and `bluetoothd`/`bluealsa` are running. `librecast`, `libreraat`,
 > `tidalConnect`, `qobuzConnect` are installed but their env flags are off, so their init
 > scripts don't start them (see the §0 state table).
+>
+> **On 8747 (2026-10-01, the log download's own `ps`, §14.5):** `airplaydemo` `audionexus` `automount` `bluealsa`
+> `bluetoothd` `daemon` (rak-loader) `dbus-daemon` ×2 `default_agent` `dhcpcd` `dmr` `env_service` `gatt-server`
+> `getty` ×2 `hciattach` `inetd` `librewebserver` `luciserver` `mdev` `mdnsd` `messageboxhandler` `netmonitor` `ntpd`
+> `ota` `rakoit_app` `rsyslogd` `S99roon_monitor` (sh) `servicemanager` `sourceswitchservice` **`spotifymusicpro`**
+> (the Pro engine only) `system_monitor` `tcptunnelling` `UIframework` `usb_monitor` `WACServer` `wlcdmi_server`
+> `wpa_supplicant` `yaniserver`. Not running: `dropbear`, `telnetd`, `adbd`, `newspotifyhifi`, `qobuzConnect`,
+> `tidalConnect`, `librecast_lite`.
 
 ---
 
@@ -273,7 +309,9 @@ UDP** surface (port 3721).
 
 Every feature flag, identity value and user setting on the box lives in one store, read and written through
 `getenv` / `setenv` (binder clients of `env_service`). Knowing how it persists answers most "why did it revert" and
-"why did it stick" questions — including the one the 8530 OTA raised (§8.1).
+"why did it stick" questions — including the one the 8530 OTA raised (§8.1). *(The store was read over ssh with
+`sqlite3` on 8530; 8747 has no shell, and the only window into it now is the env dump the web UI's log download writes
+into the syslog, secrets included — §10.4, §14.5.)*
 
 - **Live store:** `/data/libre/env/env.db` (`/data` → `/lsync/shared`, the persistent ubifs) — **sqlite**, one table
   `ENV_systemENV(key TEXT PRIMARY KEY, value TEXT, dbit TEXT)`, 264 rows on 8530. Key names in Appendix A.
@@ -294,10 +332,11 @@ Every feature flag, identity value and user setting on the box lives in one stor
   boot since June. Whether a *clean* row is refreshed to a changed factory value is inferred, not traced — but it is
   the only reading that explains the 8530 flag flip: `SpotifyEnabled` was dirty and stayed `1`, `SpotifyProEnabled` was
   clean and took the new factory `1`, and neither engine started (§8.1).
-- **Consequences.** A `setenv` from the app, the web UI or `lp10` is durable across reboots and — on the 8530
-  precedent — across an OTA's factory flip; a flag you never touched follows the factory. `sqlite3` is on the box
-  (`/usr/bin/sqlite3`), so `select key, value, dbit …` is a legitimate read — but the same table holds `SP_BLOB`, the
-  Wi-Fi PSK and the web password: **select key names, never `*`.**
+- **Consequences.** A `setenv` from the app, the web UI or `lp10` (through 8530) is durable across reboots and — on the
+  8530 precedent — across an OTA's factory flip; a flag you never touched follows the factory. (The 8747 OTA kept the
+  Spotify pin `0/1`, but its own factory pair is also `0/1`, so it does not test the rule.) `sqlite3` is on the box
+  (`/usr/bin/sqlite3`), so on 8530 `select key, value, dbit …` over ssh was a legitimate read — but the same table holds
+  `SP_BLOB`, the Wi-Fi PSK and the web password: **select key names, never `*`.**
 
 > The vendor app keeps its own state next door — `/lsync/source_service/{credentials.redb, secrets.json.enc,
 > session_store}` and `/lsync/cache.redb` belong to `rakoit_app` (§10.2), not to the env store.
@@ -308,7 +347,9 @@ Every feature flag, identity value and user setting on the box lives in one stor
 
 Control is **not** LinkPlay (no `/httpapi.asp`, no port 8899). It's LibreWireless **LUCI**:
 the `LUCI_local` CLI talks to `luciserver`/`messageboxhandler` over a numbered "MsgBox" bus.
-`~/.bin/lp10` (Go TUI) drives exactly this. `LUCI_local -r <MID>` reads, `-a` dumps all.
+`lp10` (Go TUI) drove exactly this over ssh until 8747 removed ssh; since 2026-10-01 it uses the `:2018` tunnel only
+(§6.3, Appendix B). Everything in §6–§6.5 that needs `LUCI_local` was verified over ssh on 9243 or 8530 and is not
+re-readable on 8747. `LUCI_local -r <MID>` reads, `-a` dumps all.
 **Two write verbs, and the difference is decisive (verified 2026-06-30):** plain
 `LUCI_local <MID> <data>` (Usage-1, "old") is a **local** write (`writeLocalMessage`) that sets a
 register the **MCU never reads**; **`LUCI_local -remote <MID> <data>`** (Usage-3) is
@@ -336,13 +377,14 @@ register the **MCU never reads**; **`LUCI_local -remote <MID> <data>`** (Usage-3
 | 770 | R | `mcu_info` (update type `xmodem`) | — |
 | 791 | R | `alsaconfig` (samplerate/channels/format) | `44100`/stereo/`I2S` |
 
-> **Mute is client-side (from `lp10`).** The controller never sends a device mute: it
-> sets **MID 64 to 0** and remembers the pre-mute level (persisted under
-> `~/.local/state/lp10`), restoring it on unmute. The device's own mute path restored the
+> **Mute (from `lp10`).** Through 8530 the controller never sent a device mute: it
+> set **MID 64 to 0** and remembered the pre-mute level (persisted under
+> `~/.local/state/lp10`), restoring it on unmute. The device's own LUCI mute path restored the
 > *wrong* level, and **MID 63 is status-only** (writing `MUTE` doesn't actually cut
-> audio), so volume-to-zero + a client-side restore is the reliable mute. (Accordingly
-> the controller's write whitelist is just MID 40 `PAUSE|RESUME|NEXT|PREV`, MID 64
-> volume, and an app-only "90" stats toggle — §6.2 — never a mute MID.)
+> audio), so volume-to-zero + a client-side restore was the reliable mute. (Accordingly
+> that controller's write whitelist was just MID 40 `PAUSE|RESUME|NEXT|PREV`, MID 64
+> volume, and an app-only "90" stats toggle — §6.2 — never a mute MID.) **Since 2026-10-01** `lp10` sends the tunnel's
+> `MUT:1;` / `MUT:0;` — a real mute in the MCU: `STA`'s mute field reads 1 and the level stays where it is (§6.3).
 
 **Multi-controller bus (`remoteID`).** Every update is tagged with the **`remoteID`** of the
 controller that made it (UART/MCU, network/app, local); luciserver routes it to the *other*
@@ -357,12 +399,15 @@ its own last value** and the panel shows a **stale** number. **`-remote 64` does
 tested 2026-06-30 and **inert** (not audible, no panel bar): the MCU **owns** volume and ignores a
 host push, so volume must stay a plain/local write. The stale panel / remote-desync is an
 MCU-ownership limitation, not a write-verb bug (`-remote` drives SoC-owned *display* data like MID
-42 — §6.4 — just not MCU-owned volume).
+42 — §6.4 — just not MCU-owned volume). Those were `lp10`'s ssh-era MID-64 writes; a tunnel `VOL:n;` takes the MCU's
+own path instead — the MCU applies it and reports it up, and Spotify's slider follows (§6.3).
 
 **Web API:** `librewebserver` (GoAhead/Embedthis Appweb) on :80 serves the setup/control UI,
 `.asp` templates, and a `/action` **goform** API (e.g. `GoForm_SetTidalmode`), plus the
 captive-portal setup + OTA pages and `logs → /tmp/libre/logdump/`. Routes/auth in
-`/factory/custom/web/{route.txt,auth.txt}`; web creds from env (`Defaultweb*`/`Newweb*`).
+`/factory/custom/web/{route.txt,auth.txt}`; web creds from env (`Defaultweb*`/`Newweb*`). Its **Spotify** switch is the
+HiFi engine's flag only — it reads "disabled" on a Pro box, and switching it on breaks Spotify at the next network event
+(§8.1). Its "Volume Mode" sends `VOLUMEMODE:Variable|Fixed` to the MCU (Fixed locks the output level).
 
 **Env store:** the sqlite settings DB behind `getenv`/`setenv` — §5. Every feature is gated there (Appendix A).
 
@@ -391,14 +436,17 @@ The `LP10` text on the chassis is **silkscreen**, not on the panel. How it works
   building glyph (absent from every MsgBox) is MCU-firmware-internal.
 - The MCU is also the **input + power** controller: the **4 touch buttons** + IR remote return
   up the UART (volume → MsgBox 64), plus **standby** (`ACK_MCU_ENTERED/EXITED_STANDBY`). Its
-  own firmware (v16 at the teardown, **v23** since the August-2026 OTA — §14.2) updates over this UART via **XMODEM** (MsgBox 770 `type:xmodem`).
+  own firmware (v16 at the teardown, v23 from the August-2026 OTA — §14.2, **v29** since the 2026-09-30 OTA — §14.5) updates over this UART via **XMODEM** (MsgBox 770 `type:xmodem`).
 
 > Unrelated: `wlcdmi` is a **Wayland + DRM / Widevine-CDM** GStreamer element for the **Cast**
 > media path (`wl_display_*`, `/usr/lib/wlcdmidrm`, `/dev/secmem`), not the front panel.
 
-### 6.2 The `lp10` streaming loop (the `@@`-record protocol)
+### 6.2 The `lp10` streaming loop (the `@@`-record protocol — retired with 8747)
 
-`lp10` doesn't poll `LUCI_local` per frame. It runs **one** BusyBox-ash loop on the
+> **Retired 2026-10-01.** The loop ran over ssh, which 8747 removed; `lp10` now rides the `:2018` tunnel alone (§6.3,
+> Appendix B). This section stays as the record of how the 8530-era controller read the box.
+
+`lp10` didn't poll `LUCI_local` per frame. It runs **one** BusyBox-ash loop on the
 device (over its single SSH connection) that streams **`@@`-framed records** on stdout
 and takes whitelisted commands on stdin — so the laptop side just parses a stream and
 the per-tick device work is a handful of builtins. The sections of a record:
@@ -433,15 +481,16 @@ the per-tick device work is a handful of builtins. The sections of a record:
   holds a login back (30 s, doubling to 2 min) once logins end short twice in a row —
   the dropbear lockout (§11).
 
-### 6.3 The :2018 control tunnel (tone / EQ / max-volume)
+### 6.3 The :2018 control tunnel (the MCU's UART API — `lp10`'s only channel since 8747)
 
-The `tcptunnelling` daemon's **TCP 2018** is not only the cloud remote-relay path (§10) —
-on the LAN it speaks a **plain-text control protocol** for tone, EQ, deep-bass, and the
-output cap, and it's the channel `lp10`'s equalizer drives **directly** (separate from
-the SSH player stream, so a dead tunnel only greys out the EQ). Wire format: bare ASCII
+The `tcptunnelling` daemon's **TCP 2018** (no cloud relay — §10.4) speaks a **plain-text control protocol** on the LAN:
+the player (play state, transport, volume, mute), tone, EQ, deep-bass and the output cap. It was the channel `lp10`'s
+equalizer drove beside the ssh player stream; **since 8747 removed ssh it is `lp10`'s only channel to the box**, player
+and equalizer both (Appendix B). Wire format: bare ASCII
 **`CODE:VALUE;`** (semicolon-terminated, **no newline, no framing, no auth**); a bare
-**`CODE;`** is a *query* — the device answers by **broadcasting `CODE:VALUE;` to every
-connected client**. The device clamps authoritatively and echoes the applied value back.
+**`CODE;`** is a *query* for most codes — the device answers by **broadcasting `CODE:VALUE;` to every
+connected client** — but `POP`, `NXT` and `PRE` are *actions* (below). The device clamps authoritatively and echoes the
+applied value back.
 
 | Code | Control | Range |
 |---|---|---|
@@ -453,15 +502,44 @@ connected client**. The device clamps authoritatively and echoes the applied val
 | `VBI` | deep-bass **intensity** | 0–100 |
 | `BAL` | **balance** (+ favours right) | −100…+100 |
 
-> **Corrected 2026-08-22 (re-verified on MCU v23 on 2026-09-02 and 2026-09-12):** this socket is the full public
-> **Arylic UART API** (developer.arylic.com/uartapi) tunnelled to the MCU — the same 102 + 21-code
-> table in both `mcu.bin` images. `EQS` is the preset *index* (an earlier `lp10` toggled it 0/1 and
+> **Corrected 2026-08-22 (re-verified on MCU v23 on 2026-09-02 and 2026-09-12, on MCU v29 on 2026-10-01):** this
+> socket is the full public **Arylic UART API** (developer.arylic.com/uartapi) tunnelled to the MCU — the same command
+> table in every `mcu.bin` image (102 + 21 codes by the 09-02 count; the 10-01 diff counts 103 + 21 + 11, identical in
+> v23 and v29 — §10.3). `EQS` is the preset *index* (an earlier `lp10` toggled it 0/1 and
 > was selecting *Classical* for "on"); `EQE` is the real enable. Other safe getters answered live:
 > `VER:23-4ef47210-9` · `STA:NET,0,68,0,0,3,0,0,1,0` · `SRC:NET` · `LST:NET,BT,LINE-IN,USBPLAY` ·
 > `VOF:1` `VST:3` `DLY:60` `CFE:0` `CFF:110` `LED:1` `BEP:1` `POM:NONE` `CHN:L` `MRM:N` · `NAM` hex-UTF-8.
-> **Never send bare** `WRS;`, `SYS:*`, `DEF:SAV`, `POP/STP/NXT/PRE/PST`, `PMT:`/`COE:` (setup / reboot /
-> transport). **Client gotcha:** `tcptunnelling` serialises clients — a burst of one-shot connections
-> (26 in a row) left the next connect hanging; hold one connection and query sequentially.
+> **Never send bare** `WRS;`, `SYS:*`, `DEF:SAV`, `STP`/`PST`, `PMT:`/`COE:` (setup / reboot /
+> transport). `POP`/`NXT`/`PRE` are the transport actions — they act when sent bare, so they are never a query; since
+> 2026-10-01 `lp10` sends them on a keypress only. **Client gotcha:** `tcptunnelling` serialises clients — a burst of one-shot connections
+> (26 in a row) left the next connect hanging; hold one connection and query sequentially. **Second gotcha
+> (2026-10-01):** a fresh connection was once accepted and never served — no reply to any getter for 27 s — while the
+> next connection answered at once; a client must treat a silent connection as dead. **Third (framing):** the frame
+> ends at the first `;`, and the track fields are free text, so a title holding `;VOL:100` would read as a title plus
+> a real `VOL:100` frame. Whether the device escapes a `;` in a title is not established (none seen); `lp10` drops the
+> values it acts on from any read that carries a track field (Appendix B).
+
+**The player over the tunnel (verified live 2026-10-01 on MCU 29, while Spotify played).**
+
+- **Getters** (read-only): `STA;` → `STA:NET,0,83,0,0,3,0,0,1,0;` = source, mute, volume, treble, bass, net, internet,
+  playing, led, upgrading · `VOL;` · `MUT;` · `PLA;` · `SRC;` · `LST:NET,BT,LINE-IN,USBPLAY;` · `WWW:0;` ·
+  `VER:29-1d316f0c-10;` (API level **10**; 9 on MCU 23) · `MXV:100;` ·
+  `PEQ:0@Flat,1@Classical,2@Pop,3@Jazz,4@Rock,5@Vocal;` · `EQE` `EQS` `BAS` `MID` `TRE` `VBS` `VBI` `BAL`.
+- **Pushes to every TCP client:** on a track change `TIT:<title>;ART:<artist>;ALB:<album>;` in **plain UTF-8** (not
+  the hex the UART doc describes); on resume `PLA:1;VND:spotify;`; on pause `PLA:0;`; after `NXT;` an echo `RAW:NEXT;`
+  (new in MCU 29: `RAW:NEXT;` / `RAW:PREV;`); and `VOL:n;` when the Spotify app changes the volume (steps of 4 while the
+  slider is dragged). Whether the knob, the remote or a mute push a frame was not checked. No `ELP` (the doc: "not
+  work when sent in TCP"), so no position or duration — 25 s of passive listening while a track played produced no
+  frame.
+- **Actions:** `POP;` toggles play/pause (the reply is the `PLA` push) · `NXT;` skips (then `TIT`/`ART`/`ALB`) ·
+  `VOL:43;` echoes `VOL:43;` and is applied · `MUT:1;` echoes `MUT:1;` twice and `STA`'s mute field reads 1 — a real
+  MCU mute — and `MUT:0;` puts it back.
+- **The `VOL` path.** A tunnel `VOL:n;` goes through the MCU: `[LS->MCU] MB# 112 VOL:43;` → the MCU applies it →
+  `[MCU->LS] MB# 64 SET 43` → `IncomingHouseKeeping() Received new volume 43` → Spotify is told (`OnVolumeChangeEvent`,
+  its slider follows) → `SourceSwitch: processVolumeChange() Applied volume: 43`. The knob and the remote take the
+  same MCU path. The Spotify app's own volume does not reach the audible stage on 8747 (§8.1).
+- **8747's `tcptunnelling`** (bundle diff): up to two TCP listener slots, each port set by a `TUNNEL_START` message;
+  payloads are no longer logged (`TCP -> MCU from <ip>:<port> (listen 2018), N bytes`).
 
 > **Write-through (verified):** a `CODE:VALUE;` set from a **network client reaches the
 > MCU** and takes effect; the *same* string injected locally via **`LUCI_local 112` does
@@ -668,12 +746,14 @@ live-observed IDs with **no** named entry — the bus doesn't require one.)*
 
 ## 7. Networking
 
+Interfaces as read over ssh on 8530 (not re-readable on 8747, except the `eth0` lease the LAN sees):
+
 | Iface | Address | Notes |
 |---|---|---|
 | `eth0` | **<device-ip>/24** (+ IPv6 ULA + LL) | **Default route** (via <gateway>). MAC `<powerline-mac>` = the TL-WPA4220 powerline link |
 | `wlan0` | link-local only — **DISCONNECTED** | Up but unassociated (device is wired). MAC `<wlan0-mac>`. Radio is dual-band (§1) |
 | `p2p1` | — | Wi-Fi-Direct/P2P iface |
-| `usb0` | **192.168.5.1/24** | USB-C device-gadget (below) |
+| `usb0` | **192.168.5.1/24** (through 8530) | USB-C device-gadget (below); 8747 gives it no IP |
 | `lo`, `sit0` | 127.0.0.1 / — | loopback, inactive 6in4 |
 
 DNS via DHCP (`fibertel.com.ar`; 1.1.1.1 / 8.8.8.8 + ISP). IPv6 active on the LAN.
@@ -686,19 +766,29 @@ own DHCP server, which answers when it does not see the router. For those four m
 that unit, and the network event restarted `rakoit_app` and the Spotify engine. Setting that unit's DHCP server to
 off (not "auto") keeps it from answering; that is a change on the TP-Link, not on the LP10.
 
-**Listening ports** (2026-09-12, re-read 2026-09-23; owners resolved through `/proc/net/*` socket inodes):
+**Again after the power loss (the log download, read 2026-10-01).** At the 2026-09-28 power-on `dhcpcd` logged
+`offered 192.168.0.101 from 192.168.0.254` (a 180 s lease, default route via .254), renewed it with the route via
+192.168.0.41, and only ≈7 min later `offered 192.168.0.13 from 192.168.0.1` (28,800 s). The 8747 boot (a reboot, the
+powerline already up) leased .13 from .1 directly. 192.168.0.254 does not answer now (ARP incomplete); .41 is the
+TP-Link (`0C:EF:15`, HTTP 200). TP-Link powerline/extender units default to 192.168.0.254 while they boot, so .254 and
+.41 are **likely** the same TL-WPA4220 — likely, not verified. Either way, a unit on the LAN serves DHCP for minutes
+after a power cut.
+
+**Listening ports** — tcp from a full connect scan of 1–65535 on 8747 (2026-10-01); the owners and the udp rows from
+`/proc/net/*` socket inodes on 8530 (2026-09-12, re-read 2026-09-23) — not re-readable on 8747, except LSSDP's udp
+1800, which answers:
 
 | Port | Owner | Service |
 |---|---|---|
-| tcp 22 / 23 | dropbear / inetd | **SSH** / **telnet (root)** |
+| tcp 22 / 23 | — (dropbear / inetd through 8530) | **closed since 8747** — SSH / telnet (root) through 8530; the binaries are gone (§9) |
 | tcp 80 | librewebserver | Web UI / API (a v6 socket; reachable over v4) |
-| tcp 2018 | tcptunnelling | **control tunnel + LAN alert relay** (§6.3, §10.4); one established loopback client — `rakoit_app` |
-| tcp 2345 · 46835 | rakoit_app | PlaylistServer (`playlist_addr`, bound 0.0.0.0) · a second, dynamic-port listener that moves whenever the app restarts (43761 → 33719 → 46835 since 2026-09-19; HTTP 404) |
-| tcp 5037 (lo) / 5555 | adbd | ADB (local / **network**) |
+| tcp 2018 | tcptunnelling | **control tunnel + LAN alert relay** (§6.3, §10.4); one established loopback client — `rakoit_app` (8530) |
+| tcp 2345 · 44317 | rakoit_app | PlaylistServer (`playlist_addr`, bound 0.0.0.0) · a second, dynamic-port listener that moves whenever the app restarts (43761 → 33719 → 46835 → **44317** on 2026-10-01; HTTP 404). Neither answers a now-playing route (§8.7) |
+| tcp 5037 (lo) / 5555 | — (adbd through 8530) | **closed since 8747** — ADB (local / **network**) through 8530 |
 | tcp 7000 | airplaydemo | AirPlay (RTSP/control) |
 | tcp 7777 | luciserver | LUCI control |
-| tcp 9095 **or** 9096 | spotifymusicpro **or** newspotifyhifi | Spotify ZeroConf — **per engine** on 8530: Pro `:9095`, HiFi `:9096` (HiFi sat on 9095 before 8530); §8.1 |
-| tcp 49494 | dmr | DLNA control |
+| tcp 9095 **or** 9096 | spotifymusicpro **or** newspotifyhifi | Spotify ZeroConf — **per engine**: Pro `:9095`, HiFi `:9096` (HiFi sat on 9095 before 8530); on 8747 9095 is open and 9096 closed (HiFi not running); §8.1 |
+| tcp 49494 | dmr | DLNA control + the UPnP `description.xml` (§8.7) |
 | udp 68 / 123 | dhcpcd / ntpd | DHCP / NTP |
 | udp 1800 / 1900 | luciserver / dmr | **LSSDP** discovery (below) / SSDP |
 | udp 3721 | airplaydemo | LinkPlay-style UDP discovery |
@@ -708,15 +798,18 @@ off (not "auto") keeps it from answering; that is a change on the TP-Link, not o
 `WACServer` (Apple WAC setup) runs but **no longer binds tcp 5000** since 8530 (it did on 9243).
 
 **LSSDP** (udp 1800, answered by `luciserver`): an SSDP-style `M-SEARCH` to the box (or the multicast group) gets
-`HTTP/1.1 200 OK` with `USN:<wlan MAC, no colons>` · `Version:LSSDP 1.0` · `FWVERSION:AR241CE_8530.23.2` · `CAST_MODEL:LP10` ·
+`HTTP/1.1 200 OK` with `USN:<wlan MAC, no colons>` · `Version:LSSDP 1.0` · `FWVERSION:AR241CP_8747.29.2` (8530:
+`AR241CE_8530.23.2`) · `CAST_MODEL:LP10` ·
 `PORT:7777` · `TCPPORT:2020` · `DeviceName:<device-name>` · `State:S` · `NETMODE:ETH0` · `WIFIBAND:ETH` ·
-`SPEAKERTYPE:Wireless Speaker` · `SOURCE_LIST:LS8::01000030` · `MRAMode:DDMS`. Pure UDP, no auth — the ssh-free liveness
-and discovery probe `lp10` uses (Appendix B).
+`SPEAKERTYPE:Wireless Speaker` · `SOURCE_LIST:LS8::01000030` · `MRAMode:DDMS` — unchanged by 8747 but for the build.
+Pure UDP, no auth — the liveness, discovery and firmware probe `lp10` uses (Appendix B).
 
 **USB-C device-gadget** (`S89usbgadget`): plugged into a host, the LP10 presents a composite
 **RNDIS network (`usb0`=192.168.5.1) + ADB** gadget (VID `0x18D1` Google / PID `0x4e26`) — the
-service/debug path. Arylic also lists USB-C as **"PC audio"** (a USB-audio gadget function);
-`snd_usb_audio` wasn't a loaded module at inspection, so that UAC path wasn't separately confirmed.
+service/debug path. **On 8747** the script comments out `usb_net_ipconfig`, so the RNDIS gadget still enumerates with
+no IP, and it still calls `adbd`, which the build deleted. Arylic also lists USB-C as **"PC audio"** (a USB-audio
+gadget function); `snd_usb_audio` wasn't a loaded module on 8530, so that UAC path wasn't separately confirmed (8747
+loads `snd-usb-audio` at boot — §14.5).
 
 **Wi-Fi firmware-crash bug:** the SDIO Wi-Fi (`aml_w1`) firmware can wedge RX-ok/TX-dead on a
 link event; the in-driver recovery never advances, so the box keeps scanning but can't
@@ -741,18 +834,32 @@ A **certified Spotify Connect endpoint** on Spotify's embedded SDK (eSDK). The f
 
 | Engine | Daemon / lib | eSDK | ZeroConf on 8530 | Notes |
 |---|---|---|---|---|
-| **HiFi** ("legacy") | `newspotifyhifi` / `libspotifyhifi.so` | **3.203.239-g1d6bd565** (unchanged 9243 → 8530) | SRV **9096**, `version 2.9.0` (9095 before 8530) | Ogg/Vorbis + AAC; its softvol volume path always worked |
-| **Pro** ("new") | `spotifymusicpro` / `libspotifypro.so` | **3.211.130-g110e3e03** (3.205.187 on 9243) | SRV **9095**, `version 2.10.0` | the only engine that negotiates **FLAC**; its volume bypassed the softvol right after 8530 — fixed by `rakoit_app` v32 (§10.2) |
+| **HiFi** ("legacy") | `newspotifyhifi` / `libspotifyhifi.so` | **3.203.239-g1d6bd565** (unchanged 9243 → 8530 → 8747) | SRV **9096**, `version 2.9.0` (9095 before 8530) | Ogg/Vorbis + AAC; its softvol volume path always worked on 8530 and earlier; never ran on 8747 (below) |
+| **Pro** ("new") | `spotifymusicpro` / `libspotifypro.so` | **3.216.31-g317ae1c7** on 8747 (3.211.130-g110e3e03 on 8530, 3.205.187 on 9243) | SRV **9095**, `version 2.10.0` (9095 on 8747 too) | the only engine that negotiates **FLAC**; its volume bypassed the softvol right after 8530 — fixed by `rakoit_app` v32 (§10.2); on 8747 the app's volume no longer reaches the softvol (below) |
 
 **This unit:** HiFi from June to 2026-09-04; **Pro since 2026-09-04 15:06**, switched from `lp10`'s services pane (§14.3).
-The phone is only a remote — the **speaker** authenticates and pulls audio itself (`Server: eSDK`; Ogg/Vorbis via
-`decoder_vorbis.c`, FLAC on Pro when the account allows).
+The pair held through the 8747 OTA: the 2026-10-01 env dump reads `SpotifyEnabled 0 / SpotifyProEnabled 1`, and 8747's
+own factory pair is also `0/1`. The phone is only a remote — the **speaker** authenticates and pulls audio itself
+(`Server: eSDK`; Ogg/Vorbis via `decoder_vorbis.c`, FLAC on Pro when the account allows).
 
 - **Env-gated and mutually exclusive.** `S99newspotifyhifi` starts HiFi only when `SpotifyEnabled=1 && SpotifyProEnabled=0`;
   `S99spotifymusicpro` starts Pro only when `SpotifyProEnabled=1 && SpotifyEnabled=0`. Each script is guarded on the *other*
   flag being clear, so **both set = neither engine starts** — exactly what the 8530 OTA produced (factory default flipped
-  `1/0 → 0/1`, the user's dirty `SpotifyEnabled=1` survived the merge, §5). `lp10` therefore always writes the pair
-  together (`1/0`, `0/1` or `0/0`), and either pin persists across reboots (§5). No CLI args — all config from env.
+  `1/0 → 0/1`, the user's dirty `SpotifyEnabled=1` survived the merge, §5). `lp10` therefore always wrote the pair
+  together (`1/0`, `0/1` or `0/0`) while it had ssh, and either pin persists across reboots (§5); since 8747 it writes
+  no env at all. No CLI args — all config from env.
+- **The web UI's Spotify switch knows only HiFi** (read from the 8747 bundle 2026-10-01: `index.asp`,
+  `script_index.js`, and `librewebserver` disassembled; nothing sent to the box). The page shows `GetSpotifySupport()`,
+  which reads `kFeatureSpotify` = **`SpotifyEnabled`** (resolved in `libenvitems.so`, where `kFeatureSpotifyPro` =
+  `SpotifyProEnabled`); the web server never reads `SpotifyProEnabled`. So on a Pro box (`0/1`) the page says
+  **"disabled" while Spotify plays**. Saving runs `GoForm_SetSpotifymode`: **enable** = `SetEnvItemByName(SpotifyEnabled,
+  "1")` + `/etc/init.d/S99newspotifyhifi netup` — with Pro at 1 the HiFi gate fails, Pro plays on, but its own gate now
+  fails too, so after the next `netdown` (a link drop) or a reboot **no engine starts** (the both-at-1 state above).
+  **Disable** = `SpotifyEnabled=0` + `S99newspotifyhifi netdown` (kills HiFi only): a no-op on a Pro box. Both are
+  refused while something plays ("Fail to apply Spotify Connect settings, playback is going on"). Recovery from an
+  accidental enable: disable it again, then reboot the box if Spotify is already gone. The page cannot switch to HiFi
+  (it never clears `SpotifyProEnabled`), and nothing on it touches the volume bug below: that lives in sourceswitch's
+  shared `UpdateAppVolume`, not in the engine flags.
 - **Network-event lifecycle, not boot.** `netmonitor` (a shell loop polling the default route every 3 s) calls every
   `S*` script that mentions `netready` with `netready` on the first address, `netchange` on an address / interface change,
   `netup` / `netdown` on link state. The engine scripts relaunch on `netup|netready|netchange` and **kill on `netdown`**;
@@ -785,8 +892,50 @@ The phone is only a remote — the **speaker** authenticates and pulls audio its
   1–6 s, with **no error line before it** (nothing from TLS, DNS or the link), and only 3 of the 950 fall within
   5 min of any network event the box logs (carrier, DHCP, IPv6 router advertisement). So the drop is not on the LAN
   side the box can see. The next step is off the box: a capture on the router of the access-point connection
-  (104.154.0.0/15), or a second Connect device on the same network to compare. `lp10 sweep` now prints the
-  per-day counts, so a change in the rate shows up.
+  (104.154.0.0/15), or a second Connect device on the same network to compare. `lp10 sweep` printed the per-day counts
+  while it had ssh; since 8747 they come from the web UI's log download (§15).
+  **It continues on 8747 (the log download, 2026-10-01).** `has been lost` per day: 09-14 29 · 15 69 · 16 26 · 17 20 ·
+  18 32 · 19 10 · 20 36 · 21 51 · 22 42 · 23 16 · 24 55 · 25 49 · (26–28 the box off) · 29 54 · 30 33 · 10-01 35 —
+  every one from `spotify_pro`, the only engine that ran. Since the 8747 boot: 61 in ≈37 h (≈40 a day) — eSDK
+  3.216.31 did not change the rate.
+- **The Spotify app's volume does nothing audible on 8747 (the log download, 2026-10-01).** An app volume change runs
+  `SPOTIFY_CONNECT: Spotify localvolume = 46` → `SourceSwitch::UpdateAppVolume iAppVolume = 46` → `Failed to set volume
+  using amixer command: amixer -D softvoldefault sset 'Master' 46%` → luci writes MID 64 = 46 and sends `[LS->MCU] MB#
+  64 RESPONSE 46` (so `STA` / `VOL` then report 46) → **no `processVolumeChange()`**. The register, the MCU and the
+  Spotify slider all say 46; the softvol — the audible stage — stays where it was. Counts over the log: on 8530
+  (09-13 → 09-30) 340 of 445 Spotify volume events were followed by `processVolumeChange() Applied volume: <same>`, and
+  `UpdateAppVolume` ran 58 times with **0** amixer failures; on 8747 every app-originated change fails (13
+  `UpdateAppVolume`, 16 amixer failures including `lp10`'s test sets) and none is applied — the only applied ones were
+  `lp10`'s tunnel `VOL:` sets. The knob, the remote and a tunnel `VOL:` take the MCU path (§6.3) and still work. The
+  HiFi engine on 8747 is untested (it never ran); `UpdateAppVolume` lives in sourceswitch, shared by both engines, so
+  the same failure is likely but not established. **Workaround while `lp10` runs (2026-10-01):** its volume bridge
+  re-sends as `VOL:n;` the first status reading of each connection and any later device-reported level it did not set.
+  Verified live: the MCU pushes `VOL:n;` to every tunnel client when the Spotify app changes the volume (steps of 4
+  while dragging), `lp10` re-sent each level within ≈0.1–0.2 s, with no feedback loop (each level seen exactly twice:
+  the push, then `lp10`'s echo), and the user confirmed by ear that the room followed the Spotify slider. Only while
+  `lp10` runs; the real fix is the vendor's.
+
+**The two engines in the syslog (the log download, 2026-09-13 → 10-01).** The Pro engine logs as `spotify_pro`
+(`SPOTIFY_CONNECT:` prefix, 31,406 lines), HiFi as `spotify` (`SPOTIFY:` prefix, 44 lines).
+
+- **Pro ran the whole span.** Its sessions by PID: 5673 from the log's start → 09-17 14:21:07; 26906 09-17 14:21:38 →
+  09-19 03:03:20 (eth carrier lost); 32197 09-19 03:03:31 → 03:07:53 (the .41 DHCP episode, §7); 1667 09-19 03:08:03 →
+  09-24 13:46:33; 31564 09-24 13:46:41 → 09-25 15:42:33 (then the power loss); two short ones at the 09-28 boot (eth
+  drop / DHCP churn); 4523 09-28 23:59:35 → silent after a lost connection at 09-30 07:28, ended by the OTA reboot;
+  1321 on 8747 from 09-30 07:57:22, still running at the download. No crash or segfault line for either engine.
+- **HiFi ran only twice, ≈1 s each, both on 8530:** 09-17 14:21:37 (PID 26879) and 09-24 13:46:40 (PID 31538). Each
+  time the running Pro process stopped mid-activity 7–30 s before (14:21:07 while resuming audio; 13:46:33 while
+  handling a volume change); HiFi logged only its init (`initSpotifyLibrary`, `startSpotifyLogin`, `first start`,
+  waiting for an active source — no login, no playback), and a new Pro process started 1 s later. The pattern matches a
+  cycle Pro → off → HiFi → Pro (what `lp10`'s 8530 services pane did with `setenv` + an init `netready`), but the log
+  holds no ssh, `setenv` or env line at those moments: **the trigger is not established.**
+- **On 8747 HiFi never started** (`ps` lists only `spotifymusicpro`; `:9096` closed; flags `0/1`). `lp10` can no
+  longer switch engines (it needed `setenv` over ssh); whether the web UI can is not established.
+- **What actually played:** the now-playing JSON (MID 42 on 8530, `UIframework`'s PlayView on 8747) shows the Pro
+  engine playing **Ogg Vorbis, 16-bit / 44.1 kHz, 320 kbps** — 5,172 records on 8530, 6 of 8 on 8747 (the other 2
+  `Unknown`, bitrate 0); 24 records at 160 kbps on 09-25; `setSampleFormat` always 44100 Hz / 2 ch / 16 bit. **No FLAC
+  record in 17 days**, so the Pro engine's lossless path was never used here; why (account, app quality setting,
+  rollout) is not established from the log.
 
 **Proven socket map** (fd → `/proc/net/tcp`, HiFi engine, one capture):
 
@@ -805,7 +954,8 @@ The phone is only a remote — the **speaker** authenticates and pulls audio its
 ### 8.2 AirPlay 2
 `airplaydemo -n -d`, built from Apple's **AccessorySDK** with **PTP** timing (`libre_airplay_v2`).
 Ports 7000 (RTSP/control) and udp 3721; the WAC setup port 5000 (`WACServer`) has not been bound since 8530. Apple Home / access control + AirPlay
-password (env `AirPlayHomeAccessControlEnabled`, `AirPlayAppleHomePassword`, `AirPlayMetaData`).
+password (env `AirPlayHomeAccessControlEnabled`, `AirPlayAppleHomePassword`, `AirPlayMetaData`). 8747 keeps
+`AirPlay/366.0` (TXT `srcvers=366.0`); its production build strips the self-test code (`airplaydemo` 4.98 → 1.90 MB).
 
 ### 8.3 Google Cast
 `librecast`/`librecast_lite` (`chromecast::CastControl`). **Currently off** (`GoogleCast=false`,
@@ -831,7 +981,11 @@ addr `<bt-mac>`, name `<device-name>` (default `BT_DeviceName=Arylic LP10`), Cla
 
 ### 8.7 DLNA / UPnP
 `dmr` renderer — SSDP on 1900, control on 49494. `description*.xml` in the web dir. Env
-`DMREnable`/`DMPEnable`.
+`DMREnable`/`DMPEnable`. **Live on 8747 (2026-10-01):** `http://<device-ip>:49494/description.xml` names friendlyName
+`Living`, Arylic, LP10, modelNumber 2.0, "C4A Wireless Speaker", with AVTransport, RenderingControl and
+ConnectionManager. RenderingControl `GetVolume` returns the same level as the tunnel's `VOL` (83 at the time), but
+AVTransport stays `STOPPED` with empty metadata while Spotify plays — it covers DLNA sessions only. `rakoit_app` is itself a UPnP client of this renderer (its
+`/upnp/control/rendertransport1`), and its `:2345` PlaylistServer and dynamic port answer no now-playing route.
 
 ### 8.8 Airable / TuneIn / aggregated services
 `UIframework` embeds the **Airable** aggregator (`auth.airable.io`) + **TuneIn** (`opml.tunein.com`,
@@ -861,7 +1015,7 @@ HighResAudio, IDAGIO, Sony Select hi-res**. Internet radio, podcasts, browse/log
 **Secure silicon:** OP-TEE (`/dev/tee*`, `tee-supplicant`, `optee`), `secmon`, **eFuse** key
 store + `unifykey`, HW crypto DMA + RNG. `S59provision_key_inject` injects keys at boot.
 
-**Security posture (LAN management surface is wide):**
+**Security posture — through 8530 the LAN management surface was wide:**
 - **Telnet (root) :23**, **SSH (root) :22**, **network ADB :5555** — all reachable on the LAN;
   root login enabled (`/etc/passwd`: `root:…:/bin/sh`). Telnet and SSH ask for the root password. **ADB does
   not**: `adbd` (android-tools 4.2.2, no `adb_keys`) answers a bare `CNXN` with `CNXN` and the build-template
@@ -869,13 +1023,28 @@ store + `unifykey`, HW crypto DMA + RNG. `S59provision_key_inject` injects keys 
   <device-ip>:5555; adb shell` is a **root shell for anyone on the LAN**, Wi-Fi PSK and Spotify blob included.
 - Web UI creds in env (`Defaultwebuserpassword`, `Newweb*`).
 - `androidboot.selinux=enforcing` is in the cmdline but **SELinux is not active** (no
-  `selinuxfs`) — inherited Android boilerplate.
+  `selinuxfs`) — inherited Android boilerplate *(verified on 8530 over ssh; not re-readable on 8747)*.
 - Secret env values **never read** (key names only): `SP_BLOB`/`SP_USERNAME`,
   `AlexaRefreshToken`, `Airable{Auth,Secret}`, `*AppSecret`, `*Password`, Wi-Fi PSK.
 
-> Fine as a trusted-LAN appliance; the open root telnet/ADB/SSH would be a real exposure if
-> ever bridged or port-forwarded — and ADB already is one to every guest and gadget on the same Wi-Fi.
-> Client isolation / an IoT VLAN is the router-side fix; closing the ports is a device write, which this doc never does (§15).
+**Since 8747 (the production build, bundle diff + port scan, 2026-10-01): remote access removed.** Deleted from the
+rootfs: `usr/sbin/dropbear`, `etc/init.d/S50dropbear`, `etc/dropbear`, `usr/bin/dropbearkey`, `dropbearconvert`,
+`dbclient`, `ssh`, `scp`, `usr/sbin/telnetd` (and its `inetd.conf` line — `inetd` still runs, serving nothing),
+`usr/bin/telnet`, `usr/bin/adbd` (`S89usbgadget` still calls it), `bin/su`, `bin/chmod`, `bin/chown`;
+`S89usbgadget` comments out `usb_net_ipconfig`. tcp 22, 23, 5037 and 5555 are closed. The root hash in `/etc/shadow`
+changed (whether the password changed: not established). There is no ssh server binary in the image, so no env flag or
+web setting can bring ssh back on this build. **What remains:**
+- the **serial console** — `ttyS0::respawn:-/bin/sh` (`inittab` unchanged), a root shell on the serial port;
+- **`bluetoothd -n -d`** — still in debug mode: `S44bluetooth` drops `-d` only on a defconfig tagged `nodi`, and the
+  production defconfig is not;
+- the **`:2018` tunnel** — player, volume, mute and EQ for anyone on the LAN, no auth (§6.3);
+- the web UI's **local OTA upload** (`index.asp` LocalOTA forms). `ota` passes no `-N` (no-downgrading) to swupdate in
+  its format strings, but whether a downgrade to 8530 would be accepted is not established (not tried);
+- the web UI's **log download**, which writes the whole env store, secrets included, into the syslog it serves (§10.4).
+
+> Fine as a trusted-LAN appliance. Through 8530 the open root telnet/ADB/SSH was a real exposure — ADB to every guest
+> and gadget on the same Wi-Fi; 8747 closed those three. Client isolation / an IoT VLAN is still the router-side fix for
+> what remains; closing ports is a device write, which this doc never does (§15).
 
 ---
 
@@ -895,23 +1064,28 @@ would have to interrupt (`Paused`). It posts
 with "Mutual Authentication" enabled on its side, gets `No update available`, and the MCU then reports `NO_UPDATE` on
 MsgBox 223 (98 such reports in `/lsync/app.log` between 2026-08-25 and 09-12, 167 by 09-23). It also warns `GoogleCast is
 set to False on a CAST product` on every check. Related env, all new in 8530: `OtaUpdateSchedule`, `OtaSkipCount`,
-`OtaSkipEnableMask`, `OtaAckTimeout`, `OtaStandbyUpdate=0`.
+`OtaSkipEnableMask`, `OtaAckTimeout`, `OtaStandbyUpdate=0`. **The 8747 install, from the box's own log** (§14.5): the
+timer is 14,400 s, the first check 5 s after boot; the 2026-09-30 07:52:43 check found the update, logged `Device going
+for Periodic Upgrade!!! Current Playback State = 1` / `CurrentPlayBackState: 'Stopped'` before it started — the OTA
+installs only when playback is stopped — and the box ran 8747 by 07:57; every 4-hourly check since answers `Idle`. On
+8747 `ota` first tries a key from unifykey `ota_key` (written to `/tmp/swupdate-public.pem`) and falls back to the
+unchanged `/etc/swupdate-public.pem`.
 
 **Where the verdict survives.** The syslog's `error string` line rotates out of the live file within half an hour of
 playback (§11); the MsgBox-223 report stays in `/lsync/app.log` for weeks —
 `[2026-09-23 14:56:15.634] [DEBUG] [luci-rx] … command=223 … payload="NO_UPDATE"`, at xx:56 every 4 h this boot. `lp10`
-reads the box's own verdict from there since 2026-09-23 (the last 256 KiB of the file: 0.03 s on the box, against 0.36 s
-for the whole 4.7 MB).
+read the box's own verdict from there over ssh from 2026-09-23 (the last 256 KiB of the file: 0.03 s on the box, against
+0.36 s for the whole 4.7 MB) until 8747 removed ssh; now the OTA lines are read from the web UI's log download (§15).
 
 **Manifest API (probed read-only 2026-07-01, re-probed 09-02 and 09-12).** `/v1` is a **Rust/axum + serde** JSON
 endpoint — **`POST`** only (`GET` → 405), `Content-Type: application/json`, body
 `{"device":{"brand","deviceId","fwVersion","model", …}}` (extra keys ignored; a synthetic `deviceId` is accepted — **no
 device auth**; the client's mTLS is not required). Up to date → `{"errorCode":1001,"errorString":"No update available"}`;
 an **older `fwVersion`** → `{"errorCode":1000,"errorString":"SUCCESS","url":"…","version":"AR241CE_8530","otapackage":"…",
-"castVersion":"0.0.0","mcuOnlyUpdate":false}`. **As of 2026-09-23 the newest build the vendor has is still 8530 — but the
-manifest no longer offers it:** `AR241CE_9243` (and a made-up `AR241CE_1`) now get `1001 No update available` from both
-hosts, where on 09-12 9243 was still offered the 8530 package. Both bundles are still on the CDN, unchanged (size, date,
-etag). Whether the rollout was paused or narrowed (for example to device IDs) cannot be seen from outside.
+"castVersion":"0.0.0","mcuOnlyUpdate":false}`. **As of 2026-10-01 the newest build is `AR241CP_8747`:** an older
+`fwVersion` (a synthetic `AR241CP_1` or `AR241CE_0001`) is offered `lp10_AR241CP_8747_29_6701c857.swu`, and
+`AR241CP_8747` gets `1001`. (On 09-23 the manifest offered 8530 to no build at all — §14.4.) All three bundles are
+still on the CDN.
 
 **The bundle is public and unauthenticated** — `https://cdn.rakoit-ota.com/lp10/` (Cloudflare CDN, `accept-ranges: bytes`):
 
@@ -919,25 +1093,34 @@ etag). Whether the rollout was paused or narrowed (for example to device IDs) ca
 |---|---|---|---|---|
 | `AR241CE_9243` / MCU 16 | `LP10_AR241CE_9243_16.swu` | 86,704,128 B | (still served) | 13,617,516 · 856,203 B · `04af7091…` |
 | `AR241CE_8530` / MCU 23 | `lp10_AR241CE_8530_23_ca8e6abc.swu` | 89,751,552 B | 2026-08-20 07:55 GMT · etag `6a86b304-5598000` | 13,617,636 · 872,403 B · `d98284c4…` |
+| `AR241CP_8747` / MCU 29 | `lp10_AR241CP_8747_29_6701c857.swu` | 89,527,296 B | 2026-09-30 08:10 GMT · etag `6abcc3dc-5561400` | **13,631,972** · 874,755 B · `1d58029f…` |
 
-Naming moved to lower-case plus a content-hash suffix with 8530. Shape (both): a **double-wrapped cpio** — outer `070701`
+Naming moved to lower-case plus a content-hash suffix with 8530. Shape (all three): a **double-wrapped cpio** — outer `070701`
 cpio → single `software.swu` → inner `070702` (newc+CRC) cpio holding `sw-description` (+`.sig`) and the images.
 `sw-description` (libconfig; 8530: `fwversion=AR241CE_8530`, `mcuversion=23`, `forceupdate=true`, `custversion=1`) lists
 `rootfs.squashfs`→mtd8, `boot.img.encrypt`→mtd6, `dtb.img.encrypt`, `factory_customer.squashfs`→mtd7, **`mcu.bin`
-(type=`mcu`)** and the script `update.sh` (byte-identical across builds; a generic rootfs swap). `mcu.bin` is
+(type=`mcu`)** and the script `update.sh` (byte-identical 9243 → 8530, a generic rootfs swap). 8747 ships a new
+`update.sh` (542 → 5,478 B): a post-install **ECC check**, not a version check — it reads mtd6/7/8 whole with `dd`,
+compares `ecc_failures` before and after, and on a read failure or new ECC errors reboots to reflash (a retry counter
+in `/lsync`'s `retry_file.txt`, 3 tries at most). The `mcu.bin` offset moved in 8747: walk the cpio headers, never
+assume a fixed offset. `mcu.bin` is
 **unencrypted** and pullable with a single `Range` request (§10.3); the `type=mcu` handler streams it verbatim to the MCU
 over the UART via XMODEM (§6.1).
 
 ### 10.2 The vendor app loader and `rakoit_app`
 
 `/factory/custom/csys/bin/daemon` (signed, verified by `S99zcustomapp` against
-`/etc/swupdate-public.pem`; rewritten by the 8530 OTA) is a curl-based **"rak-loader"**: reads an index from
-`https://cdn.rakoit-ota.com/download` (fallback `ota.rakoit.com/download`), downloads to a
+`/etc/swupdate-public.pem`; rewritten by the 8530 OTA) is a curl-based **"rak-loader"** ("RAKOIT app-loader"): reads an
+index from `https://cdn.rakoit-ota.com/download` (fallback `https://ota.rakoit.com/download`, override
+`/lsync/daemon.ini`), downloads to a
 `mkstemp` file, **verifies the binary before install** ("binary verify failed"), kills and
 restarts the app. `/lsync/daemon.ini` is empty (URL default). `/lsync/app-0.json` records
 `rakoit_app` version **42**, md5 `b1dadf70…`, installed **2026-09-17 02:57** (v32, md5 `9aa7f360…`, 2026-08-25 before
-it) — the app updates on its own schedule, independent of the OTA and without a reboot. The index URL answers
-404 / 301 to a bare GET, so the exact index path is still unlocated.
+it) — the app updates on its own schedule, independent of the OTA and without a reboot *(the `/lsync` reads: on 8530
+over ssh; not re-readable on 8747)*. **The index path, located 2026-10-01:** the loader builds `%s/%s/%s` = base /
+model / file, so the index is `https://cdn.rakoit-ota.com/download/LP10/app-0.json` —
+`[{"name":"rakoit_app","md5":"b1dadf70…","param":"","version":"42"}]`, the same md5 and version as on 09-23 — and the
+binary is `…/download/LP10/rakoit_app` (7,199,780 B, md5 matches). (A bare GET of `…/download` answers 404 / 301.)
 
 **v42 (2026-09-17)** is 7,199,780 B (v32: 6,532,124 B). New log modules: `[scheduled-playback]` (a timer — "no task is
 enabled, timerfd released"), `[libre-progress]` (it drops a position report near the end of the track as wrong) and a
@@ -968,7 +1151,7 @@ reqwest 0.12 + rustls 0.23, redb 2.6.3, netlink/pnet, clap; built through `rspro
   playback_facts.sock}`; optional config `/lsync/source_service.toml` (absent → defaults);
   `/lsync/cache.redb` for art/now-playing. `credentials.redb` is `0600` — **never dump it**.
 
-### 10.3 `mcu.bin` — the MCU firmware, reversed (v16 on 2026-07-01, v23 on 2026-09-02)
+### 10.3 `mcu.bin` — the MCU firmware, reversed (v16 on 2026-07-01, v23 on 2026-09-02, v29 on 2026-10-01)
 
 **The image.** An **MVSilicon "AP82"** BT-audio-SoC image (magic `MV\xb1X`, SDK banner `0.5.1 build @ Nov 9 2021`,
 `BT_Audio_APP/bt_audio_app_src/…` tree), driving an **SSD1322** OLED controller via `display/disp_a200.c` +
@@ -1015,6 +1198,15 @@ and **`PlayView` is still the only host view** — no `Message`/`Text`/`Popup` s
   `set pregain: %d.%d dB`. The speaker-test sample moved to `/factory/custom/SpeakerTest.wav`
   (was `http://127.0.0.1/SpeakerTest.wav`). None of these are new *tunnel commands* — the code
   table did not change — they are MCU→host notifications.
+
+**What v29 changed (string-level diff against v23, 2026-10-01).** `mcu.bin` 874,755 B (v23: 872,403 B). The UART
+command table (103 codes by this diff's count, in the same order), the 21-code and 11-code sub-tables and the `PEQ`
+list (`Flat Classical Pop Jazz Rock Vocal`, then `Custom`) are **identical to v23**. The header grows by 16 bytes (byte
+6 `0x03` → `0x13`), so the table moves from 0x79cb7 to **0x7a587**; the build stamp `Nov  9 2021 18:37:08` is the same,
+and the hex token `4ef47210` → `1d316f0c` (it surfaces as `VER:29-1d316f0c-10`). Added: `FAV` in the key and panel
+action list (between `EQ_6` and `LIGHT`); `KEY:FAV`, `KEY:NUM%d` and `KEY:RESET` now end with `;`; new `RAW:NEXT;` /
+`RAW:PREV;` (the echo the tunnel now pushes after a skip, §6.3) with `FAV_PLAY:%d` and `GENERIC_FAV_…` near them;
+`is_control: %d ms: %d`, `SUCCESS`, `log10`. Removed: `set pregain: %d.%d dB`, `[omited]`.
 
 ### 10.4 Telemetry, phone-home & the "remote relay" — audited 2026-09-13
 
@@ -1068,26 +1260,42 @@ password also hard-coded** — deliberately not reproduced here) to **`logs.libr
 (1) a crash in any daemon linked with `libcrash_handler.so` — `airplaydemo`, `audionexus`, `system_monitor`, and
 **everything that loads `libenvitems.so`**, the Spotify engine included; a crash may also `reboot`; (2) "User triggered
 the log report using button" — a front-panel combo; (3) the web page's log download (`USBLOGS`); (4) MsgBox 651 from
-any LUCI client — the LAN (:7777), the :2018 tunnel, the vendor app. **Status on this unit: never fired.** The retained
-logs show only its start-up lines (`Server listening..` on 2026-09-04 14:56); `/tmp/libre/logdump/`,
+any LUCI client — the LAN (:7777), the :2018 tunnel, the vendor app. **Status on this unit (2026-09-13): never fired.**
+The retained logs show only its start-up lines (`Server listening..` on 2026-09-04 14:56); `/tmp/libre/logdump/`,
 `/tmp/libre/system_monitor/`, `/data/libre/system_monitor/` are empty; `logpolicystate=false`. Armed, not active. As
 the bundle is encrypted for the vendor, the concern is LibreWireless holding your Wi-Fi password and Spotify login
-after a crash — not an eavesdropper.
+after a crash — not an eavesdropper. **On 8747** the SFTP uploader to `logs.librewireless.com:53792`, with its embedded
+credential, is unchanged; `logpolicystate` is `true` in 8747's factory defaults and in the live env, and no binary,
+library or script in the rootfs reads the key (what does, if anything: not established — §14.5).
+
+**The web UI's log download writes your secrets into the log it serves (seen 2026-10-01).** A download from the web
+page makes the box append `ps`, `ifconfig`, `date`, `logctrl --list` and a **full env dump, secrets included** (Wi-Fi
+PSK, Spotify blob, web password …) to its own syslog, then serve the bundle — 1,750 such lines in the 2026-10-01
+download. Anyone who holds a downloaded log holds those secrets. On the web server `/logs` is a symlink to `/tmp/libre/logdump/`; `/logs/` itself
+redirects to `index.asp`; whether a dump file is served without login is not established.
+
+**The 8747 metrics uploader — dormant.** `system_monitor` grew a metrics server: it listens on the Unix socket
+`/tmp/libre/metrics.sock` (fed by `metrics_client_test network_up` from `S98system_monitor` on each network event),
+queues events in `/data/libre/metrics/metrics_state.json`, and POSTs them over mTLS (the device cert plus a unifykey it
+writes to `/tmp/metrics_mtls_*`) to env `metrics_url`, with the MAC, serial, firmware, RSSI, free memory, storage and
+interface. A cloud reply `action_request: ota_trigger` starts an OTA check. `metrics_url` is empty in both env files
+and live, so it posts nothing ("Metrics URL or CloudAPI not configured"); who can set it is not established.
 
 **Who ends up knowing what (normal operation):**
 - **Spotify** — your account, that a device called *Living* (Arylic LP10) is online, and what it plays. Like any Connect speaker.
-- **Arylic / RAKOIT** — that the unit with this MAC and serial is on firmware 8530 at your public IP, every 4 h; a bare index fetch every 10 h.
-- **LibreWireless** — nothing, unless the log report fires; then potentially everything in the env store.
+- **Arylic / RAKOIT** — that the unit with this MAC and serial is on its current firmware (8530 at the audit) at your public IP, every 4 h; a bare index fetch every 10 h.
+- **LibreWireless** — nothing, unless the log report fires; then potentially everything in the env store. (On 8747 also the metrics uploader, if `metrics_url` is ever set.)
 - **Google** — hosts Spotify's access point; sees one `HEAD` at boot. **Cloudflare / Google / the ISP** see the DNS names, because the router hands out their resolvers.
 - **Nobody** — the SSID/PSK, the LAN layout, the logs, who is home.
-- **Your own LAN** — a root shell over ADB (§9), the room name, the firmware.
+- **Your own LAN** — through 8530 a root shell over ADB (§9); on 8747 the unauthenticated `:2018` tunnel (§6.3); the room name, the firmware.
 
 **Hardening without writing to the box** (router-side; device-side env edits are writes and out of scope here):
 block `logs.librewireless.com` by name if the log report must never succeed (it gives up after a minute); block
 `*.rakoit-ota.com` / `*.rakoit.com` to stop the 4-hourly identifier beacon and the loader — you lose OTAs, though
 `lp10 sweep` still asks the manifest from the Mac; put the LP10 on an IoT/guest network **with client isolation** so
-phones and gadgets cannot reach adb :5555 / telnet :23; never port-forward to it. `lp10` itself only ever reads from
-the box (Appendix B).
+phones and gadgets cannot reach adb :5555 / telnet :23 (through 8530) or the `:2018` tunnel (still open on 8747); never
+port-forward to it; and treat a downloaded log as a secret (above). `lp10` itself sends the box only an allowlist of
+tunnel commands — transport, volume, mute and EQ (Appendix B).
 
 **Vendor daemon:** `/factory/custom/csys/bin/daemon` (signed, verified at boot by `S99zcustomapp` against
 `/etc/swupdate-public.pem`) is the app loader of §10.2 — started as `daemon 127.0.0.1`, it talks LUCI locally and
@@ -1100,34 +1308,47 @@ fw/version).
 
 - **Spotify session is network-event-driven, not boot-driven** (§8.1) — any link blip rebuilds it.
 - **Wi-Fi wedge** (§7) — root cause of past stream drops; mitigated by wired eth0.
-- **Volume mute** restores the wrong level — `lp10` does mute = set 0 + restore (§6).
+- **Volume mute** — the LUCI mute path restores the wrong level, so the ssh-era `lp10` muted with set-0 + restore (§6);
+  the tunnel's `MUT:1;` is a real MCU mute that keeps the level, and it is what `lp10` sends since 8747 (§6.3).
 - **Panel *content*** (now-playing text, MID 42) can be pushed by the host with a **`-remote`**
   write (§6.4); a plain `lp10`/app MID write is local-only and never reaches the MCU. **Volume is
   different** — the MCU *owns* it, so a host `-remote 64` is **inert**: the on-screen **volume bar
-  only pops for the physical buttons/remote**, and lp10's plain volume write is audible (SoC/DSP)
-  but leaves the remote/panel on a separate, stale value (§6).
+  only pops for the physical buttons/remote**, and lp10's plain volume write (ssh era) was audible (SoC/DSP)
+  but left the remote/panel on a separate, stale value (§6). A tunnel `VOL:n;` goes through the MCU instead (§6.3).
+- **The Spotify app's volume is inaudible on 8747** — it reaches the MCU register and the app's slider but not the
+  softvol (§8.1). The knob, the remote and a tunnel `VOL:` work; `lp10`'s volume bridge covers the app while it runs.
+- **A `:2018` connection can be accepted and never served** (2026-10-01): no reply for 27 s, while the next connection
+  answered at once. Treat a silent connection as dead and reconnect; never open a burst of connections (§6.3).
 - **eth0 lease is dynamic** — discover via mDNS (`<device>.local`, or the `_spotify-connect._tcp` instance named after the
-  FriendlyName) / LSSDP / the powerline MAC; don't hardcode.
+  FriendlyName) / LSSDP / the powerline MAC; don't hardcode. After a power cut a second DHCP server (likely the
+  powerline unit) can hand out a different address for minutes (§7).
 - **Qobuz Connect intentionally OFF** — an OTA could flip `QobuzConnectEnabled`; re-check after
   firmware updates.
 - **Both Spotify flags set = no Spotify at all** (§8.1) — the state an OTA's factory flip can leave behind; always write
   the pair.
 - **A `setenv` sticks** (a dirty row, §5) — through reboots and, on the 8530 precedent, through the next OTA's factory
   flip; a flag you never touched follows the factory.
-- **Power loss leaves little trace** — `reboot_mode=cold_boot` and everything under `/tmp` re-stamped. The *live*
+- **Power loss leaves little trace** — `reboot_mode=cold_boot` and everything under `/tmp` re-stamped. **`cold_boot` is
+  not proof of a power loss:** the 2026-09-30 OTA's reboot logged the same flag (§14.5). The *live*
   syslog (`/var/log/syslog/messages.log` = `/tmp/syslog/…`, tmpfs) is lost, but it is capped at **1 MiB**: rsyslog's
   `$outchannel` hands each full file to `/etc/log_rotation_script.sh`, which gzips it into
-  **`/data/log/syslog/messagesN.log.gz`** on flash and keeps 50 (433 … 482 here, back to 2026-09-01) — that history
-  survives a boot (a boot's first file starts with a pre-NTP `Dec 31 21:00` stamp). How far back the live file reaches
+  **`/data/log/syslog/messagesN.log.gz`** on flash and keeps 50 (433 … 482 here on 2026-09-23, back to 2026-09-01) — that
+  history survives a boot (a boot's first file starts with a pre-NTP `Dec 31 21:00` stamp). How far back the live file reaches
   depends on playback: while a track plays, `luci_service` writes three lines a second (the MID-49 position write to the
   MCU), so the file rotates every 20–30 min; idle, one file spans days (the "~23 h" of 2026-09-12 was an idle stretch).
-  `/lsync/app.log` (5 MiB, then `app.log.old`) keeps weeks. The rotated files carry the Spotify login blob like the live
-  one (§15) — count, never print.
-- **Dropbear stalls the ~5th ssh connection made within a few minutes** — batch reads into one session; `lp10`'s record
-  loop holds a single connection for exactly this reason.
+  So a power cut loses the lines since the last rotation: the 2026-09-25 → 09-28 power loss is bounded only to that gap
+  (§14.5). `/lsync/app.log` (5 MiB, then `app.log.old`) keeps weeks. The rotated files carry the Spotify login blob like
+  the live one (§15) — count, never print.
+- **8747 can delete the flash syslog history.** `S01aSystemSanity` runs at boot and, when `/lsync` is more than 20 %
+  used, runs `rm -rf /lsync/shared/log/syslog/*` (= `/data/log/syslog`); the rewritten rotation script deletes the oldest
+  archives past a size cap (COUNT × 100 KB + 1 MB); and `system_monitor`'s new `clean` log-dump action runs
+  `rm -rf /data/log/syslog/*`. Read the history (the web UI's log download) before it goes.
+- **Dropbear stalls the ~5th ssh connection made within a few minutes** (8530 and earlier; 8747 has no dropbear) — batch
+  reads into one session; the ssh-era `lp10` record loop held a single connection for exactly this reason.
 - **One ZeroConf port per engine** — never cache 9095 / 9096; read the `_spotify-connect._tcp` SRV record.
 - **Who started this daemon?** `/proc/<pid>/environ` of an init-started process has no `SSH_*`; one launched from an ssh
-  session (a services-pane toggle) carries `SSH_CLIENT` / `SSH_CONNECTION` — how the 2026-09-04 engine switch was traced.
+  session (a services-pane toggle) carries `SSH_CLIENT` / `SSH_CONNECTION` — how the 2026-09-04 engine switch was traced
+  *(8530 and earlier; 8747 has no shell to read `/proc` from)*.
 
 ---
 
@@ -1145,17 +1366,17 @@ differs**:
 | Wi-Fi | Dual-band 802.11ac 2.4/5 GHz | ✓ both bands live (phy0/phy1, VHT ≈390 Mbps) |
 | Bluetooth | 5.0 | ✓ HCI/LMP 5.0 (BlueZ) |
 | Ethernet | 10/100M RJ45 | ✓ `eth0` |
-| Analog in / out | 3.5 mm, 1 Vrms each | ✓ WM8904 ADC (in) / DAC (out) |
+| Analog in / out | 3.5 mm, 1 Vrms each | ✓ out = the BP10xx MCU's DAC; the line-in's ADC is not established (the WM8904 is absent) |
 | Optical out | up to 24-bit/192 kHz | ✓ SoC S/PDIF DAI → TOSLINK |
 | USB-A | flash playback (≤1000 songs / 16 GB) | ✓ host port |
-| USB-C | power **+ PC audio** | ✓ 5V/2A + RNDIS/ADB gadget; the "PC audio" UAC path wasn't separately confirmed (`snd_usb_audio` not loaded) |
+| USB-C | power **+ PC audio** | ✓ 5V/2A + RNDIS/ADB gadget (8747: no IP, no `adbd`); the "PC audio" UAC path wasn't separately confirmed (`snd_usb_audio` not loaded on 8530; 8747 loads it at boot) |
 | Streaming | Cast / AirPlay 2 / Tidal / Spotify / Qobuz / DLNA | all present; **enabled now: Spotify, AirPlay 2, DLNA, BT**. Cast/Tidal/Qobuz/Roon/Alexa/Matter/QPlay installed but **off** (env-gated) |
 | Power | USB-C 5 V/2 A | ✓ |
 | In box | unit, manual, 3.5 mm aux cable, 2-to-1 RCA cable, PSU, USB-C cable, IR remote | — |
 
 The interesting *deltas* are all "more than advertised": a fuller LibreWireless protocol set
 (Roon/Alexa/Matter/QPlay) shipped but mostly disabled, the MCU-driven OLED + host-UI protocol,
-the dual PKI, and the wide root LAN management surface (§9).
+the dual PKI, and — through 8530 — the wide root LAN management surface (§9).
 
 ---
 
@@ -1167,7 +1388,9 @@ Daemons built from LibreWireless's tree:
 **openlinux 2024r1**, SoC **a113l-ad403** "spk", target **EVK**. Kernel 5.15.137
 (`arm-none-linux-gnueabihf-gcc 10.3.1`, built 2025-12-24; the 8530 kernel is the same 5.15.137 rebuilt
 2026-01-12 18:55 IST, Buildroot `2020.02.1-svn317`, build tree `QA_validation` instead of `Dev_validation`).
-Spotify eSDK `v3.203.239` (HiFi) / `v3.211.130` (Pro, 8530).
+8747 is the **production** defconfig (`libre_ls8_24G_v1_c4a_production_release_defconfig`, 8530 and earlier
+`…_debug_release`): kernel still 5.15.137 (banner builder `librebuildls10@libre-build`), Buildroot `2020.02.1-svn366`,
+build date 2026-09-29. Spotify eSDK `v3.203.239` (HiFi) / `v3.216.31` (Pro, 8747; `v3.211.130` on 8530).
 
 ---
 
@@ -1183,6 +1406,9 @@ Spotify eSDK `v3.203.239` (HiFi) / `v3.211.130` (Pro, 8530).
 | 2026-09-17 02:57 | `rakoit_app` **v42** installed by its loader (no reboot) | — | §10.2 |
 | 2026-09-19 ≈03:07 | a network event restarts `rakoit_app` and the Pro engine (init, not ssh) | — | §14.4 |
 | 2026-09-23 | re-sweep — no newer OTA; the manifest now offers 8530 to **no** older build | — | §14.4 |
+| 2026-09-25 15:45 → 09-28 ≈23:57 | **power loss**, somewhere in that gap (when: not established); 8530 cold boot, first NTP sync 09-28 23:59 | — | §14.5 |
+| 2026-09-30 07:52 → 07:57 | the vendor OTA, found by the box's own 4-hourly check (07:52:43, bundle on the CDN 05:10 local), downloaded in 36 s, installed 07:53:21, reboot after 07:55:18; 8747 up, NTP 07:57:14 | **`AR241CP_8747.29.2` / 29** (`2026-09-29`, svn 366, production) | §14.5 |
+| 2026-10-01 | re-sweep without ssh — no ssh, telnet or adb on 8747; the tunnel becomes `lp10`'s only channel | — | §14.5 |
 
 ### 14.1 AR241CE_9243.16.2 — the June 2026 baseline
 
@@ -1293,7 +1519,8 @@ the env store in §5, the current listener map in §7, the OTA cadence and paylo
   `csys/bin/daemon 7da813d3…` · `factoryEnv.conf f11a5e69…` (both `/factory/custom` files still dated 2026-08-19).
 - Vendor app: `/lsync/app-0.json` still `rakoit_app` **v32**, md5 `9aa7f360…`, binary dated 2026-08-25 — the
   loader has installed nothing since. Its index URL (`cdn.rakoit-ota.com/download`, fallback
-  `ota.rakoit.com/download`) answers 404 / 301 to a bare GET; the exact index path is still unlocated.
+  `ota.rakoit.com/download`) answers 404 / 301 to a bare GET; the exact index path is still unlocated *(located
+  2026-10-01: `…/download/LP10/app-0.json`, §10.2)*.
 - Manifest server (`lp10.arylic.rakoit-ota.com/v1`, and the old host identically): `fwVersion=AR241CE_8530` →
   `{"errorCode":1001,"errorString":"No update available"}`; `AR241CE_9243` → still offered
   `lp10_AR241CE_8530_23_ca8e6abc.swu` (`version AR241CE_8530`, `mcuOnlyUpdate:false`). CDN `HEAD`: the same
@@ -1310,7 +1537,8 @@ the env store in §5, the current listener map in §7, the OTA cadence and paylo
 
 - **Cold boot 2026-09-04 14:55:42 -03** (`/proc/stat btime 1788544542`; kernel cmdline `reboot_mode=cold_boot`,
   i.e. power loss rather than a software reboot; uptime 7 d 9 h at the sweep). Everything under `/tmp`,
-  `/lsync/source_service` and `cache.redb` is stamped 14:56.
+  `/lsync/source_service` and `cache.redb` is stamped 14:56. *(2026-10-01: an OTA's reboot logs the same `cold_boot`
+  — §14.5 — so the flag alone does not prove this power loss; no OTA ran on 09-04, the build stayed 8530.)*
 - **Spotify now runs the Pro engine.** `SpotifyEnabled=0 / SpotifyProEnabled=1`; `spotifymusicpro` (pid 5673)
   started **15:06:57**, 11 min after the boot, and its `/proc/<pid>/environ` still carries
   `SSH_CLIENT=<laptop-ip> 51411 22` — it was launched from an ssh session (dropbear's `secure` log has that
@@ -1361,17 +1589,188 @@ Nothing was written to the device.
 
 **Net effect on `lp10`:** the `@@o` digest now takes the box's own firmware verdict from `/lsync/app.log`'s MsgBox-223
 report instead of the syslog, and `lp10 sweep` counts reconnects over the rotated history and says when the vendor names
-no package.
+no package. *(Both needed ssh and ended with 8747 — §14.5.)*
+
+### 14.5 AR241CP_8747.29.2 — the 2026-09-30 OTA, re-swept without ssh (2026-10-01)
+
+**No ssh** — this build removed it (below). Four sources, all read on 2026-10-01: **live LAN probes** (≈20:30–21:15 -03:
+LSSDP, mDNS, a TCP connect scan of every port, the `:2018` getters on one held connection, the UPnP description, the
+Spotify ZeroConf, the manifest and the CDN); a **static diff of the two vendor bundles** (the encrypted `boot.img` /
+`dtb.img` — the kernel and initramfs — are outside it); the box's own **log download** from the web UI (made by the user
+at 21:10 -03: 53 MB, 698,481 lines, 09-13 21:51 → 10-01 21:10, box-local stamps, the pre-NTP epoch reading `Dec 31
+21:00`); and a **live tunnel test** while Spotify played (≈20:47, its audible steps approved by the user). The only
+writes were that test's `POP`, `NXT`, `VOL` and `MUT` (the mute set back with `MUT:0;`) and, at 21:2x, `lp10`'s volume
+bridge re-sending the Spotify app's levels.
+
+#### Identity, build and the OTA
+
+- **Identity.** LSSDP `FWVERSION:AR241CP_8747.29.2`, AirPlay TXT `fv=p20.AR241CP_8747.29.2`, `srcvers=366.0`; LSSDP
+  otherwise unchanged (`PORT:7777`, `TCPPORT:2020`, `NETMODE:ETH0`, `MRAMode:DDMS`, `SOURCE_LIST:LS8::01000030`). MCU
+  `VER:29-1d316f0c-10` (API level 10, was 9). The build prefix moved from `AR241CE` to `AR241CP`; `lp10` parses both.
+- **Build.** `etc/fwVersion.conf`: `build_date = "2026-09-29"`, `app_svn_version = "366"` (8530: 318, 2026-01-12), new
+  `ext_svn_version = "4958"`, **`defconfig = "libre_ls8_24G_v1_c4a_production_release_defconfig"`** (8530:
+  `…_debug_release_defconfig`). Kernel stays 5.15.137 (banner builder `librebuildls10@libre-build`); `os-release`
+  `2020.02.1-svn366`. 345 files differ by sha256, most of them rebuilds (133 in `usr/bin`, 96 in `usr/lib`, 57 in
+  `amlogic/modules`).
+- **The OTA, from the box's own log.** The `ota` timer is 14,400 s, the first check 5 s after boot. **2026-09-30
+  07:52:43 -03**: the check logs `Device going for Periodic Upgrade!!! Current Playback State = 1` /
+  `CurrentPlayBackState: 'Stopped'` — the OTA installs only when playback is stopped — then `UpdateAvailable` → Download
+  (`swupdate --recovery -b "0 1 2 3 4 5 " -k /etc/swupdate-public.pem -d '-u https://cdn.rakoit-ota…'`, 89.5 MB in
+  36 s) → 07:53:21 Install (`swupdate -k /etc/swupdate-public.pem -i /data/software.swu -l 6 -L`) → 07:55:18
+  WaitForReboot → reboot → 8747 up, NTP 07:57:14, first check 07:57:18 `Idle`; every 4-hourly check since: `Idle`. The
+  bundle's CDN Last-Modified is 08:10 GMT = 05:10 -03, so the 03:52 check found nothing and the 07:52 one did. The Pro
+  engine's session had gone silent after a lost connection at 07:28; the OTA reboot ended it.
+- **`cold_boot` after an OTA.** The OTA's reboot logs `reboot_mode=cold_boot` — the flag a power-on sets — so
+  `cold_boot` alone does not prove a power loss (§3, §11; §14.3's 09-04 reading leaned on it).
+- **The power loss before it.** The log's previous boot is an 8530 cold boot whose first NTP sync is 09-28 23:59; the
+  line before it is 09-25 15:45, the box playing. The live syslog since the last rotation is lost on a power cut (§11),
+  so the power went somewhere between 09-25 15:45 and 09-28 ≈23:57 — when, not established.
+- **Manifest and CDN.** `AR241CP_8747` → `1001`; an older build (`AR241CP_1`, `AR241CE_0001`) is offered
+  `lp10_AR241CP_8747_29_6701c857.swu` (89,527,296 B, etag `6abcc3dc-5561400`, `Last-Modified: Wed, 30 Sep 2026
+  08:10:04 GMT`); the 8530 and 9243 bundles are still served (§10.1). The vendor-app index (`…/download/LP10/app-0.json`,
+  located this pass — §10.2) names `rakoit_app` v42 with the same md5 as on 09-23.
+- **Bundle.** The same double-wrapped cpio. `sw-description`: `version 1.0.1`, `fwversion=AR241CP_8747`,
+  `mcuversion=29`, `forceupdate=true`, `custversion=1`, the same six files. `mcu.bin` = MVSilicon `BT_Audio_APP` as
+  before, now at outer offset **13,631,972**, 874,755 B, sha256 `1d58029f…` (§10.3's single-`Range` recipe needs the
+  new offset). `update.sh` is new (5,478 B, was 542 B) — a post-install ECC check, not a version check (§10.1).
+
+#### What the bundle diff shows (8530 → 8747)
+
+- **Remote access removed** — `dropbear`, `telnetd` and `adbd` with their tools, `su`, `chmod` and `chown`; no `usb0`
+  IP; the root hash changed (§9). What remains: the serial root console, `bluetoothd -n -d`, the unauthenticated
+  tunnel, the web UI's local OTA upload and log download (§9).
+- **New init scripts.** `S01aSystemSanity` (at boot, when `/lsync` is more than 20 % used: `rm -rf
+  /lsync/shared/log/syslog/*`, the flash syslog history — §11); `S38io_handler` (a GPIO/LED handler, gated off by env
+  `iohandler=0`); `S98system_monitor` replaces `S99system_monitor` and also runs `metrics_client_test network_up` on
+  `netup` / `netready` / `netchange`. `S38messageboxhandler` now sends its output to syslog.
+- **`system_monitor`** (179,152 → 236,888 B): the metrics server and mTLS uploader, **dormant** while `metrics_url` is
+  empty (§10.4), and a `clean` log-dump action that deletes the flash syslog history. Unchanged: the SFTP log uploader
+  to `logs.librewireless.com:53792` with an embedded credential.
+- **Log deletion paths** — `S01aSystemSanity`, the rotation script's new size cap (COUNT × 100 KB + 1 MB),
+  `system_monitor`'s `clean` (§11). `tcptunnelling` no longer logs payloads.
+- **Audio.** `etc/asound.conf`: the alsaequal state moves to `/tmp/.alsaequal.bin`; the dmixer `buffer_size` 4096 →
+  16384; a new `loopbackbt` (snd-aloop) PCM for BT output. New kernel modules `snd-usb-audio`, `snd-usbmidi-lib`,
+  `snd-hwdep` and `snd-rawmidi` (loaded at boot) and `snd-aloop` (how it gets loaded for `loopbackbt`: not
+  established).
+- **`ota`** tries a primary key from unifykey `ota_key` (written to `/tmp/swupdate-public.pem`) and falls back to the
+  unchanged `/etc/swupdate-public.pem`.
+- **Versions.** Spotify Pro eSDK 3.211.130 → **3.216.31-g317ae1c7** (HiFi stays 3.203.239); Qobuz Connect library
+  1.0.0 → 1.1.0; `wpa_supplicant` 2.9 → 2.10; AirPlay stays 366.0 (self-test code stripped, 4.98 → 1.90 MB); BusyBox
+  stays 1.32.0; `UIframework` adds Amazon Music endpoints; `libreraat` adds a FLAC decoder; `messageboxhandler` adds
+  `connect_saved_network`, `get_network_info`, static IP and a preset restore; `gatt-server` adds `facresetrequest`
+  (what it triggers: not established beyond its name); OpenSSL's default `MinProtocol` is TLSv1.2.
+- **Factory env.** The rootfs copy flips `SpotifyEnabled` 1 → 0 and `SpotifyProEnabled` 0 → 1; `logpolicystate`
+  `false` → `true` (no binary, library or script in the rootfs reads the key — what does: not established); new
+  `metrics_url=""`, `OtaStandbyUpdate=0`, `bleencryptiontype=1`, `TidalGain`, `mcuusblist`, `MaxAuthTimeout`,
+  `ListManagement` and the `SoundTrack*` keys; `GCASTVersion` `""` → `1.52.272222` in the customer copy.
+- **MCU v29** — the command table, the sub-tables and the `PEQ` list identical to v23; adds `FAV`, `RAW:NEXT;` /
+  `RAW:PREV;`, and `KEY:*` strings ending in `;` (§10.3).
+- **Unchanged:** the factory web UI (`factory/web`, byte-identical), `logctrl`, `rsyslog.conf`, `inittab`,
+  `/etc/swupdate-public.pem`.
+
+#### Live surface (2026-10-01)
+
+- **TCP** (connect scan, 1–65535): open **80 2018 2345 7000 7777 9095 44317 49494**; closed 22, 23, 5037, 5555 and
+  9096 (the HiFi ZeroConf — that engine is not running). 44317 is `rakoit_app`'s dynamic listener (HTTP 404; 46835 on
+  09-23) — §7.
+- **The tunnel** — the getters, the pushes (`TIT`/`ART`/`ALB` in plain UTF-8, `PLA`, `VND`, `RAW:NEXT`, and `VOL` on a
+  Spotify-app volume change), the verified actions and the `VOL` path: §6.3. `VER:29-1d316f0c-10`, `MXV:100`, the same
+  `PEQ` list; one fresh connection was accepted and never served (§6.3).
+- **UPnP** — `dmr`'s description, and an AVTransport that stays `STOPPED` while Spotify plays: §8.7.
+- **Spotify ZeroConf** on `:9095`, eSDK 3.216.31.
+
+#### Running state (the log download's own `ps` and env dump, 21:10:45)
+
+- **Processes** — the 8747 list in §4: of the two Spotify engines, `spotifymusicpro` only; not running: `dropbear`,
+  `telnetd`, `adbd`, `newspotifyhifi`, `qobuzConnect`, `tidalConnect`, `librecast_lite`.
+- **Env** (non-secret keys): `SpotifyEnabled 0`, `SpotifyProEnabled 1` — the 8530 both-at-1 trap did not recur: the
+  09-04 pin held through the OTA, and 8747's own defaults are `0/1` — `QobuzConnectEnabled 0`, `RoonEnable 0`,
+  `SoundTrackEnabled 0`, `OtaStandbyUpdate 0`, `logpolicystate true`, `metrics_url` empty, `GCASTVersion
+  1.68.cast_20240119_0202_RC07.599752810`.
+- **`io_handler`** — `Feature IO_handler is not Supported!!!` (env `iohandler` 0): inert.
+- **The download itself** appends `ps`, `ifconfig`, `date`, `logctrl --list` and a full env dump, **secrets
+  included**, to the syslog it serves (1,750 such lines in this one) — §10.4.
+
+#### Spotify on 8747
+
+- **The app's volume is inaudible.** The app's level reaches the MCU register and the slider, but `UpdateAppVolume`'s
+  amixer call fails and no `processVolumeChange()` follows: 0 amixer failures in 58 `UpdateAppVolume` runs on 8530,
+  every app-originated change failed on 8747. The knob, the remote and a tunnel `VOL:` still work; `lp10`'s volume
+  bridge re-sends the app's level within ≈0.1–0.2 s while it runs. Chain and counts: §8.1.
+- **The engines.** Pro ran the whole span (09-13 → 10-01) with no crash line; HiFi ran twice for ≈1 s on 8530 (the
+  trigger is not established) and never on 8747; the Pro engine played Ogg Vorbis 320 kbps, with no FLAC record in 17
+  days — §8.1.
+- **The reconnect churn continues** — 61 losses in ≈37 h since the 8747 boot (≈40 a day): eSDK 3.216.31 did not
+  change the rate. Per-day counts in §8.1.
+
+#### DHCP after the power loss
+
+At the 09-28 power-on the box leased from 192.168.0.254, renewed via .41, and reached the router (.1) only ≈7 min
+later; the 8747 reboot leased from .1 directly. .254 and .41 are likely the same TL-WPA4220 (likely, not verified) — §7.
+
+#### What could not be re-read without ssh
+
+Whether the running binaries match the bundle (§14.2's hash check; the read-only squashfs makes them the bundle's by
+construction, §14.3, but no hash was read); the `rakoit_app` version installed on the box (the CDN index names v42);
+`/lsync/app.log` (the MsgBox-223 verdicts, the vendor app's tunnel log); socket owners and the UDP listeners; the
+softvol and ALSA state; `/proc`, `/sys`, `dmesg`, pstore; whether the root password changed. **The partial substitute
+is the web UI's log download** (§15): the syslog history — here 09-13 → 10-01, with the OTA lines, the DHCP leases, the
+engine sessions and every eSDK reconnect — plus `ps`, `ifconfig`, `date`, `logctrl --list` and the env store, secrets
+included, so the downloaded file is itself a secret.
+
+**Net effect on `lp10`:** it became tunnel-only (Appendix B) — one `:2018` connection for the player and the
+equalizer; the title shows from the next track change on; no cover art, seek bar or position (the tunnel sends none); a
+real `MUT` mute; the volume bridge for the Spotify app's volume. The services view, the logs view, night mode (the AED
+DRC needed `amixer` over ssh) and bedtime are gone. `lp10 sweep` dropped its ssh reads: it scans the TCP ports and reads
+the tunnel getters, the CDN app index and the UPnP description beside LSSDP, ZeroConf, the manifest and the newest
+bundle; the syslog reconnect history and the box's own OTA verdict left with ssh — the log download is the manual
+substitute.
 
 ---
 
 ## 15. Verify it yourself (read-only)
 
 Host `<device>.local` (or the current eth0 lease; the box's mDNS instance name is its FriendlyName, so `dns-sd -B
-_spotify-connect._tcp local.` finds it when the hostname does not resolve). Root password in macOS Keychain (service
-`lp10`, account `root`); use `SSH_ASKPASS` (one-shot, no TTY needed). **Never write to the device fs; never touch playback
-state** (it may be in use). Batch reads into one ssh session and space sessions a minute apart — dropbear stalls the
-~5th rapid connection (§11).
+_spotify-connect._tcp local.` finds it when the hostname does not resolve). **Never write to the device; never touch
+playback state** (it may be in use).
+
+**Without ssh — 8747 and later** (what `lp10` and `lp10 sweep` do, Appendix B). On the tunnel, send getters only, on
+**one** held connection, spaced; never `POP`/`NXT`/`PRE` (they act) nor anything on §6.3's never-send list. If the
+first getter gets no answer within a few seconds, close and reconnect once (§6.3's accepted-never-served case) — never
+a burst of connections.
+
+```sh
+# LSSDP (udp 1800): firmware, state, net mode — no auth (§7)
+printf 'M-SEARCH * HTTP/1.1\r\nHOST:239.255.255.250:1800\r\nMAN:"ssdp:discover"\r\nMX:1\r\nST:ssdp:all\r\n\r\n' \
+  | nc -u -w 2 <device-ip> 1800
+# the :2018 getters, one connection, 200 ms apart (§6.3) — read-only codes only
+{ for q in VER STA SRC LST MXV PEQ EQE EQS BAS MID TRE VBS VBI BAL; do printf '%s;' "$q"; sleep 0.2; done; sleep 2; } \
+  | nc -w 3 <device-ip> 2018 | tr ';' '\n'
+# the debug ports 8747 closed (§9): all four should refuse
+nc -z -w 1 <device-ip> 22 23 5037 5555
+# AirPlay TXT (fv= is the firmware) and the Spotify engine's ZeroConf (engine + eSDK build, §8.1)
+dns-sd -L <device-name> _airplay._tcp local.
+dns-sd -L <device-name> _spotify-connect._tcp local.          # then: curl "http://<device-ip>:<port>/zc?action=getInfo"
+# the DLNA renderer's description (§8.7)
+curl -s http://<device-ip>:49494/description.xml
+# the vendor: the manifest verdict for the running build (§10.1), the app index the loader fetches (§10.2), the bundle
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"device":{"brand":"Arylic","deviceId":"000000000000","fwVersion":"AR241CP_8747","model":"LP10"}}' \
+  https://lp10.arylic.rakoit-ota.com/v1
+curl -s https://cdn.rakoit-ota.com/download/LP10/app-0.json
+curl -sI https://cdn.rakoit-ota.com/lp10/lp10_AR241CP_8747_29_6701c857.swu
+```
+
+**The web UI's log download** (the box's own "download logs", on `http://<device-ip>/`) is the one window into the
+syslog, the process list and the env store without ssh — **and it embeds secrets**: the request makes the box append
+`ps`, `ifconfig`, `date`, `logctrl --list` and the whole env store (Wi-Fi PSK, Spotify blob, web password) to its
+syslog before it serves the bundle (§10.4). Treat the file as a secret; count and grep for key names on the Mac
+(`LC_ALL=C grep -a -c 'has been lost'`, `grep -a 'Periodic OTA trigger'`, `grep -a 'offered'`), never print env or
+`BLOB` lines, and never share it.
+
+**Over ssh — 8530 and earlier** (8747 has no ssh server; kept as the record of how chapters 1–13 were read). Root
+password in macOS Keychain (service `lp10`, account `root`); use `SSH_ASKPASS` (one-shot, no TTY needed). Batch reads
+into one ssh session and space sessions a minute apart — dropbear stalls the ~5th rapid connection (§11).
 
 ```sh
 # one-shot read-only SSH (password from Keychain via askpass)
@@ -1386,7 +1785,7 @@ sshx(){ SSH_ASKPASS=/tmp/askpass.sh SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
 
 sshx 'cat /proc/cpuinfo; cat /etc/fwVersion.conf'              # hardware + firmware
 sshx 'cat /proc/asound/pcm; aplay -l; arecord -l'             # audio DAIs / capture devices
-sshx 'amixer -c0 scontrols'                                   # mixer (WM8904 + AED) — READ only
+sshx 'amixer -c0 scontrols'                                   # mixer (inert WM8904 driver + AED) — READ only
 sshx "for a in 0-001a 0-004a; do cat /sys/bus/i2c/devices/\$a/name; done"   # WM8904 + PCM1863
 sshx 'iw phy | grep -E "Band [0-9]:|[0-9]{4} MHz" | head'     # Wi-Fi bands (dual-band)
 sshx 'hciconfig hci0 version'                                 # Bluetooth (5.0)
@@ -1413,18 +1812,12 @@ adb connect <device-ip>:5555 && adb shell id && adb disconnect
 sshx "sqlite3 /data/libre/env/env.db 'select key from ENV_systemENV order by key'"
 ```
 
-**Without ssh** (what `lp10` does, Appendix B): `dns-sd -L <device-name> _airplay._tcp local.` (TXT `fv=` is the
-firmware); `dns-sd -L <device-name> _spotify-connect._tcp local.` then `curl http://<ip>:<port>/zc?action=getInfo`
-(engine + eSDK build); a unicast SSDP `M-SEARCH` to udp 1800 (LSSDP, §7); a bare `CODE;` query on tcp 2018 over one
-held connection (§6.3); and the manifest — `curl -X POST -H 'Content-Type: application/json' -d
-'{"device":{"brand":"Arylic","deviceId":"000000000000","fwVersion":"AR241CE_8530","model":"LP10"}}'
-https://lp10.arylic.rakoit-ota.com/v1` (§10.1).
-
 > **Hygiene, learnt the hard way.** `grep -i spotify` over `/tmp/syslog/messages.log` returns the engine's
 > `SAME USERNAME IS THERE STORE THE BLOB …` line — the reusable login blob and the account id in clear: filter
 > `BLOB|username` *before* anything leaves the box. `/lsync/app.log` is partly Chinese — read it with `LC_ALL=C` on the
 > Mac side or `sed` aborts. And the env DB holds the Wi-Fi PSK and the web password beside the flags — select key names,
-> never `*`.
+> never `*`. On 8747 the same rules apply to the log download, which carries the env dump, Spotify blob included: it
+> has already left the box, so filter on the Mac and keep the file private.
 
 ---
 
@@ -1461,49 +1854,65 @@ https://lp10.arylic.rakoit-ota.com/v1` (§10.1).
   `USBFS` `UserLocale` `WebServer` `apn2` `artworkformat` `bleencryptiontype` `btmodes` `btscantimeout` `castdolby`
   `custom_{Brand,FriendlyName,Manufacturer,ManufacturerURL,Model,fwdownload_xml}` `esim_info` `logpolicystate`
   `mcuusblist` `netcontrolmask` `opdevicelist` `opresamplelist` `opvolsetting` `presetartworksize`
+- **New in 8747's factory defaults (bundle diff, §14.5):** `metrics_url` (empty — the dormant uploader, §10.4)
+  `ListManagement` the `SoundTrack*` / `ST*` keys (`SoundTrackEnabled 0` live)
 
 ---
 
 ## Appendix B — the `lp10` controller
 
-The companion TUI (`~/code/lp10`, Go) is what most of this doc's live state was read
-through. It is **strictly read-only** beyond a small whitelist of control writes, and
-drives the device over **two independent channels**:
+The companion TUI (`~/code/lp10`, Go) is what most of this doc's live state was read through — over ssh through 8530
+(the record loop of §6.2, retired), and since 2026-10-01, when 8747 removed ssh, over the LAN alone. Nothing logs in.
+It writes the box only an allowlist of tunnel commands and reads everything else without auth:
 
-1. **The SSH record loop** (§6.2) — one ssh connection runs a BusyBox-ash loop streaming
-   `@@`-framed records (player state, and — only while the diagnostics overlay is open —
-   resource/link stats); its stdin takes whitelisted `40`/`64` commands plus the app-only
-   `90` stats toggle, `92` service switch, `93` log fetch and `94` player-visible flag — off the
-   player the loop drops to its 3 s tick and skips the position read. A fork costs ≈ 30 ms of CPU on
-   the A1 (`LUCI_local -r`, `getenv`, `amixer` alike; a builtin `read` ≈ 0.3 ms), so the tick reads
-   one register (state / volume alternate), the position every 5th tick, metadata every 15th or on
-   change. Measured 2026-09-12: ≈ 4 % of one core with the player showing, ≈ 5 % with the
-   diagnostics open (stats + pings ride only then), ≈ 3 % with another view up. The player and the
-   diagnostics ride this.
-2. **The :2018 control tunnel** (§6.3) — a separate plain-text socket for tone/EQ/deep-bass
-   /max-volume; the equalizer rides this. A dead tunnel only greys out the EQ.
-3. **Two ssh-free probes** (since 2026-09-02) — the LSSDP responder (udp 1800) for liveness, and the
-   Spotify engine's ZeroConf `getInfo` (port from the `_spotify-connect._tcp` SRV record, §8.1) for
-   "is the engine up, on which eSDK, signed in as whom". The overlay's update line is the verdict the
-   box fetched itself (its `ota` daemon asks the vendor every 4 h; the loop's `@@o` digest reads the answer from the
-   MsgBox-223 report in `/lsync/app.log`, §10.1); `u` inside the overlay asks the manifest directly — the one request
-   that leaves the LAN, and only on that keystroke. **`lp10 sweep`** (2026-09-12) automates §14.3's inventory: one ssh
-   session of fixed reads plus the ssh-free and vendor probes, diffed against the previous run's baseline in the state
-   dir; since 2026-09-23 it also counts the eSDK reconnects over the rotated syslog history (§11). The log pane can tail
-   `/lsync/app.log` (§10.2) beside the syslog.
+1. **One `:2018` connection** (§6.3) carries the player and the equalizer. On connect it seeds the state with `STA;`,
+   every EQ control, `PEQ;` and `VER;`, 150 ms apart; then it polls `STA;` every **2 s** (source, mute, volume and play
+   state in one frame) and applies what the device pushes (`TIT`/`ART`/`ALB`, `PLA`, `VND`, `VOL`, the echoes) — except
+   that a read carrying a track field drops the values `lp10` acts on (`VOL`, `MUT`, `PLA`, `STA`, `SRC`, the EQ
+   values): the tunnel has no framing (§6.3), and the next poll brings them back; the `VND` word and the seed's `PEQ` /
+   `VER`, which nothing re-reads, are kept. A change of input (`NET` → `BT`) drops the shown track and service. A link
+   that delivers no frame for **6 s** is dead — which also covers the accepted-never-served connection — and it
+   reconnects with backoff (250 ms, doubling to 3 s). One connection at a time, never a burst.
+2. **One allowlist** (`tunnel.Wire`) for everything sent: the actions `POP` / `NXT` / `PRE` (bare, on a keypress only —
+   never as a query), `VOL` and `MUT` sets, the EQ sets, and the read-only getters; any other code is refused before
+   the socket. A command older than 4 s when the link comes back is dropped with a notice; a held volume key writes the
+   newest level at most every 150 ms. The mute is the MCU's own (`MUT:1;`), so the level stays where it is.
+3. **The volume bridge** (§8.1): the first status reading of each connection, and any later device-reported level
+   `lp10` did not set itself, is re-sent as `VOL:n;`. So the Spotify app's volume — which 8747 no longer applies to the
+   softvol — reaches the room through the MCU path while `lp10` runs (verified 2026-10-01: each level re-sent within
+   ≈0.1–0.2 s, no feedback loop). A volume key cancels a level still waiting to be bridged, so the bridge never undoes
+   a step taken in the first seconds of a connection.
+4. **Two probes that need no tunnel** — the LSSDP responder (udp 1800, §7) for liveness and the firmware build, and the
+   Spotify engine's ZeroConf `getInfo` (port from the `_spotify-connect._tcp` SRV record, §8.1) for "is the engine up,
+   on which eSDK, signed in as whom" (when the engine names a user). The first probe of each always runs — the connect
+   greeting (`connected · firmware AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31`) and the update check need it;
+   after that, while connected, they run only while the diagnostics show their answers (every 30 s), and while
+   disconnected every 5 s (LSSDP) and 10 s (ZeroConf), so the connecting screen can say whether the box is on the LAN.
+5. **`u` in the diagnostics** asks the vendor's manifest whether the LSSDP build is current — the one request that
+   leaves the LAN, and only on that keystroke; a verdict answers repeats for 30 min.
+6. **`lp10 sweep`** (2026-09-12; without ssh since 2026-10-01) automates §14.5's inventory, diffed against the previous
+   run's baseline in the state dir: a TCP connect scan of every port — 768 connects in flight with a 400 ms timeout,
+   ≈25–35 s, because a closed port on 8747 refuses only after ≈1 s; at that rate the box drops a SYN to an open port now
+   and then (the first saved 8747 baseline lacked 9095), so the known listeners and the debug ports are re-dialled one
+   by one (1.5 s, twice) before the sweep calls them closed (the fixed ports diffed; ports in the ephemeral
+   range 32768–60999, except dmr's 49494, shown as dynamic; 22 / 23 / 5037 / 5555 called out if they ever answer
+   again), the tunnel getters on one connection (`VER` / `PEQ` / `LST` compared, the settings printed; never a set or an
+   action), the UPnP description, LSSDP, ZeroConf, the CDN app index (`rakoit_app` version and md5), the manifest's
+   verdict and the newest bundle (size, date, etag). The syslog's reconnect counts and the box's own OTA verdict left
+   with ssh; the web UI's log download is the manual substitute (§15).
 
-- **Discovery:** startup mDNS for the **`am=LP10`** advertisement resolves the current IP
-  (so a changed DHCP lease never needs a config edit), falling back to the configured host.
-- **Views** (one at a time, `1`–`5` / `tab`): *player* (now-playing + transport),
-  *equalizer* (the :2018 controls), *services* (the `@@c` running-vs-configured matrix and the
-  MID-92 switches), *logs* (the MID-93 tails), and *diagnostics* (`i`) — which gathers the live `@@s`
-  metrics + link health, the `@@o` digest, and the model's static hardware facts from this teardown.
-- **Auth:** the root password comes from the OS secret store via `SSH_ASKPASS`; host-key
-  verification is disabled **by design** (the box regenerates its ramfs host key each boot,
-  §3/§15) — the one deliberate tradeoff, fine only on a trusted LAN.
-- **Source ids:** the app maps MID 42 `Current Source` as **1 AirPlay · 2 DLNA · 3
-  Bluetooth · 4 Spotify · 5 Line-In · 6 USB** — an app-side interpretation; only **4
-  (Spotify)** was confirmed live here.
+- **Discovery:** startup mDNS for the **`am=LP10`** advertisement resolves the current IP, with LSSDP as the fallback
+  and the configured host after that — so a changed DHCP lease never needs a config edit.
+- **Views** (one at a time, `1`–`3` / `tab`): *player* (now-playing, transport, volume and mute; the title shows from
+  the next track change on — no cover art, no seek bar, no position), *equalizer* (the §6.3 controls), and
+  *diagnostics* (`i`) — the tunnel's audio read-out, the connection (tunnel, host, LSSDP, ZeroConf), the device
+  (firmware from LSSDP, MCU from `VER`, eSDK from ZeroConf, what moved since the last sweep, the vendor's verdict after
+  `u`) and the model's static hardware facts from this teardown. The ssh-era services view, logs view, night mode
+  (the AED DRC, switched with `amixer` over ssh) and bedtime are gone.
+- **No credentials:** the ssh password, the askpass and the Keychain lookup went with ssh.
+- **Source names:** the tunnel names the input in `STA` / `SRC` (`NET`, `BT`, `LINE-IN`, `USBPLAY`) and the service in
+  `VND` (`spotify`). (The ssh-era MID-42 `Current Source` mapping — 1 AirPlay · 2 DLNA · 3 Bluetooth · 4 Spotify ·
+  5 Line-In · 6 USB — was an app-side interpretation; only 4 was confirmed live.)
 
 ---
 
@@ -1558,3 +1967,12 @@ config, the rotated history on `/data` (counts only), `/lsync` and `app.log` (Ms
 URL strings and the live sockets — and ssh-free mDNS / `:2018` getters / manifest / CDN queries. Found `rakoit_app` v42
 and a manifest that no longer offers 8530 to older builds; corrected §11's "syslog lost on boot". Nothing was written to
 the device.*
+
+*Re-sweep **2026-10-01** (§14.5): the box had taken `AR241CP_8747.29.2` / MCU v29 on its own on 2026-09-30 — a
+production build with no ssh, telnet or adb. No shell pass was possible. Live LAN probes (LSSDP, mDNS, a TCP connect
+scan of every port, the `:2018` getters on one held connection, UPnP, ZeroConf), the manifest and the CDN; a static
+diff of the 8530 and 8747 bundles; the web UI's log download, made by the user (09-13 → 10-01; it embeds the env
+store's secrets — only non-secret keys and counts are quoted here); and a live tunnel test while Spotify played. The only writes were that test's play/pause, skip, volume and mute (the mute set back) and `lp10`'s volume
+bridge re-sending the Spotify app's levels. Found: the remote-access removal, the tunnel's pushes, the Spotify app's
+inaudible volume on 8747, `cold_boot` after an OTA reboot, the vendor-app index path, a second DHCP server after the
+09-28 power-on.*

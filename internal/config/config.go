@@ -1,5 +1,5 @@
 // Package config handles the config file, paths, and persistent-state IO
-// (premute level, snapshot cache, atomic writes).
+// (snapshot cache, sweep baseline, atomic writes).
 package config
 
 import (
@@ -20,7 +20,6 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/lucasdaddiego/lp10/internal/atomicfile"
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // homeDir resolves the user's home directory, falling back to the passwd
@@ -44,21 +43,13 @@ const (
 	// moves. With discover=false (or no mDNS responder) this literal must itself
 	// resolve — a device not reachable as "lp10.local" then needs host set.
 	defHost = "lp10.local"
-	defUser = "root"
 	// DefaultName is the generic UI label. On a successful mDNS discovery the app
 	// refines it to "LP10 · <device's advertised name>" (see main.go), so no room
 	// name is hardcoded; a user-set `name` overrides it and also serves as the
 	// discovery disambiguation hint among multiple LP10s.
 	DefaultName = "LP10"
 	defVolStep  = 2
-	defPingHost = "spotify.com" // diagnostics: the device's internet-latency target
-	defArtMode  = "auto"        // art rendering: auto|kitty|halfblock|off
-	defPremute  = 30            // pre-mute level restored on any read problem
 )
-
-// artModes is the set of accepted art_mode values; anything else in the config
-// is ignored (keeps the default) rather than silently mis-coerced.
-var artModes = map[string]bool{"auto": true, "kitty": true, "halfblock": true, "off": true}
 
 // HostEnv pins the device host for a single run, overriding config and skipping
 // mDNS discovery.
@@ -69,14 +60,10 @@ const HostEnv = "LP10_HOST"
 type Config struct {
 	Host       string
 	StateKey   string // the host as configured (file or LP10_HOST): keys the state files; discovery may rewrite Host
-	User       string
 	Name       string
 	VolStep    int
-	PingHost   string // diagnostics overlay: device's internet-ping target
 	Discover   bool   // attempt mDNS auto-discovery at startup (config input)
 	Discovered bool   // set at runtime when discovery resolved the host
-	Art        bool   // render real album art (from the track's CoverArtUrl)
-	ArtMode    string // auto|kitty|halfblock|off — how album art is drawn
 	Theme      string // auto|light|dark — auto follows the terminal's reported background
 	Warn       string
 }
@@ -90,7 +77,7 @@ const defTheme = "auto"
 // strict per-field typing, clamps vol_step, and lets LP10_HOST override the
 // host for a single run.
 func Load() Config {
-	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep, PingHost: defPingHost, Discover: true, Art: true, ArtMode: defArtMode, Theme: defTheme}
+	cfg := Config{Host: defHost, Name: DefaultName, VolStep: defVolStep, Discover: true, Theme: defTheme}
 
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
@@ -130,9 +117,14 @@ func Load() Config {
 
 // configKeys are the recognised config.toml keys and the type each takes.
 var configKeys = map[string]string{
-	"host": "string", "user": "string", "name": "string", "ping_host": "string",
-	"discover": "bool", "art": "bool", "art_mode": "string", "theme": "string", "vol_step": "number",
+	"host": "string", "name": "string", "discover": "bool", "theme": "string", "vol_step": "number",
 }
+
+// retiredKeys were config keys until firmware AR241CP_8747 removed ssh: the ssh
+// user, the device's ping target, and the album art (the tunnel carries no
+// cover). A config that still sets one is told why it no longer counts,
+// rather than that the key is unknown.
+var retiredKeys = map[string]bool{"user": true, "ping_host": true, "art": true, "art_mode": true}
 
 // applyTOML copies recognized keys with strict typing: string fields accept
 // only strings; vol_step accepts an integer or an integral float. Anything else
@@ -145,43 +137,29 @@ func applyTOML(cfg *Config, data map[string]any) (complaints []string) {
 	for _, k := range keys {
 		v := data[k]
 		want, known := configKeys[k]
+		if retiredKeys[k] {
+			complaints = append(complaints, fmt.Sprintf("%s ignored (retired: lp10 has no ssh and no album art since firmware AR241CP_8747)", k))
+			continue
+		}
 		if !known {
 			complaints = append(complaints, fmt.Sprintf("unknown key %q", k))
 			continue
 		}
 		ok := false
 		switch k {
-		case "host", "user", "name", "ping_host":
+		case "host", "name":
 			var sv string
 			if sv, ok = v.(string); ok {
-				switch k {
-				case "host":
+				if k == "host" {
 					cfg.Host = sv
-				case "user":
-					cfg.User = sv
-				case "name":
+				} else {
 					cfg.Name = sv
-				case "ping_host":
-					cfg.PingHost = sv
 				}
 			}
-		case "discover", "art":
+		case "discover":
 			var bv bool
 			if bv, ok = v.(bool); ok {
-				if k == "discover" {
-					cfg.Discover = bv
-				} else {
-					cfg.Art = bv
-				}
-			}
-		case "art_mode":
-			sv, isStr := v.(string)
-			if isStr && !artModes[sv] {
-				complaints = append(complaints, fmt.Sprintf("art_mode %q ignored (auto|kitty|halfblock|off)", sv))
-				continue
-			}
-			if ok = isStr; ok {
-				cfg.ArtMode = sv
+				cfg.Discover = bv
 			}
 		case "theme":
 			sv, isStr := v.(string)
@@ -240,18 +218,10 @@ func slug(host string) string {
 	return slugRe.ReplaceAllString(host, "_")
 }
 
-// PremutePath / SnapshotPath are per-device files under the state dir, or ""
-// when there is no usable state dir. They key on StateKey — the host as
-// configured — not on Host, which discovery rewrites to whatever address the
-// box holds today: keyed on the address, a new DHCP lease lost the pre-mute
-// level and the first-paint snapshot.
-func PremutePath(cfg Config) string {
-	if d := StateDir(); d != "" {
-		return filepath.Join(d, "premute-"+slug(cfg.stateKey()))
-	}
-	return ""
-}
-
+// SnapshotPath is a per-device file under the state dir, or "" when there is
+// no usable state dir. It keys on StateKey — the host as configured — not on
+// Host, which discovery rewrites to whatever address the box holds today:
+// keyed on the address, a new DHCP lease lost the first-paint snapshot.
 func SnapshotPath(cfg Config) string {
 	if d := StateDir(); d != "" {
 		return filepath.Join(d, "snapshot-"+slug(cfg.stateKey())+".json")
@@ -277,20 +247,6 @@ func SweepPath(cfg Config) string {
 	return ""
 }
 
-// ArtCacheDir is the album-art cache directory (state dir /art), created on
-// demand, or "" when there's no usable state dir (art then works network-only).
-// It is shared across hosts: covers are keyed by URL, which is already unique.
-func ArtCacheDir() string {
-	if d := StateDir(); d != "" {
-		p := filepath.Join(d, "art")
-		if err := os.MkdirAll(p, 0o700); err != nil {
-			return ""
-		}
-		return p
-	}
-	return ""
-}
-
 func clampVol(v int) int {
 	if v < 1 {
 		return 1
@@ -301,40 +257,16 @@ func clampVol(v int) int {
 	return v
 }
 
-// LoadPremute returns the persisted pre-mute level clamped to [1,100], or 30 on
-// any problem (missing path, unreadable, or non-numeric content).
-func LoadPremute(path string) int {
-	if path == "" {
-		return defPremute
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return defPremute
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil {
-		return defPremute
-	}
-	return clampVol(n)
-}
-
-// SavePremute persists a clamped pre-mute level. Failures are swallowed.
-func SavePremute(path string, v int) {
-	if path == "" {
-		return
-	}
-	_ = atomicfile.Write(path, []byte(strconv.Itoa(clampVol(v))))
-}
-
 // CachedSnapshot is the typed, versionless on-disk first-paint state. Its JSON
 // tags preserve the existing cache contract so snapshots written by earlier
 // releases remain readable.
+//
+// A snapshot written before firmware AR241CP_8747 also holds the track, its
+// position and the play state; they are ignored on read — the tunnel names a
+// track only when it changes, so a cached title could be long stale.
 type CachedSnapshot struct {
-	Track   *protocol.Track `json:"track"`
-	Pos     int             `json:"pos"`
-	Playing int             `json:"playing"`
-	Vol     int             `json:"vol"`
-	EQ      map[string]int  `json:"eq"`
+	Vol int            `json:"vol"`
+	EQ  map[string]int `json:"eq"`
 }
 
 // LoadSnapshot reads the cached snapshot. A corrupt file, non-object root, or

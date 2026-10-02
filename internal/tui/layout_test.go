@@ -2,111 +2,89 @@ package tui
 
 import (
 	"fmt"
-	"image"
-	"image/color"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
-	"charm.land/lipgloss/v2"
-
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/sweep"
 )
 
-var osc8re = regexp.MustCompile("\x1b\\]8;[^\x1b\a]*(\x1b\\\\|\a)")
-
-func clean(s string) string { return osc8re.ReplaceAllString(stripANSI(s), "") }
-
-// TestLayoutInvariants asserts the frame fills the window exactly (every line is
-// `cols` wide, total lines == `rows`, borders top/bottom) across a matrix of
-// sizes and states, and dumps clean renders to LP10_DUMP_DIR for review.
+// TestLayoutInvariants asserts the width contract (render: every frame line
+// exactly cols wide, exactly rows lines, no renderer row wider than the
+// content) across a matrix of sizes, player states and views, and dumps clean
+// renders to LP10_DUMP_DIR for review.
 func TestLayoutInvariants(t *testing.T) {
 	dir := os.Getenv("LP10_DUMP_DIR")
 	dump := func(name, view string) {
 		if dir != "" {
-			os.WriteFile(filepath.Join(dir, name+".txt"), []byte(clean(view)), 0o644)
+			if err := os.WriteFile(filepath.Join(dir, name+".txt"), []byte(clean(view)), 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	type scene struct {
-		name  string
-		model func(t *testing.T) *model
+		name string
+		st   func() *protocol.State
 	}
-	playing := func(t *testing.T) *model { m, _, _ := makeModel(t); return m }
-	idle := func(t *testing.T) *model {
-		st := protocol.NewState()
-		applyFixtureRecords(st, "idle_record.txt")
-		m, _, _ := modelWith(st)
-		return m
+	scenes := []scene{
+		{"play", playingState},
+		{"idle", idleState},
+		{"untitled", untitledState},
+		{"disc", func() *protocol.State {
+			st := protocol.NewState()
+			st.StartConnection()
+			st.StartConnection()
+			st.Note("cannot reach :2018: dial tcp 192.0.2.40:2018: connect: connection refused")
+			st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2", State: "S", NetMode: "ETH0"})
+			return st
+		}},
+		{"muted", func() *protocol.State {
+			st := playingState()
+			st.ToggleMute() // the solid red rail + the MUTED header flag must still fit
+			return st
+		}},
+		{"long", func() *protocol.State {
+			// device-supplied text far wider than any column: the marquee,
+			// the clipped source and the diagnostics rows must all hold
+			st := playingState()
+			st.ApplyVendor("a-very-long-vendor-word-nobody-maps")
+			st.ApplyTrackField(protocol.FieldTitle, strings.Repeat("Everything In Its Right Place ", 6))
+			st.ApplyTrackField(protocol.FieldArtist, strings.Repeat("Radiohead ", 12))
+			st.ApplyTrackField(protocol.FieldAlbum, strings.Repeat("漢字 ❤️ Kid A ", 10))
+			st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2", State: "S", NetMode: strings.Repeat("ETH0", 20)})
+			st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK", ActiveUser: strings.Repeat("someone", 20), LibraryVersion: "3.216.31"}, 9095)
+			st.ApplyVersion("29-1d316f0c-10")
+			st.SetEQPresets([]string{"Flat", "Classical", "Pop", "Jazz", "Rock", "Vocal"})
+			st.ApplyTunnel("EQE", 1)
+			st.ApplyTunnel("EQS", 5)
+			st.ApplyTunnel("MXV", 100)
+			st.SetOTA(protocol.OTAInfo{At: st.LastRx(), Err: strings.Repeat("vendor unreachable ", 10)})
+			return st
+		}},
+		{"error", func() *protocol.State {
+			st := playingState()
+			st.Note("command not delivered")
+			return st
+		}},
 	}
-	disconnected := func(t *testing.T) *model { m, _, _ := modelWith(protocol.NewState()); return m }
-	muted := func(t *testing.T) *model {
-		m, st, _ := makeModel(t)
-		st.SetVol(50)
-		m.do("mute") // -> Muted: solid red rail + MUTED header flag must still fit
-		return m
-	}
-	longplay := func(t *testing.T) *model {
-		// A >100-minute track ("-100:05" is 7 wide) plus a 16:9 cover, which
-		// pins the middle column at its 24-column floor at 25×70 — the exact
-		// state where the seek row's old 1-cell meter floor pushed every frame
-		// line 1–2 cells past the window and wrapped the whole UI.
-		m, st, _ := makeModel(t)
-		tr := *st.Snap().Track
-		tr.TotalTime = 6_005_000 // 100:05
-		st.Preload(&tr, 0, 44)
-		st.SetArt(tr.CoverArtURL, image.NewRGBA(image.Rect(0, 0, 1280, 720)), color.RGBA{}, false)
-		return m
-	}
-	wifi := func(t *testing.T) *model {
-		// A long device-supplied SSID: the stacked diag overlay used to append
-		// its rows unclipped, so this row sized contentW past the window and
-		// wrapped every overlay line at narrow widths.
-		m, st, _ := makeModel(t)
-		feed := "@@i\nnet=wifi\niface=wlan0\nip=192.168.1.20\nmac=aa:bb:cc:dd:ee:f1\n" +
-			"gw=192.168.1.1\nssid=MyHomeNetwork_5GHz_Extended_Long\nfreq=5745\nrate=780\ndata=1 2\n@@E\n"
-		for rec := range protocol.IterRecords(feeder(strings.Split(strings.TrimSuffix(feed, "\n"), "\n"))) {
-			protocol.ApplyRecord(st, rec)
-		}
-		return m
-	}
-	scenes := []scene{{"play", playing}, {"idle", idle}, {"disc", disconnected}, {"muted", muted},
-		{"longplay", longplay}, {"wifi", wifi}}
-	// 40×58: tall-narrow — the stacked diag overlay renders ALL sections (a
-	// short window trims the network section away before its rows can misbehave).
-	sizes := [][2]int{{25, 70}, {27, 72}, {30, 90}, {32, 100}, {40, 120}, {48, 160}, {22, 64}, {20, 58}, {40, 58}, {18, 60}, {8, 50}}
-
-	check := func(t *testing.T, tag string, rows, cols int, view string) {
-		lines := strings.Split(view, "\n")
-		if len(lines) != rows {
-			t.Errorf("%s: %d lines, want %d", tag, len(lines), rows)
-		}
-		for i, ln := range lines {
-			if w := lipgloss.Width(ln); w != cols {
-				t.Errorf("%s line %d width %d, want %d: %q", tag, i, w, cols, clean(ln))
-			}
-		}
-	}
+	// 40×58: tall-narrow — the stacked diagnostics render ALL sections.
+	sizes := [][2]int{{25, 70}, {27, 72}, {30, 90}, {32, 100}, {40, 120}, {48, 160}, {22, 64}, {20, 58}, {40, 58}, {18, 60}, {9, 58}, {8, 50}}
+	views := []view{viewPlayer, viewEQ, viewDiag, viewHelp}
+	baseline := &sweep.Report{}
+	baseline.LSSDP.FW = "AR241CP_8530.23.2"
+	baseline.Tunnel.MCU = "23"
 
 	for _, sc := range scenes {
 		for _, sz := range sizes {
-			rows, cols := sz[0], sz[1]
-			m := sc.model(t)
-			m.rows, m.cols = rows, cols
-			view := m.viewContent()
-			// mini view (very small) is a single bare line, not a full-window frame
-			if rows >= MiniRows && cols >= MiniCols {
-				check(t, fmt.Sprintf("%s_%dx%d", sc.name, rows, cols), rows, cols, view)
-			}
-			dump(fmt.Sprintf("%s_%02dx%03d", sc.name, rows, cols), view)
-			if sc.name == "play" || sc.name == "wifi" { // also the diagnostics overlay
-				m.view = viewDiag
-				dview := m.viewContent()
-				if rows >= MiniRows && cols >= MiniCols {
-					check(t, fmt.Sprintf("diag_%s_%dx%d", sc.name, rows, cols), rows, cols, dview)
-				}
-				dump(fmt.Sprintf("diag_%s_%02dx%03d", sc.name, rows, cols), dview)
+			for _, v := range views {
+				m, _, _ := modelWith(sc.st())
+				m.baseline = baseline
+				m.rows, m.cols = sz[0], sz[1]
+				m.view = v
+				out := render(t, m)
+				dump(fmt.Sprintf("%s_%s_%02dx%03d", sc.name, viewNames[v], sz[0], sz[1]), out)
 			}
 		}
 	}

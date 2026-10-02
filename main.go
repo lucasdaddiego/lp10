@@ -1,21 +1,18 @@
-// Command lp10 is a terminal player for the Arylic LP10 (LibreWireless LUCI
-// over SSH). Run `lp10` (no arguments) for the live TUI, or `lp10 sweep` for a
+// Command lp10 is a terminal player for the Arylic LP10 (a LibreWireless
+// streamer). Run `lp10` (no arguments) for the live TUI, or `lp10 sweep` for a
 // one-shot read-only inventory of the box diffed against the last one.
 //
-// Transport: ONE direct ssh connection to root@LP10 (password from the OS
-// secret store — the macOS Keychain item service=lp10 account=root, or
-// secret-tool on Linux — delivered via SSH_ASKPASS self-exec).
-// The remote shell loop streams state snapshots and evals nothing: its stdin
-// accepts whitelisted `<mid> <data>` lines only. When this process dies — however
-// it dies — ssh exits, the session closes, and the loop EOF-exits within ~1 s.
-// Host keys are deliberately not verified (LAN device, ramfs host keys).
+// Transport: ONE plain TCP connection to the device's control tunnel (:2018,
+// the Arylic UART API relayed to the LAN, no auth). It carries the player —
+// status polls, the track the device pushes on a change, play/pause, skip,
+// volume and mute — and the equalizer. Firmware AR241CP_8747 removed ssh from
+// the box, so nothing here logs in.
 //
-// Config: ~/.config/lp10/config.toml (optional) — host, user, name, vol_step,
-// ping_host, discover, art, art_mode, theme. Unless discover=false or LP10_HOST is
-// set, a startup mDNS query finds the LP10 on the LAN (am=LP10) — the device's
-// own LSSDP responder (UDP:1800) gets a window when mDNS is quiet — and uses
-// its current address, with host as the fallback. State: ~/.local/state/lp10/.
-// First-run: security add-generic-password -U -a root -s lp10 -w
+// Config: ~/.config/lp10/config.toml (optional) — host, name, vol_step,
+// discover, theme. Unless discover=false or LP10_HOST is set, a startup mDNS
+// query finds the LP10 on the LAN (am=LP10) — the device's own LSSDP responder
+// (UDP:1800) gets a window when mDNS is quiet — and uses its current address,
+// with host as the fallback. State: ~/.local/state/lp10/.
 package main
 
 import (
@@ -32,7 +29,6 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/discovery"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/sweep"
-	"github.com/lucasdaddiego/lp10/internal/transport"
 	"github.com/lucasdaddiego/lp10/internal/tui"
 )
 
@@ -118,8 +114,8 @@ func signalContext() (ctx context.Context, finish func() int) {
 // never needs a config edit: find the LP10 on the LAN and use its current
 // address. find is the mDNS search (discovery.FindLP10); when it comes back
 // empty, fallback (discovery.FindLP10LSSDP, the device's own UDP:1800
-// responder — which answers even while its AirPlay daemon or sshd don't) gets
-// one more window. Pinning the host (LP10_HOST) or `discover = false` skips
+// responder — which answers even while its AirPlay daemon doesn't) gets one
+// more window. Pinning the host (LP10_HOST) or `discover = false` skips
 // both; the configured host is the fallback when nothing answers, so startup
 // never blocks on a missing device.
 func resolveDevice(ctx context.Context, cfg config.Config, find, fallback finder) config.Config {
@@ -146,8 +142,8 @@ func resolveDevice(ctx context.Context, cfg config.Config, find, fallback finder
 		// Label the UI with the device's own advertised name ("LP10 · Living")
 		// when the user hasn't set a custom name — so no room name is hardcoded.
 		// The mDNS label is attacker-controllable and reaches the header
-		// unfiltered (unlike the @@-section device strings), so control-strip it
-		// here — a raw ESC in it could otherwise inject an escape sequence.
+		// unfiltered, so control-strip it here — a raw ESC in it could
+		// otherwise inject an escape sequence.
 		if name := protocol.Printable(dev.Name); cfg.Name == config.DefaultName && name != "" {
 			cfg.Name = config.DefaultName + " · " + name
 		}
@@ -156,13 +152,6 @@ func resolveDevice(ctx context.Context, cfg config.Config, find, fallback finder
 }
 
 func main() {
-	// Askpass hot path first: ssh re-execs this binary as SSH_ASKPASS on every
-	// connection attempt, so it must stay cheap and run before anything else.
-	if os.Getenv(transport.AskpassEnv) == "1" {
-		transport.AskpassMain() // exits the process
-		return
-	}
-
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "-version", "-V":

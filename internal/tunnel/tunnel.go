@@ -1,21 +1,24 @@
-// Package tunnel speaks the device's plain-text audio-control protocol: the
+// Package tunnel speaks the device's plain-text control protocol: the
 // LibreWireless "tcptunnelling" channel on TCP 2018, which relays the MCU's
 // Arylic UART command set (https://developer.arylic.com/uartapi/) to the LAN.
 // The MCU (an MVSilicon BP10xx) is the DAC and the audio DSP on this box —
-// tone, EQ presets, virtual bass, balance, and the output cap all live there —
-// so this socket is the whole audio-settings surface. It is intentionally
-// separate from the SSH player stream (transport/workers): playback rides one
-// ssh connection; these device-config knobs ride this socket.
+// tone, EQ presets, virtual bass, balance, the output cap, the volume and the
+// mute all live there — and since firmware AR241CP_8747 removed ssh, this
+// socket is lp10's only channel to the box: the player rides it as well as the
+// equalizer.
 //
 // Wire format: bare ASCII commands "CODE:VALUE;" (semicolon-terminated, no
-// newline, no framing, no auth). Sending "CODE;" with no value is a QUERY — the
-// device replies by broadcasting "CODE:VALUE;" to every connected client. A set
-// from a network client reaches the MCU (verified write-through); the same
-// string injected locally via `LUCI_local 112` does NOT, so this socket is the
-// only way to drive these settings. The MCU answers ~450 codes; only the
-// documented, side-effect-free ones below are used — several others are
-// actions (WRS wifi-setup, SYS:RESET, DEF:SAV, PMT/COE reboot the box) and
-// must never be sent blind.
+// newline, no framing, no auth). Sending "CODE;" with no value is a QUERY for
+// most codes — the device replies by broadcasting "CODE:VALUE;" to every
+// connected client — but POP, NXT and PRE are ACTIONS (play/pause, next,
+// previous), so Wire only ever sends them on a keypress. The device also
+// pushes some frames on its own (verified live 2026-10-01 on MCU 29): TIT,
+// ART and ALB when the track changes, PLA and VND when playback starts or
+// stops, RAW after a skip. It pushes nothing while a track plays (no ELP over
+// TCP), so the player has no position. The MCU answers ~100 codes; only the
+// side-effect-free getters and the actions below are ever sent — several
+// others act blind (WRS wifi-setup, SYS:RESET, DEF:SAV, PMT/COE reboot the
+// box).
 package tunnel
 
 import (
@@ -125,23 +128,119 @@ func Set(code string, v int) string {
 // Query is the wire string that reads a value, e.g. Query("MXV") == "MXV;".
 func Query(code string) string { return code + ";" }
 
+// The player's codes. StatusCode is the one poll: its reply carries the
+// source, the mute, the volume and the play state in one frame. VOL and MUT
+// are both read and set; POP, NXT and PRE are actions with no value.
+const (
+	StatusCode  = "STA" // "STA:NET,0,44,0,0,3,0,1,1,0;" — see Status
+	VolumeCode  = "VOL" // 0..100, the output level
+	MuteCode    = "MUT" // 0/1, a real mute in the MCU (not volume 0)
+	PlayCode    = "PLA" // 0/1, network playback running — pushed on a change
+	SourceCode  = "SRC" // the input: NET, BT, LINE-IN, USBPLAY
+	VersionCode = "VER" // the MCU firmware: "29-1d316f0c-10" (version-commit-apilevel)
+	TitleCode   = "TIT" // pushed on a track change, plain UTF-8 over TCP
+	ArtistCode  = "ART"
+	AlbumCode   = "ALB"
+	VendorCode  = "VND" // the service playing ("spotify"), pushed with PLA:1
+	ToggleCode  = "POP" // action: play/pause
+	NextCode    = "NXT" // action: next track
+	PrevCode    = "PRE" // action: previous track (Spotify restarts the track first)
+)
+
 // SeedQueries returns one query per known control plus the preset-name list,
-// for reading current values on connect.
+// the MCU version and the player status, for reading current values on
+// connect.
 func SeedQueries() []string {
-	out := make([]string, 0, len(Specs)+1)
+	out := make([]string, 0, len(Specs)+3)
+	out = append(out, Query(StatusCode))
 	for _, s := range Specs {
 		out = append(out, Query(s.Code))
 	}
-	return append(out, Query(PresetsCode))
+	return append(out, Query(PresetsCode), Query(VersionCode))
 }
 
-// Update is one parsed "CODE:VALUE" from the device: a numeric control value,
-// or — for PresetsCode only — the preset names by index (Names non-nil).
-type Update struct {
-	Code  string
-	Val   int
-	Names []string
+// playerSpecs are the player's settable codes, kept out of Specs so the
+// equalizer never lists them.
+var playerSpecs = map[string]Spec{
+	VolumeCode: {Code: VolumeCode, Kind: Ranged, Min: 0, Max: 100, Step: 1},
+	MuteCode:   {Code: MuteCode, Kind: Toggle, Min: 0, Max: 1, Step: 1},
 }
+
+// queryOnly are the codes lp10 reads but never sets.
+var queryOnly = map[string]bool{StatusCode: true, PlayCode: true, SourceCode: true, VersionCode: true, PresetsCode: true}
+
+// actions are the codes that act when sent bare — never queries.
+var actions = map[string]bool{ToggleCode: true, NextCode: true, PrevCode: true}
+
+// Wire is the one allowlist for what goes on the socket: the frame for code
+// with val (query true reads the code instead of setting it), or false when
+// lp10 never sends that code in that form. An action takes no value and no
+// query; a get-only code takes only a query; a control or a player setting
+// takes both, and a set is clamped to its range first.
+func Wire(code string, val int, query bool) (string, bool) {
+	switch {
+	case actions[code]:
+		if query {
+			return "", false
+		}
+		return code + ";", true
+	case queryOnly[code]:
+		if !query {
+			return "", false
+		}
+		return Query(code), true
+	}
+	sp, ok := specByCode[code]
+	if !ok {
+		sp, ok = playerSpecs[code]
+	}
+	if !ok {
+		return "", false
+	}
+	if query {
+		return Query(code), true
+	}
+	return code + ":" + strconv.Itoa(max(sp.Min, min(sp.Max, val))) + ";", true
+}
+
+// IsAction reports whether code is one of the bare actions (POP, NXT, PRE).
+func IsAction(code string) bool { return actions[code] }
+
+// Status is one parsed STA reply: "source,mute,volume,treble,bass,net,
+// internet,playing,led,upgrading" per the UART API. Only the fields the
+// player shows are kept; the tone comes from its own codes.
+type Status struct {
+	Source  string
+	Muted   bool
+	Vol     int
+	Playing bool
+}
+
+// Update is one parsed "CODE:VALUE" from the device: a numeric control or
+// player value (Val), the preset names by index (Names, PresetsCode only), a
+// text value (Text: the source, the version, a track field, the vendor), or a
+// status reply (Status, StatusCode only).
+type Update struct {
+	Code   string
+	Val    int
+	Names  []string
+	Text   string
+	Status *Status
+}
+
+// numeric are the player codes whose value is a number.
+var numeric = map[string]bool{VolumeCode: true, MuteCode: true, PlayCode: true}
+
+// textCodes are the player codes whose value is text, each with its length
+// bound: a track field is clipped for the frame, the others are short words.
+var textCodes = map[string]int{
+	SourceCode: 16, VersionCode: 32, VendorCode: 24,
+	TitleCode: maxText, ArtistCode: maxText, AlbumCode: maxText,
+}
+
+// maxText bounds one track field. The now-playing column is far narrower;
+// the marquee scrolls what is longer, so this only stops a hostile flood.
+const maxText = 200
 
 // ParseFrames consumes every complete ';'-terminated frame from buf and returns
 // the recognized updates plus any trailing partial frame (carry it into the next
@@ -161,20 +260,32 @@ func ParseFrames(buf string) (out []Update, rest string) {
 	}
 }
 
+// parseFrame reads one frame. The value is everything after the FIRST colon,
+// so a title holding a colon arrives whole; a title holding a semicolon is cut
+// there — the device's own framing, which no reader can undo — and its
+// remainder, with no known code in front, is dropped.
 func parseFrame(frame string) (Update, bool) {
-	before, after, ok0 := strings.Cut(frame, ":")
+	code, after, ok0 := strings.Cut(frame, ":")
 	if !ok0 {
 		return Update{}, false // bare "CODE" (our own query echo) — ignore
 	}
-	code := before
-	if code == PresetsCode {
+	switch {
+	case code == PresetsCode:
 		names := parsePresets(after)
 		if names == nil {
 			return Update{}, false
 		}
 		return Update{Code: code, Names: names}, true
+	case code == StatusCode:
+		st, ok := parseStatus(after)
+		if !ok {
+			return Update{}, false
+		}
+		return Update{Code: code, Status: &st}, true
+	case textCodes[code] > 0:
+		return Update{Code: code, Text: cleanText(after, textCodes[code])}, true
 	}
-	if _, known := specByCode[code]; !known {
+	if _, known := specByCode[code]; !known && !numeric[code] {
 		return Update{}, false
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(after))
@@ -182,6 +293,40 @@ func parseFrame(frame string) (Update, bool) {
 		return Update{}, false
 	}
 	return Update{Code: code, Val: n}, true // raw: the readback must report what the device holds
+}
+
+// parseStatus reads a STA value. The source is control-stripped and bounded
+// like any device word; mute, volume and the play flag must parse, or the
+// whole frame is dropped rather than half-applied.
+func parseStatus(v string) (Status, bool) {
+	f := strings.Split(v, ",")
+	if len(f) < 8 {
+		return Status{}, false
+	}
+	mute, err1 := strconv.Atoi(strings.TrimSpace(f[1]))
+	vol, err2 := strconv.Atoi(strings.TrimSpace(f[2]))
+	playing, err3 := strconv.Atoi(strings.TrimSpace(f[7]))
+	if err1 != nil || err2 != nil || err3 != nil {
+		return Status{}, false
+	}
+	return Status{Source: cleanText(f[0], textCodes[SourceCode]), Muted: mute == 1, Vol: vol, Playing: playing == 1}, true
+}
+
+// cleanText reduces a device text value to printable runes, clipped to n
+// runes: every one of them reaches the frame. The clipped, trimmed result is
+// stripped once more: the clip or the trim can leave a zero-width joiner at
+// an edge, which Printable keeps only between two runes.
+func cleanText(s string, n int) string {
+	var b strings.Builder
+	i := 0
+	for _, r := range protocol.Printable(s) {
+		if i >= n {
+			break
+		}
+		b.WriteRune(r)
+		i++
+	}
+	return protocol.Printable(strings.TrimSpace(b.String()))
 }
 
 // maxPresetName bounds one preset label so a hostile reply can't widen the
@@ -219,6 +364,9 @@ func parsePresets(list string) []string {
 // maxPresetName runes. The strip is protocol.Printable, the rule every other
 // device string gets: a C0/C1-only filter let a bidi override, a line
 // separator or a zero-width space through to the equalizer row.
+//
+// The result is stripped once more for the zero-width joiner a clip or the
+// trim can leave at an edge.
 func cleanName(s string) string {
 	var b strings.Builder
 	n := 0
@@ -232,5 +380,5 @@ func cleanName(s string) string {
 		b.WriteRune(r)
 		n++
 	}
-	return strings.TrimSpace(b.String())
+	return protocol.Printable(strings.TrimSpace(b.String()))
 }

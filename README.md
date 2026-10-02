@@ -1,7 +1,7 @@
 # lp10
 
 > One command, one screen — a terminal player and equalizer for the **Arylic LP10**
-> network audio streamer, driven over a single SSH connection.
+> network audio streamer, driven over the device's own `:2018` control channel. No ssh, no login.
 
 [![CI](https://github.com/lucasdaddiego/lp10/actions/workflows/ci.yml/badge.svg)](https://github.com/lucasdaddiego/lp10/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lucasdaddiego/lp10)](https://goreportcard.com/report/github.com/lucasdaddiego/lp10)
@@ -12,203 +12,134 @@
 
 ```
 $ lp10
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃  ♪ LP10 · Living  ● 16:59       1 play  2 eq  3 svc  4 log  5 diag    Vol    ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃  ╭─────────────────────────╮                                           ▓     ┃
-┃  │█████████████████████████│                                           ▓     ┃
-┃  │█████████████████████████│                                           ▓     ┃
-┃  │█████████████████████████│  Cause We've Ended as Lovers              ▓     ┃
-┃  │█████████████████████████│  Jeff Beck                                ▓     ┃
-┃  │█████████████████████████│  Blow By Blow                             ▓     ┃
-┃  │█████████████████████████│                                           ▓     ┃
-┃  │█████████████████████████│  ● Spotify · Ogg · 44.1 kHz · 2 ch        █     ┃
-┃  │█████████████████████████│                                           █     ┃
-┃  │█████████████████████████│  ▶ Playing 03:49 ━━━━━━━━●──── -01:52     █     ┃
-┃  │█████████████████████████│                                           █     ┃
-┃  │█████████████████████████│      ◀◀          pause         ▶▶         █     ┃
-┃  │█████████████████████████│                                           █     ┃
-┃  │█████████████████████████│                                           █     ┃
-┃  ╰─────────────────────────╯                                          50%    ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃                                                                              ┃
-┃       space play · ↑↓ volume · m mute · s sleep · d night · ? help · q quit  ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃  ♪ LP10 · Living  ● 21:10                         Network  1 player  2 equalizer  3 diagnostics  ┃
+┃  connected · firmware AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31                         ┃
+┃                                                                                                  ┃
+┃  nothing playing                                                                                 ┃
+┃  start something on Spotify · AirPlay · Bluetooth                                                ┃
+┃                                                                                                  ┃
+┃  ⏸                                                                                               ┃
+┃                                                                                                  ┃
+┃   ◀◀   play   ▶▶                                                     vol ━━━━━━━●── 83%   mute   ┃
+┃                                                                                                  ┃
+┃                                                                                                  ┃
+┃                   space play/pause · ↑↓ volume · m mute · s sleep · 1-3 views · ? help · q quit  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
 `lp10` turns the Arylic LP10 (a LibreWireless / LUCI network streamer) into a
-live terminal dashboard — a player, an equalizer, the streaming services, the
-device's logs and a diagnostics read-out, one view at a time — from a single Go
-executable. No companion app, no browser, no background daemon: run `lp10`,
-get one screen.
+live terminal dashboard — a player, an equalizer and a diagnostics read-out,
+one view at a time — from a single Go executable. No companion app, no
+browser, no background daemon, no password: run `lp10`, get one screen.
+
+Since firmware `AR241CP_8747` (the vendor's 2026-09-30 OTA) the box has no
+ssh, telnet or adb at all, so lp10 speaks only what the box answers on the
+LAN: one plain TCP connection to its control tunnel (`:2018`, the MCU's Arylic
+UART API) for the player and the equalizer, plus the device's own LSSDP and
+Spotify ZeroConf answers for its identity.
 
 ## Features
 
-- **Live now-playing** — title, artist · album, source / quality, a seek bar,
-  and segmented transport buttons. The art panel shows the **real album cover**
-  — true pixels via the Kitty graphics protocol on Ghostty / kitty, a 24-bit
-  half-block raster on any other truecolor terminal, falling back to an animated
-  plasma motif for radio / idle / lesser terminals. The title and artist are
-  clickable (OSC 8) and link to Spotify.
-- **Five views, one screen** — `1` player · `2` equalizer · `3` services ·
-  `4` logs · `5` diagnostics, named in the header strip (short names, then bare
-  numerals, as the width shrinks); `tab` cycles them, `esc` returns to the
-  player, `?` is a help page with every key. Playback keys work from every
-  view, so a track can be paused from the diagnostics. The player's footer
-  rotates a second page of the rarer keys every few seconds.
+- **Live now-playing** — the device pushes the title, artist and album over
+  the tunnel each time the track changes, and the play state and the service
+  when playback starts or stops. A run that starts mid-track says "playing on
+  Spotify · the title shows when the track changes" until the next track.
+  There is no cover art, seek bar, position or format line: the tunnel
+  carries none of them, so the art panel is a procedural plasma motif (moving
+  while playing, frozen when paused). The title and artist are clickable
+  (OSC 8) and open a Spotify search.
+- **Three views, one screen** — `1` player · `2` equalizer · `3` diagnostics,
+  named in the header strip (full names, then short names, then bare numerals
+  as the width shrinks); `tab` cycles them, `esc` returns to the player, `?` is
+  a help page with every key. Playback keys work from every view, so a track
+  can be paused from the diagnostics. The player's footer shows a second page
+  of the rarer keys for four seconds in every sixteen.
 - **A notice line** under the header, in every view — a volume step names the
-  level, mute says so, the sleep timer, bedtime and night mode report their
-  state, a service switch says what was asked, and a lost connection warns.
-  On connect it greets with a summary: firmware, the Spotify engine, the
-  engine's reconnect count since the box's live syslog begins, and whether the
-  last boot was a power-on. Each
+  level, mute says so, the sleep timer reports its state, and a lost
+  connection warns. On connect it greets with what the box says about itself:
+  `connected · firmware AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31`
+  (the LSSDP answer, the tunnel's `VER`, the Spotify engine's ZeroConf). Each
   notice fades after a couple of seconds; the row is always there, so nothing
   shifts.
-- **An idle clock** — connected with nothing playing, the player shows the
-  time in large block digits and names the streaming sources that are switched
-  on, so the terminal reads from across the room and says how to wake the box.
+- **An idle clock** — connected with nothing playing, the full player shows
+  the time in large block digits and how to wake the box ("start something on
+  Spotify · AirPlay · Bluetooth" — the three services the box always runs; the
+  tunnel cannot say which others are switched on), so the terminal reads from
+  across the room.
+- **A real mute** — `m` sends the MCU's own mute: the level stays where it is,
+  and unmute brings the sound back at that level.
+- **The volume bridge** — on firmware 8747 the Spotify app's volume slider
+  stopped changing what the room hears: the level reaches the device's
+  register and the app's slider, but not the audible stage (TEARDOWN §8.1).
+  The knob, the remote and a tunnel `VOL` still work, because they go through
+  the MCU. So lp10 re-sends as a tunnel `VOL` the first volume reading of each
+  connection and every later level the device reports that lp10 did not set
+  itself: the room follows the Spotify slider again, about 0.1–0.2 s behind
+  it. Only while lp10 runs; the real fix is the vendor's.
 - **Equalizer** (`2` or `e`) — the EQ switch and its preset, treble / mid / bass
   tone, the deep-bass switch and level, balance, and the output cap (Max
   volume) as wide slider rows, each with a note on what it does on this box.
   Driven over the device's own control channel. Paints instantly from a cached
   snapshot on launch.
-- **Diagnostics** (`5` or `i`) — a one-line **status band** — a color-coded
-  health verdict (`healthy` / `warn` / `fault`) and the clock, nothing else —
-  over two ruled columns on a wide terminal (a stacked read-out when
-  narrow): device & firmware identity (down to the serial, MCU version, and BT
-  address, plus a **boot** line — power-on or software reboot, when — and an
-  **update** line that is the verdict the box fetched itself: its updater asks
-  the vendor every four hours and logs the answer, so nothing leaves the LAN
-  for it; `u` inside the overlay asks the vendor's manifest directly, on a
-  separate line, and that verdict is kept for half an hour); lp10's own **connection** to the box (ssh stream freshness and the
-  `:2018` control-tunnel state, the LSSDP liveness answer, and the Spotify
-  engine's own ZeroConf answer — the two readable even while ssh is down); the
-  active network link (Wi-Fi or ethernet, with live throughput, error/drop
-  counters as session deltas, the multiroom group state, Wi-Fi **SNR**, and
-  round-trip latency — average, jitter, and a spike-flagging peak — to your laptop,
-  the gateway, and the internet);
-  the **audio chain** (ALSA playback state, the **buffer fill**, the DAC's
-  *actual* rate/format/channels vs the source — catching resampling — and the
-  **output level**: the ALSA softvol the firmware holds one step under the volume
-  it reports, flagged in amber when the two drift apart, i.e. the room is quieter
-  or louder than every display claims; a volume nudge resyncs it); and resource
-  gauges (cpu + clock · memory · storage · process contention · temp · uptime). It also lists the
-  device's **streaming capabilities** (AirPlay 2 · Bluetooth · DLNA · Spotify on,
-  with Cast / Qobuz / Tidal / USB shown off when env-gated — read live from the box)
-  and a **hardware reference** (SoC, the DAC situation, the line-out / optical outputs).
-  The live metrics are gathered **only while the overlay is open**; any metric the
-  hardware can't provide degrades to "—".
+- **Diagnostics** (`3` or `i`) — a one-line **status band** — a color-coded
+  health verdict (`healthy` / `warn` / `fault`) with its reasons, and the
+  clock — over ruled sections, two columns on a wide terminal (a stacked
+  read-out when narrow): the **audio** the tunnel reports (source, play state
+  and title, volume and mute, Max volume, EQ), lp10's own **connection** to the
+  box (the tunnel and the age of its last frame, the host, the LSSDP answer,
+  the Spotify engine's ZeroConf answer — the last two readable even while the
+  tunnel is down), the **device** (firmware from LSSDP, the MCU build from
+  `VER`, the eSDK from ZeroConf, what moved since the last `lp10 sweep`, and
+  the vendor's update verdict once `u` has asked), and a **hardware** reference
+  (SoC, the DAC situation, the line-out / optical outputs).
 - **Finds the device itself** — mDNS auto-discovery at startup locates the LP10 on
   the LAN by its `am=LP10` advertisement, so a changed DHCP lease never needs a
   config edit; when mDNS is quiet it falls back to the device's own **LSSDP**
   responder (an SSDP M-SEARCH on UDP 1800, answered by the LibreWireless stack
   itself), then to the configured host. Pure UDP, no dependency, no bound port.
-  The same LSSDP probe runs while lp10 can't reach the box over ssh, so the
-  "connecting…" screen says whether the device is **up on the LAN but refusing
-  ssh** (its sshd rate-limits rapid reconnects) or not answering at all — and
-  the diagnostics overlay's connection section shows the last answer.
+  The same LSSDP probe runs while lp10 can't reach the tunnel, so the
+  "connecting…" screen says whether the device is **up on the LAN but not
+  answering on `:2018`** or not answering at all.
 - **Spotify ZeroConf** — the running Spotify engine advertises
   `_spotify-connect._tcp` and answers an unauthenticated `getInfo` on the
-  advertised port (the port is per engine — 9095 for the new one, 9096 for the
-  legacy one — so it is taken from the SRV record every time, never remembered).
-  lp10 asks it every 30 s (10 s while disconnected), again with no ssh in the
-  loop: it says whether the engine is *actually up*, on which eSDK build, and —
-  when the engine reports it — who is signed in. The answer sits in the
-  diagnostics connection section and in the services pane's engine section;
-  "not advertised" there means no engine is running, whatever the env flag
-  claims.
+  advertised port (the port is per engine — 9095 for the Pro one, 9096 for the
+  legacy HiFi one — so it is taken from the SRV record every time, never
+  remembered). It says whether the engine is *actually up*, on which eSDK
+  build, and — when the engine reports it — who is signed in; "not advertised"
+  means no engine is running.
 - **Sleep timer** — `s` arms a "pause in N minutes" countdown (15 → 30 → 45 →
   60 → 90 min, one step per press; `S` cancels), shown beside the clock. It lives
-  entirely in lp10 — at the deadline it sends the same pause the space bar does —
-  so it needs nothing from the device (whose own sleep timer is hidden on this
-  firmware) and can't leave anything behind. It ends with the process: quitting
-  lp10 cancels it. A deadline that passes while the link is down fires when the
-  link comes back — unless that is more than ten minutes late (an outage through
-  the night), when lp10 cancels the timer with a notice and still puts night
-  mode back.
-- **Night mode** — `d` switches on the device's own multi-band **dynamic range
-  compressor** (the Amlogic AED block's DRC, with the firmware's stock 3-band
-  table): peaks reined in, quiet passages lifted, for late-night listening at low
-  volume. It's the one audio effect on the box a host can actually switch (the
-  EQ/DRC coefficient tables are read-only from userspace, and the "WM8904"
-  mixer controls drive a chip that isn't on the bus), driven over the same ssh
-  stream as playback and read back from the device so the `◐ night` badge
-  beside the clock shows device truth. Session-scoped: quitting lp10 puts the
-  compressor back to the state it found. **`b` is bedtime**: the sleep timer and
-  night mode in one press — compress now, pause in N minutes, and put the
-  compressor back when the timer goes off.
-- **Services** (`3` or `c`) — the box has two independent notions of "on" and they
-  drift apart: an env flag, and whether a daemon is actually running. The device's
-  own web page reads only the flag, so it will report `Spotify: on` with no engine
-  running at all — which is exactly what an OTA did to this device in August 2026
-  (it flipped the factory default to Spotify's newer engine while the user config
-  still held the old one; the two init scripts are each guarded on the *other*
-  flag being clear, so neither started). The pane shows one honest state per row
-  and surfaces the second truth only where it means something — printing both on
-  every row just teaches the eye to skip the line, which is where the interesting
-  case was hiding. A flag its init script never reads is marked inert rather than
-  as a fault (AirPlay and DLNA are both in that position, whether or not the flag
-  happens to agree); the warning is reserved for a flag that *is* consulted and
-  still contradicts what is running — the Spotify pair naming an engine that is
-  not the one running, held back for 40 s after a switch while the engine
-  starts. Until the device has reported its services, `enter` sends nothing: a
-  switch computed from a guessed state would write the box's config blind. The
-  focused row spells out what `enter` will
-  do to it — `enter` on Spotify cycles off → legacy (hifi) → new, and presses stack
-  faster than the device can answer. It is also honest
-  about leverage: AirPlay and DLNA have no env gate at all, so stopping them lasts
-  only until the next boot; Bluetooth is never offered because the LP10's remote
-  control *is* a Bluetooth device; Google Cast lives in a config layer `setenv`
-  cannot reach. Spotify is a three-way — **off · legacy (hifi) · new** — because
-  its two engines are not interchangeable: the legacy one tops out at Ogg/AAC,
-  while the newer eSDK is the only one that negotiates FLAC. (Right after the
-  8530 OTA the new engine bypassed the softvol and pinned the output at full
-  scale; since vendor app v32 its volume works like the legacy one's.) The pane
-  always writes the Spotify flags as a coherent pair so the vendor's both-set
-  trap is unreachable from here.
-- **`lp10 sweep`** — the "did it update?" command: one read-only pass over the
-  box (firmware, MCU, kernel, the vendor app and its md5, sha256 of the
-  binaries an OTA or the app loader would replace, the boot reason and time,
-  every listener, the Spotify flag pair and running daemons, how many env keys
-  were set at runtime, the engine's reconnects over the syslog history the box
-  keeps on flash — weeks of it, counted per hour on the box — with the hourly
-  rate, the last 24 hours and the last seven days (the JSON keeps every day,
-  `reconnectsByDay`), and the box's own last firmware verdict), the LAN's
-  ssh-free answers (LSSDP, the engine's ZeroConf), and the vendor's view (the
-  manifest's verdict for the running build, and the newest bundle it serves —
-  size, date, etag — or that it offers none, even to an old build). It prints
-  a report and diffs it against the previous sweep, kept as a baseline in
-  `~/.local/state/lp10/`; `--json` prints the baseline's shape, `--no-save`
-  leaves the old one in place — as does an interrupted run. The baseline is
-  merged fact by fact: what a sweep cannot read (a stalled ssh, no getenv,
-  sqlite3 or syslog, a silent probe) keeps its last known value and the date
-  it was read, so a hollow report never becomes the thing the next sweep
-  compares with; the report names those older facts (`ssh facts as of Sep 22
-  10:00`), and a binary an update removed reads `gone`. The diff skips
-  listeners on the Linux ephemeral ports (32768–60999), where the vendor app's
-  second port moves on every restart, but keeps dmr's 49494. This is the one
-  lp10 command that asks the vendor on its own — by design, since that is the
-  question it answers.
-- **Device log** (`4` or `l`) — the tail of one of the box's own logs, fetched on demand
-  (`F` follows it, refetching every ten seconds while the view is open)
-  over the same ssh stream (zero cost while the pane is closed). The **device
-  log** (`/var/log/syslog/messages.log`) is the only place the box records a
-  service *refusing* to start — an init script's "not enabled" line lands there
-  and nowhere else — so it is what turns "the switch did nothing" into an answer.
-  `s` switches to the **vendor app log** (`/lsync/app.log`, since firmware 8530):
-  the Arylic app narrates every `:2018` tunnel frame and the MCU's reply, every
-  preset action and every OLED publish, so it is where "the equalizer did nothing"
-  gets answered. `f` filters to errors and warnings, `r` refetches; the
-  luci_service chatter that is most of the syslog is dropped at the source. Any
-  line that can carry the Spotify login is dropped from both logs, on the box
-  and again in lp10: the engine logs its reusable login blob and the account
-  name in clear.
+  entirely in lp10: at the deadline it sends the device's play/pause toggle —
+  only while the device says it is playing, so a timer can never resume the
+  room. It ends with the process: quitting lp10 cancels it. A deadline that
+  passes while the link is down fires when the link comes back — unless that
+  is more than ten minutes late (an outage through the night), when lp10
+  cancels the timer with a notice.
+- **`lp10 sweep`** — the "did it update?" command, with no login: one
+  read-only pass over the box and the vendor. On the LAN: a TCP connect scan of
+  every port (ssh 22, telnet 23 and adb 5037 / 5555 called out if they ever
+  answer again), the tunnel's read-only getters on one connection (the MCU
+  build, the preset list and the inputs are compared; the settings are
+  printed; never a set or an action), the DLNA renderer's UPnP description,
+  LSSDP and the engine's ZeroConf. From the vendor: the app index the box's
+  loader fetches (`rakoit_app` version and md5), the manifest's verdict for the
+  running build, and the newest bundle it serves — size, date, etag — or that
+  it offers none, even to an old build. It prints a report and diffs it
+  against the previous sweep, kept as a baseline in `~/.local/state/lp10/`;
+  `--json` prints the baseline's shape, `--no-save` leaves the old one in place
+  — as does an interrupted run. The baseline is merged fact by fact: what a
+  sweep cannot read (a silent tunnel, a probe that timed out) keeps its last
+  known value and the date it was read, so a hollow report never becomes the
+  thing the next sweep compares with; the report names those older facts
+  (`mcu, eq presets as of Sep 22 10:00`). The diff skips listeners on the Linux
+  ephemeral ports (32768–60999), where the vendor app's second port moves on
+  every restart, but keeps dmr's 49494. It exits non-zero when the port scan
+  or the tunnel fails. The syslog's reconnect counts and the box's own
+  firmware verdict needed ssh and are gone; the web UI's log download is the
+  manual substitute ([TEARDOWN §15](docs/TEARDOWN.md) — the download embeds
+  the box's secrets). This is the one lp10 command that asks the vendor on its
+  own — by design, since that is the question it answers.
 - **Keyboard-only, on purpose** — the mouse is never captured, so the terminal
   keeps its native text selection and scrolling; every control is a keystroke
   away (see [Keys](#keys)).
@@ -221,49 +152,37 @@ get one screen.
   No-op on Linux.
 - **Adapts to the terminal** — the full dashboard, a compact frame, or a
   one-line mini view, by size.
-- **Light on both ends** — one ssh connection, a single executable, and an
-  on-device shell loop trimmed to the minimum of work (see [How it works](#how-it-works)).
+- **Light on both ends** — one TCP connection and a status query every two
+  seconds on the box's side, a single executable on yours (see
+  [How it works](#how-it-works)).
 
 ## Install
 
-Requires **macOS or Linux**, a recent **Go** toolchain (1.27+), and **OpenSSH**
-(already on macOS; `openssh-client` on Linux). On Linux you also need
-`secret-tool` (`libsecret-tools`) plus a running keyring — see step 1. Nothing
-else at runtime.
+Requires **macOS or Linux** and a recent **Go** toolchain (1.27+). Nothing
+else at runtime — no ssh client, no secret store, no password to set up.
 
 ```sh
-# 1. Store the device's root password in the OS secret store (once). Both forms
-#    prompt interactively, so the password never lands in shell history or `ps`.
-
-# macOS — the login Keychain (built in):
-security add-generic-password -U -a root -s lp10 -w
-
-# Linux — the Secret Service via libsecret (needs libsecret-tools + a running
-# keyring daemon, e.g. GNOME Keyring / KWallet, in a desktop / D-Bus session):
-secret-tool store --label=lp10 service lp10 account root
-
-# 2. Build a stripped release binary into ~/.bin (make sure it's on your PATH).
+# Build a stripped release binary into ~/.bin (make sure it's on your PATH).
 make install
 
-# 3. Run — no arguments, just one screen. (`lp10 --version` prints the build.)
+# Run — no arguments, just one screen. (`lp10 --version` prints the build.)
 lp10
 ```
 
 ## Keys
 
 The screen shows one **view** at a time — the **player**, the **equalizer**,
-the **services**, the **logs**, or the **diagnostics** — named in the header's
-view strip with the one on show lit. `1`–`5` jump straight to a view, `tab`
-cycles them, `esc` returns to the player, and `?` opens a help page listing
-everything below.
+or the **diagnostics** — named in the header's view strip with the one on show
+lit. `1`–`3` jump straight to a view, `tab` cycles them, `esc` returns to the
+player, and `?` opens a help page listing everything below.
 
 | Key | Action |
 |-----|--------|
-| `1` … `5` | player · equalizer · services · logs · diagnostics |
+| `1` · `2` · `3` | player · equalizer · diagnostics |
 | `tab` / `shift-tab` | next view |
 | `esc` | back to the player |
 | `?` | help page (a second `?` closes it) |
-| `e` · `c` · `l` · `i` | also open the equalizer · services · logs · diagnostics, and close them again |
+| `e` · `i` | also open the equalizer · diagnostics, and close them again |
 | `q` / `Q` | quit — from a view, first back to the player |
 
 **Player**
@@ -274,46 +193,41 @@ everything below.
 | `n` / `p` | next / previous track |
 | `↑` / `↓` · `+` / `-` | volume ± step (`=` / `_` also work); like `m`, waits — with a notice — until the device has reported its volume this run, so a step is never taken from the last run's cached level |
 | `←` / `→` · `enter` | move the transport focus · press the focused button |
-| `m` | mute (volume 0 ↔ restored level, persisted) |
-| `t` | right-hand time: remaining ↔ total |
+| `m` | mute / unmute in the device (the level stays where it is) |
 | `s` / `S` | sleep timer: arm / step the countdown (15 · 30 · 45 · 60 · 90 min, then off) / cancel |
-| `d` | night mode: toggle the device's multi-band DRC (restored on quit) |
-| `b` | bedtime: `s` and `d` in one — arm / step the sleep timer with night mode on; night mode is put back when the timer fires or is cancelled |
 
 **Equalizer** — `↑` / `↓` select a control, `←` / `→` adjust it, `enter` flips
-a switch or steps the preset. **Services** — `↑` / `↓` select, `enter` switches
-(Spotify cycles off → HiFi → Pro), `←` / `→` page the read-out under the rows
-when it is taller than the terminal. **Logs** — `↑` / `↓` scroll, `←` / `→` page,
-`s` source (device syslog / vendor app), `f` filter, `r` refresh, `F` follow.
-**Diagnostics** — `↑` / `↓` scroll and `←` / `→` page when the read-out is
-taller than the terminal (the footer says how much is off-screen; the help page
-scrolls the same way); `u` asks
-the vendor's manifest whether the firmware is current (the box asks by itself
-every four hours; the update line shows that).
-When a `lp10 sweep` baseline exists, the device card also says what moved since
-it — firmware, MCU or vendor app — or that nothing did.
+a switch or steps the preset. **Diagnostics** — `↑` / `↓` scroll and `←` / `→`
+page when the read-out is taller than the terminal (the footer says how much is
+off-screen; the help page scrolls the same way); `u` asks the vendor's manifest
+whether the firmware is current — the one request that leaves the LAN, only on
+that key; a verdict answers a repeat `u` for half an hour. When a `lp10 sweep`
+baseline exists, the device section also says what moved since it — firmware,
+MCU or Spotify eSDK — or that nothing did.
 
-The playback keys (`space`, `n`, `p`, `m`, volume, the timers) work from every
-view that does not use the letter itself — in the logs, `s` is the source.
+The playback keys (`space`, `n`, `p`, `m`, volume, the timer) work from every
+view that does not use the key itself — in the equalizer the arrows and
+`enter` are its own.
 
-> On Spotify, `p` (previous) first restarts the current track — that's the
-> device's own MID-40 `PREV` behaviour, not lp10's; press it twice to actually
-> skip back.
+> On Spotify, the device's "previous" first restarts the current track (seen on
+> its LUCI transport through firmware 8530); press `p` twice to skip back.
 
 On macOS the keyboard's **media transport keys** (play/pause, next, previous —
 the F7–F9 glyphs or their touch-bar equivalents) also work, from any app, while
 lp10 is connected — see the media-keys bullet under [Features](#features) for
 the Accessibility grant this needs.
 
-The player adapts to the terminal size: the full **dashboard** (the album
-cover and a vertical volume rail) at ≥ 25 rows / 70 cols, a **compact** frame
-(no art, inline volume) below that, and a one-line **mini** view below 9 rows /
-58 cols. The header's view strip shows
-the view names when they fit and bare numerals when they do not.
+The player adapts to the terminal size: the full **dashboard** (the framed art
+motif beside the now-playing column and a vertical volume rail, or the idle
+clock) at ≥ 25 rows / 70 cols, a **compact** frame (no art, inline volume, the
+source in the header) below that, and a one-line **mini** view below 9 rows /
+58 cols. The header's view strip shows the view names when they fit and bare
+numerals when they do not.
 
 There's no mouse support — lp10 is keyboard-only, so the terminal's native
-text selection and scrolling stay untouched. There's also no seek/scrub — the
-device exposes no seek command.
+text selection and scrolling stay untouched. There's also no seek/scrub and no
+position — the device exposes no seek command, and the tunnel reports no
+position or duration.
 
 ## Equalizer
 
@@ -333,11 +247,10 @@ screen.
 > and "EQ off" with Treble +8 still adds treble (that's the tone stage). Both
 > stages run inside the LP10's MCU, which is also its DAC.
 
-These ride a separate plain-text control connection to the device on TCP
-**2018** (the same channel the vendor app uses), independent of the SSH player
-stream — so a dead tunnel only marks the equalizer read-only (`←` / `→` /
-`enter` are refused with a notice), it never disturbs playback, and the
-last-known values are restored instantly from cache on launch.
+These ride the same plain-text control connection as the player, TCP
+**2018** (the channel the vendor app uses too). While it is down the
+equalizer is read-only (`←` / `→` / `enter` are refused with a notice), and
+the last-known values are restored instantly from cache on launch.
 
 > **Heads-up:** a low **Max Volume** is what makes the Bluetooth remote and
 > Spotify seem unable to turn the volume up (they hit the cap). Set it to 100
@@ -345,235 +258,170 @@ last-known values are restored instantly from cache on launch.
 
 ## Diagnostics
 
-Press `5` or `i` for a full read-out of the device, connection, and link health. A one-line
-**status band** answers "is the LP10 OK?" in a glance — a health verdict beside the
-title and the key live vitals, color-coded — over two boxless, ruled columns. The
-sections run **alphabetically**, flowing down the left column and continuing down the
-right, with the split picked to balance the two heights (it collapses to a single
-stacked column when narrow):
+Press `3` or `i` for a read-out of the device, the connection, and what the
+box says about itself without a login. A one-line **status band** answers "is
+the LP10 OK?" in a glance — a health verdict and the clock — over ruled
+sections. The sections run **alphabetically**, flowing down the left column and
+continuing down the right, with the split picked to balance the two heights (it
+collapses to a single stacked column when narrow):
 
 ```
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃  diagnostics   ● healthy                                                                                    ● 16:40  ┃
-┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ┃
-┃  ─ audio ───────────────────────────────────────────────    ─ latency ─────────────────────────────────────────────  ┃
-┃    buffer    ━━━━━━━━━───  78% full                           gw        14 ms ±1.4  max 14                           ┃
-┃    dac       44.1 kHz · S16_LE · 2ch ● live                   net       30 ms ±2.0  max 31                           ┃
-┃    stream    audio/ogg · 44.1 kHz                             you      2.2 ms ±0.2  max 2.3                          ┃
+┃  ♪ LP10 · Living  ● 21:12                                                      1 player  2 equalizer  3 diagnostics  ┃
 ┃                                                                                                                      ┃
-┃  ─ connection ──────────────────────────────────────────    ─ network ─────────────────────────────────────────────  ┃
-┃    host      root@192.168.1.13                                address   192.168.1.13 · gw 192.168.1.1                ┃
-┃    ssh       rx 0.9s ago · 1 attempt                          dns       192.168.1.1                                  ┃
-┃    tunnel    :2018 · live                                     errors    rx 0 · tx 0 · drop 0 · session               ┃
-┃                                                               link      ethernet · 100 Mbit/s · full duplex          ┃
-┃  ─ device ──────────────────────────────────────────────      mac       aa:bb:cc:dd:ee:ff                            ┃
-┃    bt        aa:bb:cc:dd:ee:fe                                multiroom solo                                         ┃
-┃    build     2026-01-12 · app 318 · vendor app v42            traffic   rx 58 KB/s · tx 2 KB/s                       ┃
-┃    firmware  AR241CE_8530.23.2                                                                                       ┃
-┃    mcu       v23                                            ─ resources ───────────────────────────────────────────  ┃
-┃    model     Arylic AR241CE · LS8                             cpu       ━━━─────────  22% 1m 0.44 · 1200 MHz         ┃
-┃    name      Living                                           memory    ━━━━────────  37% 135/215 MB free            ┃
-┃    os        Linux 5.15.137 · 2 cores                         storage   ━━──────────  17% 1228/7168 MB /lsync        ┃
-┃    serial    RKARYLLP100000000000                             tasks     2 running · 237 total                        ┃
-┃                                                               temp      ━━━━━━━─────  52 °C SoC                      ┃
-┃  ─ hardware ────────────────────────────────────────────      uptime    3h 25m                                       ┃
-┃    dac       MVSilicon BP10xx MCU · I2S in · tone/EQ/balance on-chip                                                  ┃
-┃    line in   3.5 mm aux · ADC unidentified (WM8904 declare… ─ services ────────────────────────────────────────────  ┃
-┃    line out  3.5 mm · 1 Vrms (no power amp)                   on  ● AirPlay 2 ● Bluetooth ● DLNA / UPnP ● Spotify    ┃
-┃    optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz                  off ○ Google Cast ○ Qobuz ○ Tidal ○ USB playback       ┃
-┃    radio     dual-band 802.11ac · BT 5.0                      lan ● telnet :23 ● adb :5555 ● web :80 ● control :2018 ┃
-┃    soc       Amlogic A113L · 2× Cortex-A35                    env-gated · c to switch them here                      ┃
+┃  diagnostics   ● healthy                                                                                    ● 21:12  ┃
+┃  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ┃
+┃  ─ audio ───────────────────────────────────────────────    ─ device ──────────────────────────────────────────────  ┃
+┃    source    Network                                          firmware  AR241CP_8747.29.2                            ┃
+┃    state     idle                                             mcu       29-1d316f0c-10                               ┃
+┃    volume    83%                                              eSDK      3.216.31-g317ae1c7                           ┃
+┃    max vol   100%                                             sweep     unchanged since Oct 1 21:05                  ┃
+┃    eq        off                                              vendor    up to date · checked 6.2s ago                ┃
+┃                                                                                                                      ┃
+┃  ─ connection ──────────────────────────────────────────    ─ hardware ────────────────────────────────────────────  ┃
+┃    tunnel    live · :2018 · last frame 0.6s ago               dac       MVSilicon BP10xx MCU · I2S in · tone/EQ/ba…  ┃
+┃    host      192.168.1.13                                     line in   3.5 mm aux · ADC unidentified (WM8904 decl…  ┃
+┃    lssdp     answered 12s ago · S · eth0                      line out  3.5 mm · 1 Vrms (no power amp)               ┃
+┃    spotify   answered 11s ago · :9095                         optical   S/PDIF TOSLINK ≤ 24-bit/192 kHz              ┃
+┃                                                               radio     dual-band 802.11ac · BT 5.0                  ┃
+┃                                                               soc       Amlogic A113L · 2× Cortex-A35                ┃
 ┃                                                                                                                      ┃
 ┃  live · u asks the vendor about updates · esc player · ? help                             ● good   ● warn   ● fault  ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-A single **status line** carries a one-glance **health verdict** (`healthy` / `warn` /
-`fault`) — the worst of the live signals (cpu · memory · temp · `/lsync` · buffer · link
-freshness · output level · the radio · the engine's reconnect rate), color-coded and
-word-paired so it still reads on a no-color terminal, and **naming its reasons** (`● warn ·
-engine reconnects 5.0/h`) so an amber verdict never has to be hunted down — with the
-connection light + clock on the right. Nothing else rides up top: every
-live number lives in its section below. (The audio buffer reads `idle` when
-nothing's playing, and volume/EQ don't appear in the overlay at all — they're
-settings, not diagnostics, and live on the player and in the equalizer view.)
+The **health verdict** (`healthy` / `warn` / `fault`) is the worst of the live
+signals — the age of the tunnel's last frame (a live box answers the status
+query every two seconds; after six seconds of silence lp10 drops the link and
+reconnects), the LSSDP answer and the Spotify engine's answer — color-coded
+and word-paired so it still reads on a no-color terminal, and **naming its
+reasons** (`● warn · tunnel quiet`) so an amber verdict never has to be hunted
+down. Disconnected, the band says so instead.
 
-Eight sections, each answering one question, in the alphabetical order they render:
-the **audio** chain (source stream in, DAC out, the ring buffer between), lp10's own
-**connection** to the box (the ssh stream the records ride, the `:2018` control
-tunnel, the target host — readable even while the device is down, which is exactly
-when you need them), **device** identity (model, firmware, build and the vendor app's own version — plus the name,
-serial, Bluetooth MAC, and MCU version read from the device's own registers), a
-**hardware** reference (SoC, the DAC situation, the line-out / optical outputs — encoded
-from a full teardown of the unit (`docs/TEARDOWN.md`), corrected by live probes: the DAC is the front-panel
-MCU itself, an MVSilicon BP10xx fed over I2S, which also runs every tone / preset /
-balance stage; the WM8904 the firmware declares isn't on the bus), **latency**, the **network** the box itself is on
-(address, DNS, link, MAC, interface **error/drop counters** shown as session deltas —
-so a degrading powerline link turns amber without boot-lifetime noise false-alarming —
-and the **multiroom** group state), **resources** (cpu · memory · storage · tasks ·
-temp · uptime), and the **services** it offers. Inside a section, related rows sit
-together (the connection runs host, LSSDP, Spotify, engine, ssh, tunnel). A section with
-nothing to report is skipped, and the column split re-balances around what's left. On
-a terminal narrower than the two columns, the read-out stacks into one and keeps the
-same verdict line.
+Four sections, each answering one question, in the alphabetical order they
+render: the **audio** the tunnel reports (source, play state and title, volume
+and mute, the Max volume cap, the EQ and its preset), lp10's own **connection**
+to the box (the tunnel, the target host, the LSSDP and ZeroConf answers —
+readable even while the tunnel is down, which is exactly when you need them),
+the **device** identity (the firmware as LSSDP names it, the MCU build from the
+tunnel's `VER`, the Spotify eSDK from ZeroConf, what moved since the last
+`lp10 sweep`, and the vendor's verdict once `u` has asked), and a **hardware**
+reference (SoC, the DAC situation, the line-out / optical outputs — encoded
+from a full teardown of the unit (`docs/TEARDOWN.md`), corrected by live
+probes: the DAC is the front-panel MCU itself, an MVSilicon BP10xx fed over
+I2S, which also runs every tone / preset / balance stage; the WM8904 the
+firmware declares isn't on the bus). A section with nothing to report is
+skipped. Volume and EQ settings live on the player and in the equalizer view;
+the audio section only reports them.
 
-The **services** matrix is read live from the device (at connect, and again after a
-switch from the services view): a
-scan of `/proc/*/comm` for the running daemons (Spotify / AirPlay / DLNA / Bluetooth), a `getenv`
-for the marketed-but-disabled features (Cast / Tidal / Qobuz / USB), and a scan of
-`/proc/net/tcp` for the **lan** group — the unauthenticated listeners anyone on the
-LAN can reach: **telnet :23** (root login, asks the password) and **adb :5555** (a
-root shell with **no authentication at all**, shown in the warn colour) and the
-vendor's own web page :80 and control tunnel :2018 (by design, dim). lp10 only
-reports them; closing telnet/adb is a device-side change. Capabilities the
-LP10 doesn't actually offer — Roon / Alexa / Matter, LibreWireless firmware baggage
-that's never on the spec sheet — are not shown; the services view (`3` / `c`) is
-where the env-gated ones are switched. What the box sends off the LAN on its own
-— the Spotify session, a 4-hourly OTA check carrying its MAC and serial, and a vendor
-log uploader that is installed but has never fired — is audited in
-[docs/TEARDOWN.md §10.4](docs/TEARDOWN.md).
-
-The resource gauges and the network stats (throughput, Wi-Fi signal, and the three
-ping round-trips) are collected on the device **only while this overlay is open** —
-close it and the on-device loop drops back to the bare minimum. Each latency row
-holds its **peak** over its last 30 samples — one every third stats tick, so about
-four to five minutes of open diagnostics — flagged amber once a genuine spike
-lands, so an intermittent glitch (a powerline link dropping out, say) is visible
-after the fact. The internet-ping target is the
-`ping_host` config key (default `spotify.com`); lp10 resolves it on the laptop at each
-connect and hands the loop only the IPv4 (the last good one when a lookup fails, none
-when nothing ever resolved), so the box never waits on its own resolver — with its
-DNS dead, one lookup used to block the loop past the 8 s watchdog. `esc`, `q` or
-`i` return to the player; the playback keys work from here too.
+The LSSDP and ZeroConf probes run once at startup (the connect greeting and the
+update check need the firmware build), then only while this view is open —
+every 30 s — and every few seconds while the tunnel is down. What the box
+sends off the LAN on its own — the Spotify session, a 4-hourly OTA check
+carrying its MAC and serial, a vendor log uploader that had never fired by the
+2026-09-13 audit, and on 8747 a metrics uploader with no URL set — is audited
+in [docs/TEARDOWN.md §10.4](docs/TEARDOWN.md). `esc`, `q` or `i` return to the
+player; the playback keys work from here too.
 
 ## How it works
 
-One direct `ssh` child is the whole transport — no ControlMaster, no expect. A
-BusyBox-ash loop on the device streams framed snapshots:
+One plain TCP connection to the device's control tunnel (`:2018`) is the whole
+transport — no ssh, no login, no helper process on the box. The tunnel relays
+the MCU's Arylic UART API to the LAN as bare `CODE:VALUE;` frames, with no
+framing and no auth (TEARDOWN §6.3):
 
-- **Polls only what is on screen, and as little as it can** — every forked
-  read costs about 30 ms of CPU on the LP10's A1, so the loop reads one
-  register a tick (play state and volume alternate, both after a keypress),
-  the position every fifth tick and the metadata on change with a fallback
-  every fifteenth. Measured on the box, that is about 4 % of one core with the
-  player showing, 5 % with the diagnostics open (the resource stats, the ALSA
-  chain and three pings ride along only then), and a 3-second tick with no
-  position reads when any other view is up. The LSSDP and ZeroConf probes run
-  while connected only while the services or the diagnostics show their
-  answers; disconnected they always run, since the connecting screen is built
-  on them. The one-shot facts are read once: the device details at connect,
-  the capabilities at connect and after a toggle, the log digest (reconnects,
-  the box's own firmware verdict) at connect and each time the diagnostics
-  open, and the logs only on request.
-- **Light on the laptop too** — the renderer is capped at 15 frames a second
-  (bubbletea re-parses the whole frame on every flush, changed or not), and
-  the album motif animates at the same rate. On a 200×50 terminal against a
-  simulated device that is about 11 % of one core with the motif animating
-  and under 5 % on a static view, at ~30 MB resident.
-- **Adaptive cadence** — cheap reads roughly once a second while playing,
-  stretching to ~3 s when idle. The now-playing JSON is shipped only when it
-  changes; the play position is resynced periodically while the UI extrapolates
-  it locally between reads; the resource stats run **only while the diagnostics
-  overlay is open**. The per-tick work is kept to the minimum of device-API
-  reads — every other stat comes from `/proc` and `/sys` via shell builtins.
-- **Whitelisted commands** — input to the device is a whitelist of
-  `<mid> <data>` lines (transport, volume, the stats / player-visible / night-mode
-  switches, the service toggle and the log-tail request — each payload checked
-  against its own whitelist), never `eval`. Failed sends are held and delivered
-  in order on reconnect; a stale one you typed is dropped visibly, a view flag
-  nobody typed silently. A held volume key sends the newest level at most every
-  150 ms, and the loop drains at most eight queued commands per tick.
-- **Secret-store auth** — password-only via `SSH_ASKPASS`: the binary re-execs
-  itself and answers ssh's prompt from the OS secret store (the macOS login
-  Keychain, or the Secret Service via `secret-tool` on Linux).
-- **Self-reaping** — the loop detects a dead session by read-timing and exits,
-  so both ends are reaped no matter how the TUI died; the client reconnects with
-  backoff. The box's sshd locks out rapid logins, so a login that ends short —
-  the watchdog killing a stalled session, or a loop that exits right after it
-  started — counts, and from the second in a row the next login waits at least
-  30 s, doubling to 2 minutes, with a note that says why. A session that
-  delivers for 2 minutes ends the streak, so one stall in a long session still
-  reconnects at once.
-- **Typed state boundary** — device JSON is coerced once into a whitelisted
-  `Track` schema. The worker runtime owns child handles, shutdown coordination,
-  and snapshot persistence; the shared protocol state contains only the
-  lock-protected player, device, and liveness model consumed by the UI.
-- **Verified firmware** — `AR241CE_8530.23.2` / MCU v23 (the August 2026 OTA,
-  re-analysed 2026-09-02 against the vendor bundle and the live box) and
-  `AR241CE_9243.16.2` / MCU v16 before it. The OTA changed nothing lp10 speaks:
-  the LUCI registers, the `@@` loop inputs, the `:2018` command table and the
-  preset list are identical across both. What did move: Spotify's ZeroConf
-  endpoint (`:9095` → `:9096`), the Pro engine's SDK (3.205 → 3.211), the
-  factory default for the two Spotify flags (HiFi → Pro, the services-pane
-  story above), and the OTA manifest host. Re-swept 2026-09-23: the vendor
-  still has nothing newer than 8530 (and its manifest now offers 8530 to no
-  older build either), so the box is current; the vendor app moved to v42 on
-  its own; a services-pane pin is a dirty row in the device's sqlite env store
-  and survives reboots (the factory config is only merged in, never rebuilt).
-  The box's syslog is capped at 1 MiB and rotated onto flash, so while a track
-  plays the live file covers well under an hour — which is why lp10 reads the
-  box's own firmware verdict from the vendor app's log instead.
+- **Seed, poll, listen** — on connect lp10 asks for the status, every EQ
+  control, the preset names and the MCU build, 150 ms apart; then it asks
+  `STA;` every two seconds (source, mute, volume and play state in one frame)
+  and applies what the device pushes on its own: the title, artist and album
+  on a track change (plain UTF-8), the play state and the service, the
+  Spotify app's volume changes. Nothing is pushed while a track plays, which
+  is why there is no position.
+- **A silent link is a dead link** — a connection that delivers no frame for
+  six seconds is closed and redialled with backoff (250 ms, doubling to 3 s).
+  That also covers a quirk seen live: the box sometimes accepts a connection
+  and never serves it, while the next one answers at once. lp10 holds exactly
+  one connection — the tunnel daemon serves its clients one at a time, and a
+  burst of quick connects once left the next one hanging.
+- **One allowlist** — everything lp10 sends passes `tunnel.Wire`: play/pause,
+  next and previous (bare actions, sent only on a keypress — never as a
+  query), volume and mute, the EQ controls, and read-only getters. Any other
+  code is refused before it reaches the socket; the device also clamps every
+  value and echoes what it applied. A key pressed while the link is down is
+  delivered when it comes back if it is under four seconds old, and dropped
+  visibly otherwise; a held volume key sends the newest level at most every
+  150 ms; quitting still writes what was already queued.
+- **The volume bridge** — the first volume reading of each connection, and
+  any later level the device reports that lp10 did not set, goes back out as
+  `VOL:n;` (see [Features](#features)). For a knob or remote change, already
+  applied, the re-send changes nothing.
+- **Probes that need no tunnel** — the LSSDP responder and the Spotify
+  engine's ZeroConf endpoint, as above. The vendor's manifest is asked only on
+  `u` (and by `lp10 sweep`).
+- **Light on the laptop too** — the renderer is capped at 15 frames a second:
+  bubbletea re-parses the whole frame on every flush, changed or not, and on a
+  200×50 terminal the default 60 cost about 7 % of a core for a static view
+  and about 17 % with the motif animating; 15 is a quarter of that, and more
+  than the 10 Hz logic tick and the motif need.
+- **Typed state boundary** — every frame is parsed once (`tunnel.ParseFrames`):
+  unknown codes are dropped, numbers must parse, and text (a title, the
+  source, the version, a preset name) is reduced to printable runes and
+  clipped before it reaches the screen. The worker runtime owns the
+  connection, shutdown coordination and snapshot persistence; the shared
+  protocol state holds only the lock-protected player, EQ and liveness model
+  the UI reads.
+- **Firmware now** — `AR241CP_8747.29.2` / MCU v29 (the vendor's OTA of
+  2026-09-30, a production build; TEARDOWN §14.5), re-swept 2026-10-01. It
+  deleted ssh, telnet and adb, so lp10 became tunnel-only. The MCU's command
+  table and preset list are unchanged from v23; the tunnel pushes the track,
+  the play state and the Spotify app's volume; the Spotify app's own volume no
+  longer reaches the audible stage (hence the bridge); the Pro engine runs
+  eSDK 3.216.31.
+- **Verified firmware** — `AR241CE_8530.23.2` / MCU v23 (the August 2026 OTA)
+  and `AR241CE_9243.16.2` / MCU v16 before it, both with the ssh-era lp10
+  (TEARDOWN §14.1–§14.4).
 
 ### Security & threat model
 
 > **lp10 is built for a trusted home LAN, and only that.**
 
-- **Host keys are deliberately not verified.** The LP10 regenerates its SSH host
-  key on every boot from a ramfs, so pinning is pointless: lp10 runs ssh with
-  `StrictHostKeyChecking=no` and `UserKnownHostsFile=/dev/null` (see
-  `transport.SSHArgv`). This is the **one intentional security tradeoff** — a
-  static analyzer (gosec / CodeQL) will flag it, by design — and it means lp10
-  offers **no protection against a man-in-the-middle** on the path to the device.
-  Only run it on a network you control.
-- **The password never touches the repo.** It lives solely in the OS secret store
-  (the macOS login Keychain or the Linux Secret Service) and is delivered to ssh
-  through `SSH_ASKPASS`; it is not in the source, git history, config files, shell
-  history, or `ps` output.
-- **The device is trusted as root.** Commands are a fixed whitelist, never
-  `eval`, but lp10 logs in as `root@LP10` — treat the device as you would any
-  appliance you have root on.
+- **No login, no stored secret.** The box's control tunnel has no auth, so lp10
+  holds no password, key or token, and nothing it reads needs one. The config
+  file holds only a host, a label, a volume step, the discovery switch and a
+  theme.
+- **The tunnel is open to the whole LAN.** Anyone on the network can send the
+  box what lp10 sends — and more: the same API has codes that start Wi-Fi
+  setup or reboot the box. lp10 limits itself to its allowlist (transport,
+  volume, mute, EQ and read-only getters) and never sends anything else.
+- **The device is untrusted input.** Every device and LAN string — tunnel
+  frames, mDNS names, LSSDP and ZeroConf answers, the vendor's replies — is
+  control-stripped and bounded before it reaches the terminal, so a hostile
+  answer cannot inject an escape sequence or widen the frame.
+- **What leaves the LAN.** Only `u` in the diagnostics (one manifest request)
+  and `lp10 sweep` (the manifest, the vendor's app index and one `HEAD` of the
+  newest bundle). Nothing else lp10 does reaches past the LAN.
 
 Do not expose the LP10 to the public internet, and don't run lp10 across an
-untrusted network. There is intentionally no transport hardening beyond SSH's
-password auth.
+untrusted network. There is no transport hardening to add: the tunnel is plain
+TCP with no auth, by the vendor's design.
 
 ## Configuration (optional)
 
 `~/.config/lp10/config.toml` (or `$XDG_CONFIG_HOME/lp10/config.toml`) — defaults shown:
 
 ```toml
-host      = "lp10.local"    # fallback IP / mDNS name when discovery is off or finds nothing
-user      = "root"          # the ssh login only: the stored password is always the account-root secret
-name      = "LP10"          # UI label; discovery refines it to "LP10 · <device name>" (also the disambiguation hint)
-vol_step  = 2               # volume change per keypress (1–100)
-ping_host = "spotify.com"   # diagnostics: the device's internet-latency target
-discover  = true            # find the LP10 on the LAN via mDNS at startup
-art       = true            # show the real album cover (off => the plasma motif)
-art_mode  = "auto"          # auto | kitty | halfblock | off  (see below)
-theme     = "auto"          # auto | light | dark  (auto follows the terminal's background)
+host     = "lp10.local"   # fallback IP / mDNS name when discovery is off or finds nothing
+name     = "LP10"         # UI label; discovery refines it to "LP10 · <device name>" (also the disambiguation hint)
+vol_step = 2              # volume change per keypress (1–100)
+discover = true           # find the LP10 on the LAN via mDNS (LSSDP as the fallback) at startup
+theme    = "auto"         # auto | light | dark  (auto follows the terminal's background)
 ```
 
-### Album art
-
-The art panel renders the track's `CoverArtUrl`, fetched once and cached under
-`~/.local/state/lp10/art/` (so a re-seen cover needs no network and the last
-cover paints instantly on the next launch). The cache keeps the most recently
-used covers — at most 256 files and 64 MB — and prunes the rest at startup and
-every 64 covers loaded. `art_mode` picks the renderer:
-
-- `auto` *(default)* — **Kitty** true-pixel graphics on a terminal that
-  advertises support (Ghostty, kitty), a **half-block** raster on any other
-  truecolor terminal, the **plasma motif** otherwise.
-- `kitty` — force the Kitty path even when it isn't auto-detected (e.g. WezTerm /
-  Konsole, or kitty/Ghostty inside tmux where detection backs off). It only falls
-  back if the image can't be encoded; on a terminal that genuinely can't
-  composite, use `halfblock`.
-- `halfblock` — always the 24-bit half-block raster (no graphics protocol).
-- `off` — never fetch, cache, or draw art; keep the plasma motif.
-
-> The Kitty path uses Unicode-placeholder graphics so it composes with the
-> diff renderer. If your terminal claims Kitty support but the cover renders
-> wrong, set `art_mode = "halfblock"`.
+`user`, `ping_host`, `art` and `art_mode` are retired — they configured the
+ssh login, the device's ping target and the album art, which went with
+firmware 8747. A config that still sets one starts with a notice that names
+it, and the value is ignored. Unknown keys and values of the wrong type are
+reported the same way, so a typo never silently keeps the default.
 
 `theme` picks the palette: `auto` (the default) asks the terminal for its
 background colour once at startup and uses the light palette on a light
@@ -589,19 +437,19 @@ daemon advertises (`_raop._tcp`), reads its current IP, and uses it; the UI is
 then labelled with the device's own advertised name (`LP10 · Living`), so nothing
 is hardcoded. The query goes out **every** active interface, so a multi-homed Mac
 (docked Ethernet, a VPN, or a Wi-Fi you just switched to) still finds a device on
-a non-default interface. With more than one LP10, set `name` to the target's
-advertised name to pick it (e.g. `name = "Living"`); otherwise the sole/first one
-is used. It is pure mDNS — no bound port, no dependency, ~tens of milliseconds
-when the device is present, and it falls back to `host` if nothing answers, so
-startup never blocks on a missing device. Set `discover = false` to pin `host`
-(an IP, or a `.local` name your OS resolves).
+a non-default interface. When mDNS is quiet, an LSSDP M-SEARCH gets one more
+window. With more than one LP10, set `name` to the target's advertised name to
+pick it (e.g. `name = "Living"`); otherwise the sole/first one is used. It is
+pure UDP — no bound port, no dependency, ~tens of milliseconds when the device
+is present, and it falls back to `host` if nothing answers, so startup never
+blocks on a missing device. Set `discover = false` to pin `host` (an IP, or a
+`.local` name your OS resolves).
 
-`LP10_HOST` overrides `host` for a single run and skips discovery. Persistent state (the pre-mute
-level, the now-playing/EQ snapshot used for instant first paint, and the `lp10
+`LP10_HOST` overrides `host` for a single run and skips discovery. Persistent
+state (the volume and EQ snapshot used for instant first paint, and the `lp10
 sweep` baseline `sweep-<host>.json`, whose `carried` map dates each fact kept
-from an earlier sweep) lives under
-`~/.local/state/lp10/`, in files keyed on the configured `host` (so a new DHCP
-lease found by discovery keeps them).
+from an earlier sweep) lives under `~/.local/state/lp10/`, in files keyed on
+the configured `host` (so a new DHCP lease found by discovery keeps them).
 
 ### Environment overrides
 
@@ -613,73 +461,58 @@ switches off the probe it names for `LP10_LSSDP_HOST`, `LP10_ZC_ADDR` and
 | Variable | Effect |
 |----------|--------|
 | `LP10_STATE_DIR` | state directory instead of `~/.local/state/lp10/` |
-| `LP10_SSH` | the ssh binary to run (the suite points it at `cmd/fakessh`) |
-| `LP10_FAKE_SCENARIO` · `LP10_FAKE_CMDLOG` · `LP10_FAKE_DIR` · `LP10_FAKE_HEAL_AFTER` | `cmd/fakessh` behaviour |
-| `LP10_TUNNEL_ADDR` | the `:2018` tone/EQ tunnel's `host:port` |
+| `LP10_TUNNEL_ADDR` | the `:2018` tunnel's `host:port` — the whole connection to the box (the suite points it at an in-process fake) |
 | `LP10_LSSDP_HOST` | the UDP:1800 liveness probe's target (`host` or `host:port`) |
 | `LP10_ZC_ADDR` | a fixed Spotify ZeroConf `host:port`, skipping mDNS |
 | `LP10_OTA_URL` | the vendor's firmware manifest URL — set it empty to switch the on-demand check off (`u` then says the check is off) |
-| `LP10_ASKPASS` | internal: marks the `SSH_ASKPASS` self-exec |
 | `LP10_COVERDIR` · `LP10_DUMP_DIR` | `make cover` instrumentation · dump every layout the invariants test renders |
 
-The terminal is sniffed the usual way (`TERM`, `TERM_PROGRAM`, `TMUX`, the Kitty /
-Ghostty markers) for the album-art path, and `LC_ALL` / `LC_CTYPE` / `LANG` pick
-the ASCII glyph set under a CJK locale.
+`LC_ALL` / `LC_CTYPE` / `LANG` pick the ASCII glyph set under a CJK locale.
 
 ## Development
 
 ```sh
 make test     # go vet + the full suite, fully off-device
-make busybox  # the transport tests again under BusyBox 1.32.0 ash, the device's shell (needs docker)
-make ci       # exactly what CI runs (gofmt, vet, go fix -diff, staticcheck, govulncheck, -race, then busybox when docker is on PATH), under go.mod's toolchain
+make ci       # exactly what CI runs (gofmt, vet, go fix -diff, staticcheck, govulncheck, -race), under go.mod's toolchain
 make cover    # merged unit + integration coverage of the shipped packages -> coverage.out
 make build    # ./lp10
 make run      # launch the live TUI
-make generate # regenerate the embedded device loop after editing remote_loop.src.sh
+make install  # a stripped release binary into ~/.bin
 ```
 
-The suite never touches a real device: `LP10_SSH` swaps in a fake ssh transport
-(`cmd/fakessh`) selected by `LP10_FAKE_SCENARIO` (`normal`, `silent`, `dataless`,
-`eof`, `garbage`, `authfail`, `keychain-locked`, `heal`), and `LP10_STATE_DIR`
-isolates persistent state. The on-device shell loop is checked for validity
-(`sh -n`) and its parsers are exercised against captured device output, so edits
-to it fail in CI rather than silently on the device. The fragment tests run under
-the host's `sh` (bash on macOS, dash on Linux) and again inside the official
-BusyBox 1.32.0 image, where `sh` is the ash the device runs — `make busybox`
-locally, and a step on CI's Linux leg. The loop is authored as
-readable shell in `internal/transport/remote_loop.src.sh` and minified into the
-embedded `remote_loop.sh` by `go generate` (`make generate`); a stale embed fails
-the suite.
+The suite never touches a real device: the tests point `LP10_TUNNEL_ADDR` at
+an in-process fake of the `:2018` tunnel (`internal/testutil`), switch the
+LSSDP, ZeroConf and manifest probes off (set-but-empty), and keep state and
+config in temp dirs. The end-to-end tests run the real binary in a pty
+against that fake — keys reach it as tunnel frames, a pushed track shows on
+screen, the volume bridge re-sends the device's level, and quitting, Ctrl-C
+and SIGTERM restore the terminal. CI runs the same checks on Linux and macOS
+(the media-key tap is compiled, and so analysed, only on macOS).
 
 ## Project layout
 
 ```
-main.go                 entry: askpass hot path, config/discovery, TUI launch
-internal/config/        config file, paths, typed premute/snapshot persistence
-internal/protocol/      LUCI framing, typed Track parsing, commands, domain State
-internal/transport/     secret-store/askpass auth, ssh argv, the on-device loop
-internal/transport/loopgen/  minifies remote_loop.src.sh into the embedded remote_loop.sh
+main.go                 entry: config, discovery, `lp10 sweep`, TUI launch
+internal/config/        config file (retired-key warnings), paths, typed snapshot persistence
+internal/protocol/      the shared domain State, the typed Track, sanitising of every device string
+internal/tunnel/        the :2018 protocol: player and EQ codes, the one allowlist (Wire), frame parsing
 internal/discovery/     mDNS discovery, the LSSDP (UDP:1800) probe and fallback, Spotify ZeroConf
-internal/workers/       owned processes, persistence, stream / command / watchdog / EQ / art runtime
-internal/tunnel/        the :2018 plain-text EQ/control protocol
-internal/artwork/       album-cover fetch/cache + half-block & Kitty rasterizers
+internal/workers/       the tunnel worker (seed, poll, commands, volume bridge), the LSSDP / ZeroConf / OTA probes, persistence
 internal/mediakey/      macOS media-key event tap (play/next/prev system-wide)
 internal/atomicfile/    temp-sibling + fsync + rename writes for the persisted state
 internal/tui/           Bubble Tea model, rendering, input dispatch, helpers
-internal/fixtures/      embedded wire-record fixtures (shared by tests + fake)
-cmd/fakessh/            fake ssh transport for tests (substituted via LP10_SSH)
-internal/testutil/      test helpers (env isolation, fake/binary builders)
-internal/e2e/           end-to-end tests (argv contract, pty smoke)
-docs/TEARDOWN.md        device teardown & technical reference (hardware, audio path, env store, LUCI/MsgBox, protocols, OTA, firmware history)
 internal/sweep/         `lp10 sweep` — the read-only inventory, its baseline and diff
+internal/testutil/      test helpers (env isolation, the binary builder, a fake :2018 tunnel)
+internal/e2e/           end-to-end tests (argv contract, pty sessions against the fake tunnel)
+docs/TEARDOWN.md        device teardown & technical reference (hardware, audio path, env store, LUCI/MsgBox, the :2018 tunnel, protocols, OTA, firmware history)
 ```
 
 ## Dependencies
 
-- [`bubbletea/v2`](https://github.com/charmbracelet/bubbletea) / [`lipgloss/v2`](https://github.com/charmbracelet/lipgloss) / [`x/ansi`](https://github.com/charmbracelet/x) / [`colorprofile`](https://github.com/charmbracelet/colorprofile) — terminal UI (x/ansi: style-preserving clipping; colorprofile: truecolor detection for the album-art gate)
+- [`bubbletea/v2`](https://github.com/charmbracelet/bubbletea) / [`lipgloss/v2`](https://github.com/charmbracelet/lipgloss) / [`x/ansi`](https://github.com/charmbracelet/x) — terminal UI (x/ansi: style-preserving clipping)
 - [`BurntSushi/toml`](https://github.com/BurntSushi/toml) — config
 - [`golang.org/x/text`](https://pkg.go.dev/golang.org/x/text) — NFC normalisation of device strings (display width is `x/ansi`)
-- [`creack/pty`](https://github.com/creack/pty) — pty smoke test only
+- [`creack/pty`](https://github.com/creack/pty) — pty end-to-end tests only
 
 ## License
 

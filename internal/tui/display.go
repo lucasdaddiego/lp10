@@ -4,9 +4,7 @@ package tui
 
 import (
 	"cmp"
-	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -51,21 +49,6 @@ func glyphs(amb int) map[string]string {
 		"tl": "╭", "tr": "╮", "bl": "╰", "br": "╯", "h": "─", "v": "│",
 		"ell": "…",
 	}
-}
-
-// FmtMs formats milliseconds as MM:SS. Hand-rolled (one alloc) because the seek
-// row formats two of these on every animated frame; the Sprintf fallback keeps
-// the identical %02d widening for a 100-minute-plus position.
-func FmtMs(ms int) string {
-	if ms < 0 {
-		ms = 0
-	}
-	s := ms / 1000
-	mm, ss := s/60, s%60
-	if mm > 99 {
-		return fmt.Sprintf("%02d:%02d", mm, ss)
-	}
-	return string([]byte{'0' + byte(mm/10), '0' + byte(mm%10), ':', '0' + byte(ss/10), '0' + byte(ss%10)})
 }
 
 // narrow reports whether every rune of s is below U+0300 — no combining
@@ -193,76 +176,64 @@ func dispWindow(s string, off, w int) string {
 	return b.String()
 }
 
-// SourceName resolves the playback source label from the track's URL/source id.
-func SourceName(t *protocol.Track) string {
-	if t == nil {
+// SourceName names what is playing: the service the device named with its
+// VND push ("spotify" → "Spotify") — the track's own, else the latest — and,
+// before any, the input the status reports (NET → "Network"). "" when the
+// device has named neither.
+func SourceName(s protocol.Snapshot) string {
+	svc := s.Service
+	if s.Track != nil && s.Track.Service != "" {
+		svc = s.Track.Service
+	}
+	if svc != "" {
+		return serviceName(svc)
+	}
+	switch strings.ToUpper(s.Source) {
+	case "":
 		return ""
-	}
-	url := strings.ToLower(t.PlayURL)
-	switch {
-	case strings.HasPrefix(url, "spotify:"):
-		return "Spotify"
-	case strings.Contains(url, "tidal"):
-		return "TIDAL"
-	case strings.Contains(url, "airplay"):
-		return "AirPlay"
-	}
-	src := t.CurrentSource
-	if src == 0 {
-		return ""
-	}
-	switch src {
-	case 1:
-		return "AirPlay"
-	case 2:
-		return "DLNA"
-	case 3:
+	case "NET":
+		return "Network"
+	case "BT":
 		return "Bluetooth"
-	case 4:
-		return "Spotify"
-	case 5:
+	case "LINE-IN":
 		return "Line-In"
-	case 6:
+	case "USBPLAY", "USBDAC":
 		return "USB"
+	default:
+		return s.Source
 	}
-	return fmt.Sprintf("Source %d", src)
 }
 
-// Quality renders the "Mime · NN kHz" quality line for a track.
-func Quality(t *protocol.Track) string {
-	if t == nil {
-		return ""
-	}
-	var bits []string
-	if t.MIME != "" {
-		bits = append(bits, t.MIME)
-	}
-	if t.SampleRate != 0 {
-		bits = append(bits, strconv.FormatFloat(float64(t.SampleRate)/1000, 'g', -1, 64)+" kHz")
-	}
-	return strings.Join(bits, " · ")
+// serviceNames are the UART API's VND words with a display spelling of their
+// own; any other word shows as the device sent it.
+var serviceNames = map[string]string{
+	"spotify": "Spotify", "tidal": "TIDAL", "airplay": "AirPlay", "dlna": "DLNA", "upnp": "DLNA",
+	"qobuz": "Qobuz", "tunein": "TuneIn", "amazon": "Amazon Music", "usb": "USB", "iheart": "iHeart",
+	"napster": "Napster", "vtuner": "vTuner", "qplay": "QPlay", "phone": "Phone", "http": "Radio",
 }
 
-// friendlyError condenses a raw ssh / network error into a short, calm line for
-// the UI. The raw stderr (e.g. "ssh: Could not resolve hostname lp10.local:
-// nodename nor servname provided, or not known") is accurate but long and
-// alarming; these map the common cases to something human and actionable, and at
-// worst just drop the "ssh:" prefix.
+func serviceName(w string) string {
+	if n, ok := serviceNames[strings.ToLower(w)]; ok {
+		return n
+	}
+	return w
+}
+
+// friendlyError condenses a raw network error into a short, calm line for the
+// UI. The raw dial error (e.g. "cannot reach :2018: dial tcp: lookup
+// lp10.local: no such host") is accurate but long and alarming; these map the
+// common cases to something human and actionable.
 func friendlyError(msg string) string {
 	low := strings.ToLower(msg)
 	switch {
-	case strings.Contains(low, "could not resolve") || strings.Contains(low, "name or service not known"):
+	case strings.Contains(low, "no such host") || strings.Contains(low, "could not resolve"):
 		return "can't find the device — are you on the home network?"
 	case strings.Contains(low, "no route to host") || strings.Contains(low, "network is unreachable"):
 		return "no route to the device — check the network"
 	case strings.Contains(low, "connection refused"):
-		return "the device refused the connection"
-	case strings.Contains(low, "timed out") || strings.Contains(low, "timeout"):
+		return "the device refused the connection on :2018"
+	case strings.Contains(low, "timed out") || strings.Contains(low, "timeout") || strings.Contains(low, "no answer"):
 		return "connection timed out — the device may be off or away"
-	case strings.Contains(low, "permission denied") || strings.Contains(low, "publickey"):
-		return "ssh authentication failed"
-	case strings.HasPrefix(low, "ssh: "):
-		return strings.TrimSpace(msg[5:])
 	}
 	return msg
 }

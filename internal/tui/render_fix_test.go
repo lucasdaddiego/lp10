@@ -1,13 +1,11 @@
 package tui
 
 import (
-	"image"
-	"image/color"
 	"strings"
 	"testing"
-	"time"
 
 	"charm.land/lipgloss/v2"
+
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
@@ -33,122 +31,57 @@ func TestFrameLinesClipsOverWideLine(t *testing.T) {
 	}
 }
 
-// A wide cover capped to its width used to shorten the whole player block and
-// trim the transport row off its bottom (a 300×120 radio logo at the 70×25
-// minimum). The block now takes the metadata block's height.
-func TestWideCoverKeepsTransportRow(t *testing.T) {
-	m, st, _ := makeModel(t)
+// A tall cell aspect makes the square-in-pixels cover short (its height floors
+// at 6), shorter than the now-playing block beside it; the block used to take
+// the cover's height and trim the transport row off its bottom. It now takes
+// the taller of the two.
+func TestShortCoverKeepsTransportRow(t *testing.T) {
+	m, _, _ := makeModel(t)
+	m.cellW, m.cellH = 4, 16 // cells four times taller than wide
 	m.rows, m.cols = FullRows, FullCols
-	st.SetArt(st.Snap().CoverURL, image.NewRGBA(image.Rect(0, 0, 300, 120)), color.RGBA{}, false)
-	view := m.viewContent()
-	if !strings.Contains(clean(view), GL["rew"]) {
-		t.Errorf("transport row missing with a wide cover:\n%s", clean(view))
-	}
-	lines := strings.Split(view, "\n")
-	if len(lines) != m.rows {
-		t.Fatalf("%d lines, want %d", len(lines), m.rows)
-	}
-	for i, ln := range lines {
-		if w := lipgloss.Width(ln); w != m.cols {
-			t.Errorf("line %d width %d, want %d", i, w, m.cols)
+	out := clean(render(t, m))
+	for _, want := range []string{GL["rew"], GL["ff"], "Playing", "● Spotify", "De Música Ligera"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("full player lacks %q with a short cover:\n%s", want, out)
 		}
 	}
 }
 
 // Emoji in a title (a presentation selector, a ZWJ family) measure two cells
 // each on the terminal; the frame, the compact layout and the mini line all
-// stay inside the window.
+// stay inside the window while the marquee windows through them.
 func TestEmojiTitleKeepsEveryLayoutInsideTheWindow(t *testing.T) {
 	for _, sz := range [][2]int{{25, 70}, {20, 58}, {40, 120}, {8, 50}} {
 		m, st, _ := makeModel(t)
-		tr := *st.Snap().Track
-		tr.TrackName = strings.Repeat("❤️", 18) + " 1️⃣"
-		tr.Artist = "👨‍👩‍👧‍👦 " + strings.Repeat("❤️", 30)
-		tr.Album = "漢字 ❤️ album"
-		st.Preload(&tr, 0, 44)
+		st.ApplyTrackField(protocol.FieldTitle, strings.Repeat("❤️", 18)+" 1️⃣")
+		st.ApplyTrackField(protocol.FieldArtist, "👨‍👩‍👧‍👦 "+strings.Repeat("❤️", 30))
+		st.ApplyTrackField(protocol.FieldAlbum, "漢字 ❤️ album")
 		m.rows, m.cols = sz[0], sz[1]
-		view := m.viewContent()
-		for i, ln := range strings.Split(view, "\n") {
-			if w := lipgloss.Width(ln); w > m.cols || (m.rows >= MiniRows && m.cols >= MiniCols && w != m.cols) {
-				t.Errorf("%dx%d line %d width %d (cols %d): %q", sz[0], sz[1], i, w, m.cols, clean(ln))
-			}
-		}
-		for tick := range 40 { // the marquee windows through the title
+		for range 40 { // the marquee windows through the title
 			m.scroll++
-			for i, ln := range strings.Split(m.viewContent(), "\n") {
-				if w := lipgloss.Width(ln); w > m.cols {
-					t.Fatalf("%dx%d scroll %d line %d width %d: %q", sz[0], sz[1], tick, i, w, clean(ln))
-				}
-			}
+			render(t, m)
 		}
 	}
-}
-
-// The latency rows keep their columns aligned when the target label is a whole
-// IPv4 address (wider than the name column).
-func TestLatencyRowClipsLongTargetNames(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	ps := protocol.PingStat{OK: true, Avg: 12, Jitter: 1, Peak: 20}
-	gw := stripANSI(m.latencyRow("gw", ps))
-	ip := stripANSI(m.latencyRow("192.168.0.1", ps))
-	if DispW(gw) != DispW(ip) {
-		t.Errorf("rows differ in width: %q (%d) vs %q (%d)", gw, DispW(gw), ip, DispW(ip))
-	}
-	if !strings.HasPrefix(ip, Clip("192.168.0.1", latNameW)) {
-		t.Errorf("long name not clipped to its column: %q", ip)
-	}
-	_ = time.Now
 }
 
 // At 9–10 rows the compact frame cannot hold everything: the blank separators
-// yield before the player's own seek and transport rows. From 11 rows up there
-// is room for all of it, and all of it shows.
-func TestCompactShortFrameKeepsTransportOverEQSummary(t *testing.T) {
+// yield before the player's own status and transport rows. From 11 rows up
+// there is room for all of it, and all of it shows.
+func TestCompactShortFrameKeepsTransport(t *testing.T) {
 	for _, rows := range []int{9, 10, 11, 12, 13} {
 		m, _, _ := makeModel(t)
 		m.rows, m.cols = rows, 64
-		out := clean(m.viewContent())
+		out := clean(render(t, m))
 		if !strings.Contains(out, GL["rew"]) || !strings.Contains(out, GL["ff"]) {
 			t.Errorf("%d rows: transport row missing:\n%s", rows, out)
 		}
-
-		if n := len(strings.Split(m.viewContent(), "\n")); n != rows {
-			t.Errorf("%d rows: rendered %d lines", rows, n)
+		if !strings.Contains(out, "Playing") {
+			t.Errorf("%d rows: status row missing:\n%s", rows, out)
 		}
 	}
 	m, _, _ := makeModel(t)
 	m.rows, m.cols = 20, 64
-	if out := clean(m.viewContent()); !strings.Contains(out, GL["rew"]) || !strings.Contains(out, "Playing") && !strings.Contains(out, "Paused") {
-		t.Errorf("20 rows: the seek and transport rows must both show:\n%s", out)
-	}
-}
-
-// The source line sheds detail from the right before it ellipsises: the
-// minimum-size middle column keeps "● Spotify · audio/ogg" whole instead of
-// cutting the rate mid-figure, and a column too narrow for even the source
-// name is the one case still clipped.
-func TestFullSourceLineDropsDetailBeforeEllipsising(t *testing.T) {
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
-	s := st.Snap()
-	tr := *s.Track
-	tr.MIME, tr.SampleRate, tr.ChannelCount = "audio/ogg", 44100, 2
-	s.Track = &tr
-	full := clean(m.fullSourceLine(s, 80))
-	for _, want := range []string{"Spotify", "audio/ogg", "44.1 kHz", "2 ch"} {
-		if !strings.Contains(full, want) {
-			t.Errorf("wide line %q lacks %q", full, want)
-		}
-	}
-	narrow := clean(m.fullSourceLine(s, 24))
-	if narrow != "● Spotify · audio/ogg" {
-		t.Errorf("24-col line = %q, want the codec kept whole and the rate dropped", narrow)
-	}
-	if got := clean(m.fullSourceLine(s, 10)); got != "● Spotify" {
-		t.Errorf("10-col line = %q, want the source alone", got)
-	}
-	if got := clean(m.fullSourceLine(s, 6)); !strings.HasSuffix(got, GL["ell"]) || DispW(got) > 6 {
-		t.Errorf("6-col line = %q, want a clip within the width", got)
+	if out := clean(render(t, m)); !strings.Contains(out, GL["rew"]) || !strings.Contains(out, "Playing") || !strings.Contains(out, "vol") {
+		t.Errorf("20 rows: the status, transport and volume must all show:\n%s", out)
 	}
 }

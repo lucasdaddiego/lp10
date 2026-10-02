@@ -1,11 +1,10 @@
 // The idle screen: when the box is connected and nothing is playing, the
-// player shows a large clock and names the sources that are switched on, so
+// player shows a large clock and names the sources that can wake the box, so
 // an idle terminal reads from across the room and says how to wake it.
 
 package tui
 
 import (
-	"strings"
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
@@ -46,31 +45,10 @@ func bigClock(now time.Time) []string {
 	return rows
 }
 
-// sourcesOn names the streaming sources that are switched on, from the
-// capability block — the ones that can wake the box — or "" when none is.
-// Falls back to the three that are always there when the block has not
-// arrived.
-func sourcesOn(cv *protocol.ConfInfo) string {
-	if cv == nil {
-		return "Spotify · AirPlay · Bluetooth"
-	}
-	var on []string
-	for _, row := range svcRows {
-		if cv.Svc[row.id] == "on" {
-			on = append(on, row.label)
-		}
-	}
-	return strings.Join(on, " · ")
-}
-
-// wakeHint is the line under "nothing playing": what would wake the box, or,
-// with every source switched off, where to switch one on.
-func wakeHint(cv *protocol.ConfInfo) string {
-	if on := sourcesOn(cv); on != "" {
-		return "start something on " + on
-	}
-	return "no streaming service is switched on · 3 opens the services"
-}
+// wakeHint is the line under "nothing playing": what would wake the box. The
+// tunnel cannot say which services are switched on, so it names the three the
+// box always runs.
+const wakeHint = "start something on Spotify · AirPlay · Bluetooth"
 
 // renderIdle is the full player's body when the box is connected and nothing
 // plays: the clock, then what would wake it. Returned already sized to h rows
@@ -83,7 +61,7 @@ func (m *model) renderIdle(s protocol.Snapshot, now time.Time, W, h int) []strin
 	}
 	mid = append(mid, "",
 		ccell(ps.dim.render("nothing playing"), W),
-		ccell(ps.dmr.render(Clip(wakeHint(m.st.ConfView()), W)), W))
+		ccell(ps.dmr.render(Clip(wakeHint, W)), W))
 	if lbl, _ := m.sleepLabel(now); lbl != "" {
 		mid = append(mid, ccell(ps.dmr.render(lbl), W))
 	}

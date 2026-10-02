@@ -1,9 +1,9 @@
 // The LSSDP liveness worker: a one-datagram probe of the device's own UDP:1800
-// responder, which answers with no ssh and no auth — so it still works while
-// the box's sshd is refusing lp10 (the rapid-reconnect lockout) or while the
-// ssh stream is dead for any other reason. It runs fast while disconnected
-// (that's when "is the device even there?" matters) and slowly while
-// connected, just to keep the diag row fresh.
+// responder, which answers with no tunnel and no auth — so it still works while
+// :2018 is refusing lp10 or silent. It runs fast while disconnected (that's
+// when "is the device even there?" matters) and slowly while connected, just
+// to keep the diag row fresh. It is also where the box names its firmware
+// build: the update check asks the vendor about this answer's build.
 
 package workers
 
@@ -21,7 +21,7 @@ const (
 	lssdpTimeout       = 1500 * time.Millisecond
 	lssdpDisconnected  = 5 * time.Second
 	lssdpConnected     = 30 * time.Second
-	lssdpFirstProbeLag = 500 * time.Millisecond // let the ssh connect race ahead at startup
+	lssdpFirstProbeLag = 500 * time.Millisecond // let the tunnel connect race ahead at startup
 	// probeQuietPoll is how often a quiet probe worker (connected, nothing
 	// showing its answer) re-checks whether a view now wants it — a flag read,
 	// no network.
@@ -52,6 +52,7 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 		st.SetLSSDP(&protocol.LSSDPInfo{FW: info.FW, State: info.State, NetMode: info.NetMode})
 	}
 	wait := lssdpFirstProbeLag
+	asked := false // a probe has run: the first one always does (see below)
 	for !control.stop.IsSet() && ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
@@ -61,12 +62,16 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 		if control.stop.IsSet() {
 			return
 		}
-		if st.Snap().Connected && !st.ProbeWanted() {
+		if asked && st.Snap().Connected && !st.ProbeWanted() {
 			// connected and nobody is looking at the answer: ask nothing, and
-			// look again soon so an opened view gets a fresh probe within seconds
+			// look again soon so an opened view gets a fresh probe within
+			// seconds. The first probe runs regardless: its firmware build is
+			// the connect summary's and the update check's, and the tunnel
+			// connects before it is due.
 			wait = probeQuietPoll
 			continue
 		}
+		asked = true
 		fence(st, control, "lssdp worker", probe) // it parses what the LAN answers
 		if st.Snap().Connected {
 			wait = lssdpConnected

@@ -22,19 +22,12 @@ const (
 	ErrorDisplayDuration = 4 * time.Second
 	MaxTitleLength       = 120
 
-	// diagErrWindow is how long the diagnostics overlay keeps showing a
-	// transient error after it was recorded (age-stamped). Longer than the
-	// dashboard's ErrorDisplayDuration — the overlay is where one goes to
+	// diagErrWindow is how long the diagnostics keep showing a transient
+	// error after it was recorded (age-stamped). Longer than the dashboard's
+	// ErrorDisplayDuration — the diagnostics are where one goes to
 	// investigate AFTER the flash — but bounded, so a long-recovered hiccup
-	// can't sit under a healthy masthead reading as a live fault. Fatal errors
-	// are exempt: they are current state, latched until data flows again.
+	// can't sit under a healthy masthead reading as a live fault.
 	diagErrWindow = 60 * time.Second
-
-	// StatsReassertTicks re-sends the "stats on" signal while the diagnostics
-	// overlay is open (30 ticks × 100ms ≈ 3s), so the device — which resets the
-	// flag on every reconnect — resumes emitting @@s within a few seconds of a
-	// dropped/restored connection. Kept under CommandDeadline so it stays fresh.
-	StatsReassertTicks = 30
 
 	// Layout thresholds (rows × cols). Below mini -> one frameless line; below
 	// the full size -> a compact player with no art and no volume rail.
@@ -48,25 +41,23 @@ const (
 var actions = []string{"prev", "toggle", "next"}
 
 // view is which screen the frame shows. Exactly one is up at a time: the
-// player, or one of the four others reached by number, letter or tab — and
+// player, or one of the two others reached by number, letter or tab — and
 // the help page behind ?. The header's view strip names them in this order.
 type view int
 
 const (
 	viewPlayer view = iota
 	viewEQ
-	viewServices
-	viewLogs
 	viewDiag
 	viewHelp
 )
 
-// numberedViews is how many views the 1-5 keys (and tab) reach; help sits
+// numberedViews is how many views the 1-3 keys (and tab) reach; help sits
 // outside the cycle and behind ? alone.
-const numberedViews = 5
+const numberedViews = 3
 
 // viewNames labels the view strip, in view order.
-var viewNames = [...]string{"player", "equalizer", "services", "logs", "diagnostics", "help"}
+var viewNames = [...]string{"player", "equalizer", "diagnostics", "help"}
 
 // miniMode reports whether the terminal is too small for the dashboard, so only
 // the one-line mini view renders (no EQ pane). Key dispatch and syncViews
@@ -80,12 +71,9 @@ func (m *model) miniMode() bool {
 
 // model is the Bubble Tea model: controller logic plus render state.
 type model struct {
-	st     *protocol.State
-	cfg    config.Config
-	cmds   chan *protocol.Command
-	eqcmds chan workers.EQCommand
-	// Persistence belongs to the controller/runtime, not protocol.State.
-	premutePath string
+	st   *protocol.State
+	cfg  config.Config
+	cmds chan workers.Command
 
 	focus int  // transport-button focus (index into actions)
 	view  view // the screen on show (viewPlayer … viewHelp)
@@ -100,17 +88,9 @@ type model struct {
 	connectedOnce bool
 	summaryDue    time.Time
 
-	// logFollow refetches the open log every few seconds (the F key)
-	logFollow bool
 	// diagScroll is the diagnostics read-out's scroll offset (rows) when it is
 	// taller than the frame; the render clamps it
 	diagScroll int
-
-	// playerShown mirrors what the loop was last told with MID 94 (the player
-	// view on screen or not), and hiddenTicks re-asserts "hidden" so a
-	// reconnected loop — which starts visible — is told again; see syncViews.
-	playerShown bool
-	hiddenTicks int
 
 	// baseline is the last `lp10 sweep` (nil: none saved); the diagnostics
 	// name what has moved since it
@@ -118,49 +98,25 @@ type model struct {
 
 	// theme selection: the terminal's background as reported (nil until it
 	// answers), and whether the palette was built for a dark background
-	bgDark        *bool
-	themeDark     bool
-	eqFocus       int  // EQ-strip display position (index into eqOrder)
-	eqScroll      int  // first slider row drawn when the frame is too short for all nine (see eqWindow)
-	frame         int  // animation frame for the art motif (advances while playing)
-	motifLive     bool // the plasma motif was actually drawn last render (gates the fast frame tick)
-	searchLive    bool // the connecting search figure was drawn last render (keeps the frame clock ticking while idle)
-	scroll        int  // tick counter driving the now-playing marquee (advances every tick)
-	showRemaining bool
-
-	// services pane: the focused row, and the row awaiting a device answer after
-	// a toggle (the pane paints the device's report, never an optimistic flip).
-	svcFocus       int
-	svcPending     string
-	svcPendingWant string // the state asked for, so the wait ends when it lands
-	svcPendingAt   time.Time
-
-	// logs pane: which severity view is shown, which device-side tail (syslog
-	// or the vendor app's log) is selected, how far the viewport is scrolled up
-	// from the newest line, and — per source — whether a fetch has been asked
-	// for yet (so an empty view can say "waiting" rather than "no logs").
-	logFilter int
-	logSrc    int // index into logSources
-	logScroll int
-	logAsked  [2]bool
-	flash     map[string]time.Time
+	bgDark     *bool
+	themeDark  bool
+	eqFocus    int  // EQ-strip display position (index into eqOrder)
+	eqScroll   int  // first slider row drawn when the frame is too short for all nine (see eqWindow)
+	frame      int  // animation frame for the art motif (advances while playing)
+	motifLive  bool // the plasma motif was actually drawn last render (gates the fast frame tick)
+	searchLive bool // the connecting search figure was drawn last render (keeps the frame clock ticking while idle)
+	scroll     int  // tick counter driving the now-playing marquee (advances every tick)
+	flash      map[string]time.Time
 
 	// sleep timer (sleep.go): sleepAt is the host-side deadline at which the
 	// logic tick pauses playback (zero == off); sleepPreset is the index into
 	// sleepPresets the 's' key last armed, so repeated presses step upward.
 	sleepAt     time.Time
 	sleepPreset int
-	bedtime     bool // the timer was armed with 'b': night mode is restored when it ends
 
 	rows, cols   int
-	cellW, cellH int // terminal cell size in device px (0 if unknown); sizes the Kitty cover
+	cellW, cellH int // terminal cell size in device px (0 if unknown); squares the art box
 	curTitle     string
-
-	// statsOn tracks whether the device has been told to emit resource stats
-	// (@@s), so it runs only while the diagnostics overlay is open; statsTicks
-	// counts down to the next keep-alive re-assert.
-	statsOn    bool
-	statsTicks int
 
 	// motif cache: the plasma is a pure function of (w,h,frame), so a frozen
 	// frame (paused/idle) or any non-tick re-render reuses the last block
@@ -168,56 +124,23 @@ type model struct {
 	motifBlk []string
 	motifKey [3]int // w, h, frame the cache was built for
 
-	// album-art cache: rasterizing the cover is keyed by artKey (url, box and
-	// cell geometry, mode), so a steady cover reuses the last raster rather
-	// than re-rasterizing every frame. Cleared implicitly when the key changes.
-	artBlk []string
-	artKey artKey
-
-	// ghost-cover cache: the dimmed last cover shown in the idle slot, keyed like
-	// artBlk but in its own field so it never collides with the live cover.
-	ghostBlk []string
-	ghostKey artKey
-
-	// kittyTx holds the pending Kitty transmit escape (APC) for a just-(re)built
-	// cover raster. The bubbletea v2 cell renderer parses View content into a
-	// cell grid and drops escape sequences it doesn't model, so the transmit
-	// can't ride the first art line as it did under v1 — the placeholder cells
-	// survive (plain graphemes plus an SGR foreground) but the image payload
-	// would be silently swallowed, leaving an empty cover box. artColumn /
-	// ghostCover stash the escape here and Update flushes it out-of-band via
-	// tea.Raw on the next message (≤100ms, the tick heartbeat). Ordering is
-	// safe either way: placeholder cells composite whenever an image with
-	// their id exists, whether transmitted before or after they were drawn.
-	kittyTx string
-
 	// volume-rail cache: the rail repaints only when the volume/mute/height
 	// change (see volRail), not on every animated frame.
 	volBlk []string
 	volKey volRailKey
-
-	// ambient tint: the seek bar and cover frame recoloured to the
-	// current cover's dominant hue. amb is nil for the theme default (no cover,
-	// greyscale art, or art disabled); ambKey is the CoverURL it was computed for
-	// (recompute only on a cover change, including a deliberate nil result).
-	amb    *ambientTint
-	ambKey string
 
 	interrupted bool // Ctrl-C, so Run can exit 130 (128 + SIGINT)
 
 	sty *theme
 }
 
-func newModel(st *protocol.State, cfg config.Config, cmds chan *protocol.Command, eqcmds chan workers.EQCommand) *model {
+func newModel(st *protocol.State, cfg config.Config, cmds chan workers.Command) *model {
 	m := &model{
-		st: st, cfg: cfg, cmds: cmds, eqcmds: eqcmds,
-		premutePath:   config.PremutePath(cfg),
-		focus:         1,
-		playerShown:   true, // the loop's own default
-		showRemaining: true,
-		flash:         map[string]time.Time{},
+		st: st, cfg: cfg, cmds: cmds,
+		focus: 1,
+		flash: map[string]time.Time{},
 	}
-	m.cellW, m.cellH = cellPixelSize() // refreshed on every resize; sizes the Kitty cover
+	m.cellW, m.cellH = cellPixelSize() // refreshed on every resize; squares the art box
 	// The window title rides every tea.View, so seed it before the first frame —
 	// otherwise the opening frames would carry an empty title until the first
 	// logic tick recomputes it.
@@ -227,9 +150,8 @@ func newModel(st *protocol.State, cfg config.Config, cmds chan *protocol.Command
 
 // cellPixelSize reports the terminal's cell size in device pixels (width, height)
 // via TIOCGWINSZ, or (0, 0) when the terminal doesn't report pixel dimensions (or
-// stdout isn't a tty, e.g. in tests). The Kitty cover path sizes its image to the
-// cover's exact pixel footprint, since a virtual placement is drawn at the image's
-// native resolution rather than scaled to the cell box.
+// stdout isn't a tty, e.g. in tests). The player uses it to draw the art box
+// square in pixels rather than in cells.
 func cellPixelSize() (w, h int) {
 	var ws struct{ rows, cols, xpix, ypix uint16 }
 	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdout.Fd(),

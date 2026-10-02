@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // writeConfig points XDG_CONFIG_HOME at a temp dir holding the given
@@ -42,53 +40,16 @@ func TestStateDirHonorsEnv(t *testing.T) {
 func TestConfigDefaultsWhenNoFile(t *testing.T) {
 	writeConfig(t, "")
 	cfg := Load()
-	if cfg.Host != "lp10.local" || cfg.User != "root" || cfg.VolStep != 2 || cfg.PingHost != "spotify.com" || !cfg.Discover {
-		t.Errorf("defaults wrong: %+v", cfg)
-	}
-}
-
-func TestArtDefaults(t *testing.T) {
-	writeConfig(t, "")
-	cfg := Load()
-	if !cfg.Art || cfg.ArtMode != "auto" {
-		t.Errorf("art defaults wrong: Art=%v ArtMode=%q", cfg.Art, cfg.ArtMode)
-	}
-}
-
-func TestArtConfigOverride(t *testing.T) {
-	writeConfig(t, "art = false\nart_mode = \"halfblock\"\n")
-	cfg := Load()
-	if cfg.Art {
-		t.Error("art = false ignored")
-	}
-	if cfg.ArtMode != "halfblock" {
-		t.Errorf("art_mode = %q, want halfblock", cfg.ArtMode)
-	}
-}
-
-func TestArtModeRejectsUnknown(t *testing.T) {
-	writeConfig(t, "art_mode = \"sixel\"\n") // not a recognized mode
-	if got := Load().ArtMode; got != "auto" {
-		t.Errorf("unknown art_mode kept %q, want default auto", got)
-	}
-}
-
-func TestArtCacheDir(t *testing.T) {
-	d := filepath.Join(t.TempDir(), "s")
-	t.Setenv("LP10_STATE_DIR", d)
-	got := ArtCacheDir()
-	if got != filepath.Join(d, "art") {
-		t.Fatalf("ArtCacheDir = %q, want %q", got, filepath.Join(d, "art"))
-	}
-	if fi, err := os.Stat(got); err != nil || !fi.IsDir() {
-		t.Errorf("art cache dir not created")
+	want := Config{Host: "lp10.local", StateKey: "lp10.local", Name: DefaultName, VolStep: 2, Discover: true, Theme: "auto"}
+	if cfg != want {
+		t.Errorf("defaults = %+v, want %+v", cfg, want)
 	}
 }
 
 func TestConfigFileAndEnvOverride(t *testing.T) {
-	writeConfig(t, "host = \"lp10.local\"\nvol_step = 5\nping_host = \"1.1.1.1\"\ndiscover = false\n")
+	writeConfig(t, "host = \"lp10.local\"\nvol_step = 5\ndiscover = false\ntheme = \"dark\"\n")
 	cfg := Load()
-	if cfg.Host != "lp10.local" || cfg.VolStep != 5 || cfg.PingHost != "1.1.1.1" || cfg.Discover {
+	if cfg.Host != "lp10.local" || cfg.VolStep != 5 || cfg.Discover || cfg.Theme != "dark" || cfg.Warn != "" {
 		t.Errorf("file override wrong: %+v", cfg)
 	}
 	t.Setenv("LP10_HOST", "10.0.0.9")
@@ -117,7 +78,7 @@ func TestMalformedConfigWarnsAndKeepsDefaults(t *testing.T) {
 	if cfg.Host != "lp10.local" {
 		t.Errorf("host = %q, want default", cfg.Host)
 	}
-	if cfg.Warn == "" || !contains(cfg.Warn, "config.toml") {
+	if !strings.Contains(cfg.Warn, "config.toml") {
 		t.Errorf("warn = %q, want a config.toml warning", cfg.Warn)
 	}
 }
@@ -127,8 +88,12 @@ func TestNonUTF8ConfigWarnsNotCrashes(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", base)
 	t.Setenv("LP10_HOST", "")
 	dir := filepath.Join(base, "lp10")
-	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "config.toml"), []byte{0xff, 0xfe, 0x00, 'b', 'r', 'o', 'k', 'e', 'n'}, 0o644)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte{0xff, 0xfe, 0x00, 'b', 'r', 'o', 'k', 'e', 'n'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg := Load()
 	if cfg.Host != "lp10.local" || cfg.Warn == "" {
 		t.Errorf("non-utf8 config should warn and keep defaults: %+v", cfg)
@@ -151,133 +116,94 @@ func TestConfigIntFloatCoercion(t *testing.T) {
 
 func TestConfigHugeFloatVolStepRejected(t *testing.T) {
 	writeConfig(t, "vol_step = 1e19\n")
-	if Load().VolStep != 2 {
-		t.Errorf("out-of-range float vol_step should keep default 2, got %d", Load().VolStep)
+	if got := Load().VolStep; got != 2 {
+		t.Errorf("out-of-range float vol_step should keep default 2, got %d", got)
 	}
 }
 
 func TestStateDirFailureDegradesToNoPersistence(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "blocker")
-	os.WriteFile(blocker, []byte("not a dir"), 0o644)
+	if err := os.WriteFile(blocker, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("LP10_STATE_DIR", filepath.Join(blocker, "sub"))
 	if StateDir() != "" {
 		t.Error("StateDir should be \"\" when it cannot be created")
 	}
-	cfg := Config{Host: defHost, User: defUser, Name: DefaultName, VolStep: defVolStep}
-	if PremutePath(cfg) != "" || SnapshotPath(cfg) != "" {
+	cfg := Config{Host: defHost, Name: DefaultName, VolStep: defVolStep}
+	if SnapshotPath(cfg) != "" || SweepPath(cfg) != "" {
 		t.Error("paths should be empty with no state dir")
-	}
-	if LoadPremute("") != 30 {
-		t.Error("LoadPremute(\"\") should default to 30")
 	}
 	if LoadSnapshot("") != nil {
 		t.Error("LoadSnapshot(\"\") should be nil")
 	}
-	SavePremute("", 50)                // no-ops, must not panic
-	SaveSnapshot("", CachedSnapshot{}) // no-ops, must not panic
-}
-
-func TestSnapshotWithCorruptTrackIsRejected(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "snap.json")
-	if err := os.WriteFile(p, []byte(`{"track":"junk-string","vol":4}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if LoadSnapshot(p) != nil {
-		t.Error("snapshot with a string track must be rejected")
-	}
-}
-
-func TestPremuteRoundTrip(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "premute")
-	SavePremute(p, 44)
-	if LoadPremute(p) != 44 {
-		t.Errorf("premute round-trip = %d, want 44", LoadPremute(p))
-	}
-}
-
-func TestPremuteDefaultsAndClamps(t *testing.T) {
-	if LoadPremute(filepath.Join(t.TempDir(), "missing")) != 30 {
-		t.Error("missing premute should default to 30")
-	}
-	p := filepath.Join(t.TempDir(), "premute")
-	SavePremute(p, 250)
-	if v := LoadPremute(p); v < 1 || v > 100 {
-		t.Errorf("premute = %d, want clamped to [1,100]", v)
-	}
+	SaveSnapshot("", CachedSnapshot{Vol: 3}) // a no-op, must not panic
 }
 
 func TestSnapshotRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	snap := CachedSnapshot{
-		Track: &protocol.Track{TrackName: "x"}, Vol: 44, Playing: 0, Pos: 1,
-	}
-	SaveSnapshot(p, snap)
+	SaveSnapshot(p, CachedSnapshot{Vol: 44, EQ: map[string]int{"BAS": -3, "MXV": 90}})
 	got := LoadSnapshot(p)
 	if got == nil {
 		t.Fatal("snapshot did not round-trip")
 	}
-	if got.Track == nil || got.Track.TrackName != "x" {
-		t.Errorf("track = %+v, want TrackName x", got.Track)
+	if got.Vol != 44 || len(got.EQ) != 2 || got.EQ["BAS"] != -3 || got.EQ["MXV"] != 90 {
+		t.Errorf("round-trip = %+v, want vol 44 and the two EQ values", got)
 	}
 	if LoadSnapshot(filepath.Join(t.TempDir(), "missing.json")) != nil {
 		t.Error("missing snapshot should be nil")
 	}
 }
 
-func TestLoadSnapshotPreservesLegacyJSONShape(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "snap.json")
-	raw := `{
-		"track": {
-			"TrackName": "Legacy",
-			"Artist": "Artist",
-			"Album": "Album",
-			"PlaybackSource": "Spotify",
-			"PlayUrl": "spotify:track:x",
-			"Mime": "audio/flac",
-			"CoverArtUrl": "https://example.test/cover.jpg",
-			"TotalTime": 180000,
-			"Current Source": 4,
-			"SampleRate": 44100,
-			"Repeat": 1,
-			"Shuffle": 0,
-			"PlayState": 0,
-			"ChannelCount": 2,
-			"Seek": true,
-			"Next": true,
-			"Prev": false,
-			"Skip": true,
-			"future-field": "ignored"
-		},
-		"pos": 1234,
-		"playing": 0,
-		"vol": 44,
-		"eq": {"BAS": 3}
-	}`
-	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
-		t.Fatal(err)
+// A snapshot written before firmware AR241CP_8747 also holds the track, its
+// position and the play state. Upgrading must keep its volume and EQ (the
+// first paint) and ignore the rest, whatever shape the retired fields have:
+// a cached title could name something the box stopped playing long ago.
+func TestLoadSnapshotOldFormatKeepsVolAndEQ(t *testing.T) {
+	cases := map[string]string{
+		"full legacy track": `{
+			"track": {
+				"TrackName": "Legacy", "Artist": "Artist", "Album": "Album",
+				"PlaybackSource": "Spotify", "PlayUrl": "spotify:track:x",
+				"CoverArtUrl": "https://example.test/cover.jpg", "TotalTime": 180000,
+				"Current Source": 4, "SampleRate": 44100, "Seek": true,
+				"future-field": "ignored"
+			},
+			"pos": 1234,
+			"playing": 0,
+			"vol": 44,
+			"eq": {"BAS": 3}
+		}`,
+		"junk track":        `{"track":"junk-string","pos":"x","playing":true,"vol":44,"eq":{"BAS":3}}`,
+		"non-object track":  `{"track":["not","a","dict"],"vol":44,"eq":{"BAS":3}}`,
+		"wrong-typed field": `{"track":{"SampleRate":"44100"},"vol":44,"eq":{"BAS":3}}`,
+		"null track":        `{"track":null,"pos":0,"playing":2,"vol":44,"eq":{"BAS":3}}`,
 	}
-	got := LoadSnapshot(p)
-	if got == nil || got.Track == nil {
-		t.Fatal("legacy-shaped snapshot was rejected")
-	}
-	tr := got.Track
-	// the capability flags a legacy snapshot carries are no longer fields: ignored on decode
-	if tr.TrackName != "Legacy" || tr.PlayURL != "spotify:track:x" ||
-		tr.CurrentSource != 4 || tr.SampleRate != 44100 || tr.ChannelCount != 2 {
-		t.Errorf("legacy track fields = %+v", tr)
-	}
-	if got.Pos != 1234 || got.Playing != 0 || got.Vol != 44 || got.EQ["BAS"] != 3 {
-		t.Errorf("legacy snapshot fields = %+v", got)
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "snap.json")
+			if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := LoadSnapshot(p)
+			if got == nil || got.Vol != 44 || len(got.EQ) != 1 || got.EQ["BAS"] != 3 {
+				t.Errorf("old-format snapshot = %+v, want vol 44 and eq BAS 3", got)
+			}
+		})
 	}
 }
 
+// The fields the snapshot still carries must have their own type: a
+// wrong-typed vol or EQ value rejects the cache rather than half-load it.
 func TestLoadSnapshotRejectsWrongTypedKnownField(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "snap.json")
-	if err := os.WriteFile(p, []byte(`{"track":{"SampleRate":"44100"},"vol":44}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if LoadSnapshot(p) != nil {
-		t.Error("wrong-typed known track field should reject the cache")
+	for _, raw := range []string{`{"vol":"44"}`, `{"vol":44,"eq":{"BAS":"3"}}`, `{"vol":44,"eq":[3]}`} {
+		p := filepath.Join(t.TempDir(), "snap.json")
+		if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := LoadSnapshot(p); got != nil {
+			t.Errorf("LoadSnapshot(%s) = %+v, want nil", raw, got)
+		}
 	}
 }
 
@@ -297,63 +223,34 @@ func TestSlug(t *testing.T) {
 	}
 }
 
-func TestSavePremuteWithIOErrorIsSwallowed(t *testing.T) {
-	badPath := filepath.Join(t.TempDir(), "nonexistent", "premute")
-	SavePremute(badPath, 50) // must not panic
+func TestSaveSnapshotWithIOErrorIsSwallowed(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "nonexistent", "snap.json")
+	SaveSnapshot(badPath, CachedSnapshot{Vol: 50}) // must not panic
 	if _, err := os.Stat(badPath); err == nil {
 		t.Error("nothing should be written to a bad path")
 	}
 }
 
-func TestLoadSnapshotWithNonDictTrack(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "snap.json")
-	if err := os.WriteFile(p, []byte(`{"track":["not","a","dict"],"vol":44}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if LoadSnapshot(p) != nil {
-		t.Error("non-dict track should reject the snapshot")
-	}
-}
-
 func TestLoadSnapshotWithNonDictRoot(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "snap.json")
-	os.WriteFile(p, []byte(`["not","a","dict"]`), 0o644)
+	if err := os.WriteFile(p, []byte(`["not","a","dict"]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if LoadSnapshot(p) != nil {
 		t.Error("non-dict root should reject the snapshot")
 	}
 }
 
-func TestSavePremuteClampsValue(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "premute")
-	SavePremute(p, 250)
-	if LoadPremute(p) != 100 {
-		t.Errorf("250 should clamp to 100, got %d", LoadPremute(p))
-	}
-	SavePremute(p, -5)
-	if LoadPremute(p) != 1 {
-		t.Errorf("-5 should clamp to 1, got %d", LoadPremute(p))
-	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
-
 // State files key on the host as configured, so discovery rewriting Host to
-// the address the box holds today (a new DHCP lease) keeps the pre-mute level
-// and the first-paint snapshot; a Config built without Load keys on Host.
+// the address the box holds today (a new DHCP lease) keeps the first-paint
+// snapshot and the sweep baseline; a Config built without Load keys on Host.
 func TestStatePathsKeyOnConfiguredHost(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", t.TempDir())
 	cfg := Config{Host: "192.168.0.27", StateKey: "lp10.local"}
-	if !strings.HasSuffix(PremutePath(cfg), "premute-lp10.local") || !strings.HasSuffix(SnapshotPath(cfg), "snapshot-lp10.local.json") {
-		t.Errorf("paths = %q %q, want keyed on lp10.local", PremutePath(cfg), SnapshotPath(cfg))
+	if !strings.HasSuffix(SnapshotPath(cfg), "snapshot-lp10.local.json") || !strings.HasSuffix(SweepPath(cfg), "sweep-lp10.local.json") {
+		t.Errorf("paths = %q %q, want keyed on lp10.local", SnapshotPath(cfg), SweepPath(cfg))
 	}
-	if !strings.HasSuffix(PremutePath(Config{Host: "box"}), "premute-box") {
+	if !strings.HasSuffix(SnapshotPath(Config{Host: "box"}), "snapshot-box.json") {
 		t.Error("without a StateKey the host keys the files")
 	}
 	t.Setenv(HostEnv, "10.0.0.5")
@@ -362,32 +259,78 @@ func TestStatePathsKeyOnConfiguredHost(t *testing.T) {
 	}
 }
 
-// A typo in config.toml — an unknown key, a value of the wrong type, an
-// art_mode that is not one of the four — used to keep the default silently;
-// now it is the startup warning, while every valid key still applies.
+// A typo in config.toml — an unknown key, a value of the wrong type, a theme
+// that is not one of the three — used to keep the default silently; now it is
+// the startup warning, while every valid key still applies.
 func TestConfigTyposSurfaceInTheWarning(t *testing.T) {
-	t.Setenv(HostEnv, "")
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	os.MkdirAll(filepath.Join(dir, "lp10"), 0o755)
-	os.WriteFile(filepath.Join(dir, "lp10", "config.toml"), []byte(`
+	writeConfig(t, `
 hots = "typo.local"
 name = "Living"
 vol_step = "2"
-art_mode = "kity"
+theme = "drak"
 discover = "yes"
-`), 0o644)
+`)
 	cfg := Load()
-	if cfg.Name != "Living" || cfg.Host != defHost || cfg.VolStep != defVolStep || cfg.ArtMode != defArtMode || !cfg.Discover {
+	if cfg.Name != "Living" || cfg.Host != defHost || cfg.VolStep != defVolStep || cfg.Theme != defTheme || !cfg.Discover {
 		t.Errorf("valid keys must apply and typos keep defaults: %+v", cfg)
 	}
-	for _, want := range []string{`unknown key "hots"`, "vol_step ignored (want number)", `art_mode "kity" ignored`, "discover ignored (want bool)"} {
+	for _, want := range []string{`unknown key "hots"`, "vol_step ignored (want number)", `theme "drak" ignored (auto|light|dark)`, "discover ignored (want bool)"} {
 		if !strings.Contains(cfg.Warn, want) {
 			t.Errorf("warning %q lacks %q", cfg.Warn, want)
 		}
 	}
-	os.WriteFile(filepath.Join(dir, "lp10", "config.toml"), []byte("name = \"Den\"\nvol_step = 3.0\n"), 0o644)
+	writeConfig(t, "name = \"Den\"\nvol_step = 3.0\n")
 	if cfg := Load(); cfg.Warn != "" || cfg.Name != "Den" || cfg.VolStep != 3 {
 		t.Errorf("a clean file must not warn: %+v", cfg)
+	}
+}
+
+// The ssh user, the ping target and the album-art keys were retired with ssh
+// (firmware AR241CP_8747). A config that still sets one — with any value
+// type — is told why the key no longer counts, not that it is unknown, and
+// the key changes nothing. The keys beside it still apply.
+func TestRetiredKeysComplainAndChangeNothing(t *testing.T) {
+	for _, tc := range []struct{ key, toml string }{
+		{"user", `user = "root"`},
+		{"ping_host", `ping_host = "1.1.1.1"`},
+		{"art", `art = false`},
+		{"art_mode", `art_mode = "kitty"`},
+		{"art_mode", `art_mode = 3`},
+	} {
+		t.Run(tc.toml, func(t *testing.T) {
+			writeConfig(t, tc.toml+"\nname = \"Den\"\n")
+			cfg := Load()
+			want := "config.toml: " + tc.key + " ignored (retired: lp10 has no ssh and no album art since firmware AR241CP_8747)"
+			if cfg.Warn != want {
+				t.Errorf("warn = %q, want %q", cfg.Warn, want)
+			}
+			if strings.Contains(cfg.Warn, "unknown key") {
+				t.Errorf("a retired key reads as unknown: %q", cfg.Warn)
+			}
+			cfg.Warn = ""
+			if want := (Config{Host: defHost, StateKey: defHost, Name: "Den", VolStep: defVolStep, Discover: true, Theme: defTheme}); cfg != want {
+				t.Errorf("a retired key changed the config: %+v, want %+v", cfg, want)
+			}
+		})
+	}
+}
+
+// Every key the parser does not know still complains by name, retired keys
+// beside it included, in a stable (sorted) order.
+func TestUnknownKeysStillComplain(t *testing.T) {
+	cfg := Config{Host: defHost, Name: DefaultName, VolStep: defVolStep, Discover: true, Theme: defTheme}
+	before := cfg
+	got := applyTOML(&cfg, map[string]any{"zzz": 1, "user": "pi", "art_cache": "x", "ping": "y"})
+	want := []string{
+		`unknown key "art_cache"`,
+		`unknown key "ping"`,
+		"user ignored (retired: lp10 has no ssh and no album art since firmware AR241CP_8747)",
+		`unknown key "zzz"`,
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("complaints = %q, want %q", got, want)
+	}
+	if cfg != before {
+		t.Errorf("unknown and retired keys changed the config: %+v", cfg)
 	}
 }

@@ -8,12 +8,8 @@ import (
 
 func benchModel(b *testing.B, rows, cols int) *model {
 	b.Helper()
-	st := protocol.NewState()
-	protocol.ApplyRecord(st, playingRecord())
-	m := newModel(st, defaultCfg(), make(chan *protocol.Command, 64), nil)
+	m, _, _ := modelWith(playingState())
 	m.rows, m.cols = rows, cols
-	m.sty = newTheme()
-	m.sty.trueColor = true
 	return m
 }
 
@@ -60,6 +56,15 @@ func BenchmarkViewDiag(b *testing.B) {
 	}
 }
 
+func BenchmarkViewIdle(b *testing.B) {
+	m, _, _ := modelWith(idleState())
+	m.rows, m.cols = 44, 150
+	b.ReportAllocs()
+	for b.Loop() {
+		sinkS = m.viewContent()
+	}
+}
+
 func BenchmarkDispW(b *testing.B) {
 	const s = "Everything In Its Right Place — Radiohead · Kid A"
 	b.ReportAllocs()
@@ -81,14 +86,6 @@ func BenchmarkLineMeter(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		sinkS = t.lineMeter(0.42, 60)
-	}
-}
-
-func BenchmarkGaugeBar(b *testing.B) {
-	t := newTheme()
-	b.ReportAllocs()
-	for b.Loop() {
-		sinkS = t.gaugeBar(0.42, 12, t.sAcc)
 	}
 }
 
@@ -133,8 +130,7 @@ func BenchmarkMarquee(b *testing.B) {
 }
 
 func BenchmarkSnap(b *testing.B) {
-	st := protocol.NewState()
-	protocol.ApplyRecord(st, playingRecord())
+	st := playingState()
 	b.ReportAllocs()
 	for b.Loop() {
 		sinkSnap = st.Snap()

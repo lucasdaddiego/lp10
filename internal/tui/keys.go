@@ -96,10 +96,10 @@ func runeEvents(s string) []keyEvent {
 	return evs
 }
 
-// key dispatches one key event. The view strip is global — 1-5 and tab
+// key dispatches one key event. The view strip is global — 1-3 and tab
 // switch views, esc (and q, off the player) return to the player, ? toggles
-// the help page, and the letters e / c / l / i still open (and close) their
-// view — then the current view takes what is left. Playback keys work from
+// the help page, and the letters e / i still open (and close) their view —
+// then the current view takes what is left. Playback keys work from
 // every view that does not claim the letter, so a track can be paused from
 // the diagnostics without leaving them.
 func (m *model) key(ev keyEvent) (quit bool) {
@@ -119,14 +119,6 @@ func (m *model) key(ev keyEvent) (quit bool) {
 	switch m.view {
 	case viewEQ:
 		if m.eqKey(ev) {
-			return false
-		}
-	case viewServices:
-		if m.servicesKey(ev) {
-			return false
-		}
-	case viewLogs:
-		if m.logsKey(ev) {
 			return false
 		}
 	case viewDiag:
@@ -167,7 +159,7 @@ func (m *model) viewKey(ev keyEvent) bool {
 		return true
 	case kRune:
 		switch ev.r {
-		case '1', '2', '3', '4', '5':
+		case '1', '2', '3':
 			m.setView(view(ev.r - '1'))
 			return true
 		case '?':
@@ -179,12 +171,6 @@ func (m *model) viewKey(ev keyEvent) bool {
 		case 'e', 'E':
 			m.toggleView(viewEQ)
 			return true
-		case 'c', 'C':
-			m.toggleView(viewServices)
-			return true
-		case 'l', 'L':
-			m.toggleView(viewLogs)
-			return true
 		}
 	}
 	return false
@@ -193,10 +179,7 @@ func (m *model) viewKey(ev keyEvent) bool {
 // setView shows a view. Nothing but the player is drawn at mini size, so the
 // switch is refused there. The diagnostics and the help page scroll by one
 // shared offset (diagWindow), so a change of view puts it back to the top:
-// each opens at its first row, never at the other's position. Opening the
-// logs costs a device round trip, so it is asked for once per run unless the
-// user refreshes: reopening shows the tail already in hand instead of
-// stalling on a fresh fetch.
+// each opens at its first row, never at the other's position.
 func (m *model) setView(v view) {
 	if m.miniMode() {
 		return
@@ -205,9 +188,6 @@ func (m *model) setView(v view) {
 		m.diagScroll = 0
 	}
 	m.view = v
-	if v == viewLogs && !m.logAsked[m.logSrc] {
-		m.logRequest()
-	}
 }
 
 // toggleView shows a view, or returns to the player when it is the one on
@@ -241,8 +221,7 @@ func (m *model) scrollKey(ev keyEvent) bool {
 
 // updateCheck is u in the diagnostics: it asks the vendor's manifest directly
 // — the one request that leaves the LAN, so it is a deliberate keystroke,
-// never a side effect of opening the view (which shows the box's own 4-hourly
-// verdict). LP10_OTA_URL set empty switches the check off and its worker
+// never a side effect of opening the view. LP10_OTA_URL set empty switches the check off and its worker
 // never starts, so a raised request would leave the update line on
 // "checking…" for the rest of the run: the notice says the check is off
 // instead.
@@ -294,56 +273,6 @@ func (m *model) eqKey(ev keyEvent) bool {
 	return true
 }
 
-func (m *model) servicesKey(ev keyEvent) bool {
-	switch ev.kind {
-	case kUp:
-		m.svcMove(-1)
-	case kDown:
-		m.svcMove(+1)
-	case kEnter:
-		m.svcToggle(time.Now())
-	case kLeft: // the read-out under the rows scrolls; the rows never do
-		m.diagScrollBy(-m.svcPage())
-	case kRight:
-		m.diagScrollBy(+m.svcPage())
-	default:
-		return false
-	}
-	return true
-}
-
-func (m *model) logsKey(ev keyEvent) bool {
-	page := m.logPage()
-	switch {
-	case ev.kind == kUp:
-		m.logScrollBy(+1, page)
-	case ev.kind == kDown:
-		m.logScrollBy(-1, page)
-	case ev.kind == kLeft:
-		m.logScrollBy(+page, page)
-	case ev.kind == kRight:
-		m.logScrollBy(-page, page)
-	case ev.kind == kRune && ev.r == 'f':
-		m.logCycleFilter()
-	case ev.kind == kRune && ev.r == 's':
-		m.logCycleSource() // the logs' s wins over the sleep timer here
-	case ev.kind == kRune && ev.r == 'r':
-		m.logRequest()
-	case ev.kind == kRune && ev.r == 'F':
-		// follow: refetch every 10 s while the view is open (see the logic tick)
-		m.logFollow = !m.logFollow
-		if m.logFollow {
-			m.logRequest()
-			m.notify("following the log · refetching every 10 s", noticeFor)
-		} else {
-			m.notify("follow off", noticeFor)
-		}
-	default:
-		return false
-	}
-	return true
-}
-
 // playbackKey is the transport and the timers — available from every view
 // that has not claimed the letter.
 func (m *model) playbackKey(ev keyEvent) {
@@ -363,24 +292,12 @@ func (m *model) playbackKey(ev keyEvent) {
 		m.do("voldn")
 	case 'm':
 		m.do("mute")
-	case 't':
-		m.showRemaining = !m.showRemaining
 	case 's':
 		m.sleepCycle(time.Now()) // off -> 15 -> 30 -> 45 -> 60 -> 90 min -> off
 		m.notify(m.sleepNotice(), noticeFor)
 	case 'S':
 		m.sleepCancel()
 		m.notify("sleep timer cancelled", noticeFor)
-	case 'b':
-		m.bedtimeCycle(time.Now()) // sleep step + night mode on, restored when the timer ends
-		m.notify(m.bedtimeNotice(), noticeFor)
-	case 'd':
-		m.nightToggle() // night mode: the device's multi-band DRC
-		if m.st.Snap().Night {
-			m.notify("night mode on · multi-band compressor", noticeFor)
-		} else {
-			m.notify("night mode off", noticeFor)
-		}
 	}
 }
 
@@ -390,15 +307,4 @@ func (m *model) sleepNotice() string {
 		return "sleep timer set · " + lbl
 	}
 	return "sleep timer off"
-}
-
-// bedtimeNotice words what a b press left behind, read after the step: the
-// press past the last preset turns the timer off and puts night mode back to
-// its connect-time value, so "night mode on" is not a given.
-func (m *model) bedtimeNotice() string {
-	night := "night mode off"
-	if s := m.st.Snap(); s.NightKnown && s.Night {
-		night = "night mode on"
-	}
-	return "bedtime · " + m.sleepNotice() + " · " + night
 }

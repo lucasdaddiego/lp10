@@ -8,58 +8,88 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
+// The LSSDP probe needs no tunnel, so the connecting screen can say which kind
+// of "connecting…" this is: a box up on the LAN whose :2018 is not answering,
+// or one that is not there at all.
 func TestConnectingCopyExplainsViaLSSDP(t *testing.T) {
 	st := protocol.NewState()
 	m, _, _ := modelWith(st)
-	m.sty = newTheme()
-	join := func() string { return stripANSI(strings.Join(m.metaLines(st.Snap(), 60), "\n")) }
+	join := func() string {
+		lines := m.metaLines(st.Snap(), 60)
+		assertWithin(t, "metaLines", lines, 60)
+		return stripANSI(strings.Join(lines, "\n"))
+	}
 	if out := join(); !strings.Contains(out, "connecting") || strings.Contains(out, "LAN") {
 		t.Errorf("before any probe: %q", out)
 	}
 	st.SetLSSDP(nil)
-	if out := join(); !strings.Contains(out, "not answering on the LAN") {
+	if out := join(); !strings.Contains(out, "device not answering on the LAN") {
 		t.Errorf("after a silent probe: %q", out)
 	}
 	st.SetLSSDP(&protocol.LSSDPInfo{State: "S", NetMode: "ETH0"})
-	if out := join(); !strings.Contains(out, "device is up on the LAN") {
+	if out := join(); !strings.Contains(out, "device is up on the LAN · :2018 not answering yet") {
 		t.Errorf("after an answer: %q", out)
 	}
+	// an answer older than lssdpFresh no longer vouches for the box
+	stale := protocol.Snapshot{LSSDPAlive: true, LSSDPAt: time.Now().Add(-lssdpFresh - time.Second), LSSDPProbeAt: time.Now()}
+	if out := stripANSI(strings.Join(m.metaLines(stale, 60), "\n")); !strings.Contains(out, "device not answering on the LAN") {
+		t.Errorf("after a stale answer: %q", out)
+	}
 	// connected: none of it
-	protocol.ApplyRecord(st, playingRecord())
-	st.Preload(nil, 0, 50)
+	connect(st)
+	st.ApplyStatus("NET", false, 50, false)
 	if out := join(); strings.Contains(out, "LAN") {
 		t.Errorf("connected idle copy must not mention the LAN: %q", out)
+	}
+	// and on the full connecting screen, inside the frame
+	m2, _, _ := modelWith(protocol.NewState())
+	m2.st.SetLSSDP(&protocol.LSSDPInfo{State: "S"})
+	m2.rows, m2.cols = 30, 100
+	if out := clean(render(t, m2)); !strings.Contains(out, "device is up on the LAN") || !strings.Contains(out, "searching for LP10") {
+		t.Errorf("full connecting screen:\n%s", out)
 	}
 }
 
 func TestDiagLSSDPRow(t *testing.T) {
 	m, st, _ := makeModel(t)
-	m.sty = newTheme()
 	m.rows, m.cols = 40, 120
 	m.view = viewDiag
-	if out := stripANSI(m.viewContent()); strings.Contains(out, "lssdp") {
+	if out := clean(render(t, m)); strings.Contains(out, "lssdp") {
 		t.Fatal("no lssdp row before a probe")
 	}
-	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2", State: "S", NetMode: "ETH0"})
-	out := stripANSI(m.viewContent())
-	if !strings.Contains(out, "lssdp") || !strings.Contains(out, "answered") || !strings.Contains(out, "eth0") {
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2", State: "S", NetMode: "ETH0"})
+	out := clean(render(t, m))
+	if !hasRow(out, "lssdp", "answered", "ago · S · eth0") {
 		t.Errorf("answered row missing:\n%s", out)
 	}
+	// an answer that names neither state nor link: the age alone, no dangling separator
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2"})
+	render(t, m)
+	if got := stripANSI(m.lssdpReadout(st.DiagnosticView(), time.Now())); !strings.HasPrefix(got, "answered ") || !strings.HasSuffix(got, "s ago") {
+		t.Errorf("bare answer row = %q", got)
+	}
 	st.SetLSSDP(nil)
-	out = stripANSI(m.viewContent())
-	if !strings.Contains(out, "no answer") || !strings.Contains(out, "last ") {
+	out = clean(render(t, m))
+	if !hasRow(out, "lssdp", "no answer · last ", "· probed ") {
 		t.Errorf("silent row missing:\n%s", out)
 	}
 	m.cols = 70
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "no answer") {
+	if out := clean(render(t, m)); !strings.Contains(out, "no answer") {
 		t.Errorf("stacked layout lacks the row:\n%s", out)
+	}
+	// never answered: no "last" age
+	st2 := playingState()
+	st2.SetLSSDP(nil)
+	m2, _, _ := modelWith(st2)
+	if got := stripANSI(m2.lssdpReadout(st2.DiagnosticView(), time.Now())); strings.Contains(got, "last") || !strings.HasPrefix(got, "no answer · probed ") {
+		t.Errorf("never-answered row = %q", got)
 	}
 }
 
 func TestFmtAgeShort(t *testing.T) {
 	for d, want := range map[time.Duration]string{
 		-time.Second: "0s", 600 * time.Millisecond: "0.6s", 12 * time.Second: "12s",
-		3 * time.Minute: "3m", 5 * time.Hour: "5h",
+		3 * time.Minute: "3m", 5 * time.Hour: "5h", 119 * time.Second: "119s", 2 * time.Minute: "2m",
 	} {
 		if got := fmtAgeShort(d); got != want {
 			t.Errorf("fmtAgeShort(%v) = %q, want %q", d, got, want)
@@ -67,199 +97,134 @@ func TestFmtAgeShort(t *testing.T) {
 	}
 }
 
-// The Spotify ZeroConf row sits in the connection block beside LSSDP (it is
-// the other ssh-free signal) and, with the engine facts, in the services pane.
-func TestDiagAndServicesZeroConfRow(t *testing.T) {
+// The Spotify ZeroConf row sits in the connection section beside LSSDP: it is
+// the other tunnel-free signal.
+func TestDiagZeroConfRow(t *testing.T) {
 	m, st, _ := makeModel(t)
-	m.sty = newTheme()
 	m.rows, m.cols = 40, 160
 	m.view = viewDiag
-	if out := stripANSI(m.viewContent()); strings.Contains(out, "spotify ") && strings.Contains(out, "probed") {
+	if out := clean(render(t, m)); hasRow(out, "spotify", "probed") {
 		t.Fatal("no zeroconf row before a probe")
 	}
 	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK", ActiveUser: "lucas"}, 9096)
-	out := stripANSI(m.viewContent())
-	for _, want := range []string{"answered", ":9096", "signed in as lucas"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("answered row missing %q:\n%s", want, out)
-		}
+	out := clean(render(t, m))
+	if !hasRow(out, "spotify", "answered", "· :9096 · signed in as lucas") {
+		t.Errorf("answered row missing:\n%s", out)
 	}
 	// An empty activeUser is not "nobody": the Pro engine leaves it empty while
 	// playing, so the row says nothing about users rather than asserting an
-	// absence — and never carries the eSDK build, which the services card has.
-	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK"}, 9096)
-	if out := stripANSI(m.viewContent()); strings.Contains(out, "signed in") || strings.Contains(out, "3.211") ||
-		!strings.Contains(out, "answered") {
-		t.Errorf("no-user row wrong:\n%s", out)
+	// absence — and never carries the eSDK build, which the device section has.
+	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK", LibraryVersion: "3.211.130"}, 9096)
+	render(t, m)
+	if got := stripANSI(m.zcReadout(st.DiagnosticView(), time.Now())); strings.Contains(got, "signed in") || strings.Contains(got, "3.211") ||
+		!strings.HasPrefix(got, "answered ") || !strings.HasSuffix(got, "ago · :9096") {
+		t.Errorf("no-user row wrong: %q", got)
 	}
 	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "ERROR-SPOTIFY"}, 9096)
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "error-spotify") {
+	if out := clean(render(t, m)); !strings.Contains(out, "error-spotify") {
 		t.Errorf("status row missing:\n%s", out)
 	}
+	// an answer on an unknown port: the age alone
+	st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: "OK"}, 0)
+	render(t, m)
+	if got := stripANSI(m.zcReadout(st.DiagnosticView(), time.Now())); !strings.HasSuffix(got, "s ago") {
+		t.Errorf("portless answer row = %q", got)
+	}
 	st.SetSpotifyZC(nil, 9096)
-	out = stripANSI(m.viewContent())
-	if !strings.Contains(out, "no answer · :9096") || !strings.Contains(out, "last ") {
+	out = clean(render(t, m))
+	if !hasRow(out, "spotify", "no answer · :9096 · last ", "· probed ") {
 		t.Errorf("silent row missing:\n%s", out)
 	}
 	st.SetSpotifyZC(nil, 0)
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "not advertised") {
+	if out := clean(render(t, m)); !hasRow(out, "spotify", "not advertised") {
 		t.Errorf("not-advertised row missing:\n%s", out)
 	}
 	m.cols = 70
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "not advertised") {
+	if out := clean(render(t, m)); !strings.Contains(out, "not advertised") {
 		t.Errorf("stacked layout lacks the row:\n%s", out)
 	}
-	// the services pane's engine section carries the same readout
-	m.view = viewPlayer
-	m.rows, m.cols = 44, 120
-	protocol.ApplyRecord(st, protocol.Record{"c": {"spotify.eng=newspotifyhifi", "spotify.cfg=hifi"}})
-	st.SetSpotifyZC(&protocol.SpotifyZC{ActiveUser: "lucas"}, 9096)
-	pane := stripANSI(strings.Join(m.renderServices(time.Now(), 114), "\n"))
-	if !strings.Contains(pane, "zeroconf") || !strings.Contains(pane, "signed in as lucas") {
-		t.Errorf("services pane lacks the zeroconf line:\n%s", pane)
+	// never answered: no "last" age
+	st2 := playingState()
+	st2.SetSpotifyZC(nil, 0)
+	if got := stripANSI(m.zcReadout(st2.DiagnosticView(), time.Now())); strings.Contains(got, "last") || !strings.HasPrefix(got, "not advertised · probed ") {
+		t.Errorf("never-answered row = %q", got)
 	}
 }
 
-// Opening the diagnostics overlay asks the vendor nothing: the update line is
-// the verdict the box fetched itself (its ota daemon asks every 4 h and logs
-// the answer). A vendor query is the u key inside the overlay, and its answer
-// lands on a separate "vendor" line.
-func TestDiagOpenRequestsOTAAndShowsVerdict(t *testing.T) {
+// Opening the diagnostics asks the vendor nothing. A vendor query is the u key
+// inside them, and its answer lands on the device section's "vendor" line.
+func TestDiagUpdateCheckShowsVerdict(t *testing.T) {
+	t.Setenv("LP10_OTA_URL", "http://127.0.0.1:9/") // on, but no OTA worker runs here
 	m, st, _ := makeModel(t)
-	m.sty = newTheme()
 	m.rows, m.cols = 40, 160
-	if st.DiagnosticView(time.Now()).OTAPending {
-		t.Fatal("pending before the overlay opened")
+	if st.DiagnosticView().OTAPending {
+		t.Fatal("pending before the view opened")
 	}
-	m.key(keyEvent{kind: kRune, r: 'i'})
-	if m.view != viewDiag || st.DiagnosticView(time.Now()).OTAPending {
+	m.key(kr('i'))
+	if m.view != viewDiag || st.DiagnosticView().OTAPending {
 		t.Fatal("i did not open the diagnostics, or asked the vendor on its own")
 	}
-	// the box's own verdict, from the digest's MsgBox-223 report
-	protocol.ApplyRecord(st, protocol.Record{"o": {"n=2", "t=Sep 11 01:47:58",
-		"u=[" + time.Now().Add(-3*time.Hour).Format("2006-01-02 15:04:05") + ".634] [DEBUG] [luci-rx] normalized_kind=unknown normalized=None remote_id=0 command_type=2 command=223 command_status=0 crc=16846 data_length=9 payload=\"NO_UPDATE\""}})
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update    up to date · the box asked 3h ago · it asks every 4 h") {
-		t.Errorf("the box's own verdict missing:\n%s", out)
+	if out := clean(render(t, m)); strings.Contains(out, "vendor    ") {
+		t.Errorf("a vendor line before u:\n%s", out)
 	}
-	// u asks the vendor; the overlay stays open
-	m.key(keyEvent{kind: kRune, r: 'u'})
-	if m.view != viewDiag || !st.DiagnosticView(time.Now()).OTAPending {
-		t.Fatal("u did not request a vendor check (or closed the overlay)")
+	// u asks the vendor; the view stays open
+	m.key(kr('u'))
+	if m.view != viewDiag || !st.DiagnosticView().OTAPending {
+		t.Fatal("u did not request a vendor check (or closed the view)")
 	}
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "vendor    checking…") {
+	if out := clean(render(t, m)); !hasRow(out, "vendor", "checking…") {
 		t.Errorf("pending check not shown:\n%s", out)
 	}
-	// from inside another overlay too
-	m.view = viewPlayer
-	m.openOverlay(ovServices)
-	m.key(keyEvent{kind: kRune, r: 'i'})
-	if m.view != viewDiag {
-		t.Fatal("i from the services view did not switch to diagnostics")
+	// u elsewhere is not the update key
+	m.key(ke(kEsc))
+	m.key(kr('u'))
+	if m.view != viewPlayer {
+		t.Error("u on the player should do nothing")
 	}
-	st.TakeOTARequest()
+	m.key(kr('3'))
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2"})
+	if build, ok := st.TakeOTARequest(); !ok || build != "AR241CP_8747" {
+		t.Fatalf("TakeOTARequest = %q %v", build, ok)
+	}
+	if out := clean(render(t, m)); !hasRow(out, "vendor", "checking…") {
+		t.Errorf("a check in flight should still say checking:\n%s", out)
+	}
 	now := time.Now()
-	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_8530", UpToDate: true})
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "vendor    up to date · checked") {
-		t.Errorf("up-to-date verdict missing:\n%s", out)
-	}
-	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_9243", Offered: "AR241CE_8530"})
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "AR241CE_8530 available") {
-		t.Errorf("offer missing:\n%s", out)
-	}
-	st.SetOTA(protocol.OTAInfo{At: now, Asked: "AR241CE_9243"})
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "update available") {
-		t.Errorf("bare offer missing:\n%s", out)
-	}
-	st.SetOTA(protocol.OTAInfo{At: now, Err: "vendor unreachable"})
-	out := stripANSI(m.viewContent())
-	if !strings.Contains(out, "check failed · vendor unreachable") {
-		t.Errorf("failure missing:\n%s", out)
+	for _, c := range []struct {
+		info protocol.OTAInfo
+		want string
+	}{
+		{protocol.OTAInfo{At: now, Asked: "AR241CP_8747", UpToDate: true}, "up to date · checked"},
+		{protocol.OTAInfo{At: now, Asked: "AR241CP_8747", Offered: "AR241CP_9001"}, "AR241CP_9001 available · checked"},
+		{protocol.OTAInfo{At: now, Asked: "AR241CP_8747"}, "update available · checked"},
+		{protocol.OTAInfo{At: now, Err: "vendor unreachable"}, "check failed · vendor unreachable · checked"},
+	} {
+		st.SetOTA(c.info)
+		if out := clean(render(t, m)); !hasRow(out, "vendor", c.want) {
+			t.Errorf("verdict %+v: no %q row:\n%s", c.info, c.want, out)
+		}
 	}
 	m.cols = 70
-	if out := stripANSI(m.viewContent()); !strings.Contains(out, "check failed") {
+	if out := clean(render(t, m)); !strings.Contains(out, "check failed") {
 		t.Errorf("stacked layout lacks the row:\n%s", out)
 	}
 	// never asked: no row at all
 	if f := otaFact(protocol.DiagnosticSnapshot{}, now); f != "" {
 		t.Errorf("unasked fact = %q", f)
 	}
+	if f := otaFact(protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: now.Add(-3 * time.Minute), UpToDate: true}}, now); f != "up to date · checked 3m ago" {
+		t.Errorf("aged fact = %q", f)
+	}
 }
 
-// At mini size the diagnostics overlay cannot be drawn, so ? must not pretend
-// to open it.
+// At mini size the diagnostics cannot be drawn, so i must not pretend to open
+// them — nor u reach the vendor through the gap.
 func TestDiagAtMiniSizeIsInert(t *testing.T) {
 	m, st, _ := makeModel(t)
 	m.rows, m.cols = MiniRows-1, 40
-	m.key(keyEvent{kind: kRune, r: 'i'})
-	if m.view == viewDiag || st.DiagnosticView(time.Now()).OTAPending {
-		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.view == viewDiag, st.DiagnosticView(time.Now()).OTAPending)
-	}
-}
-
-// The device card says how the box came up, and the connection and network
-// sections carry the engine's own reconnect account and the radio warning —
-// each of which also moves the health verdict.
-func TestDiagBootReconnectsAndRadio(t *testing.T) {
-	m, st, _ := makeModel(t)
-	m.sty = newTheme()
-	m.rows, m.cols = 44, 160
-	now := time.Now()
-	// a wired box that came up from a power loss 2 days ago, quiet log
-	protocol.ApplyRecord(st, protocol.Record{
-		"i": {"net=eth", "ip=192.0.2.13", "rboot=cold_boot"},
-		"s": {"172800.00 0.10 0.10 0.10 100000 220000 2 AR241CE_8530.23 Linux-5.15"},
-		"o": {"n=0", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
-		"v": {"MID-Read:64 Data:40 Length:2"},
-	})
-	m.key(keyEvent{kind: kRune, r: 'i'})
-	out := stripANSI(m.viewContent())
-	for _, want := range []string{
-		"boot      power-on (cold boot) · " + now.Add(-172800*time.Second).Format("Jan 2 15:04") + " · 2d 0h 0m ago",
-		"engine    no reconnects",
-		"● healthy",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("overlay missing %q:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "on wi-fi") {
-		t.Error("radio warning shown on a wired box")
-	}
-	// the same box on its radio, with a reconnect storm: both are warns
-	protocol.ApplyRecord(st, protocol.Record{
-		"i": {"net=wifi", "ip=192.0.2.13", "ssid=home", "freq=5180", "rboot=normal"},
-		"o": {"n=100", "t=" + now.Add(-20*time.Hour).Format("Jan _2 15:04:05"), "u="},
-		"v": {"MID-Read:64 Data:40 Length:2"},
-	})
-	out = stripANSI(m.viewContent())
-	for _, want := range []string{
-		"boot      software reboot (normal)",
-		"100 reconnects · 5.0/h",
-		"radio     ⚠ on wi-fi · the radio firmware can wedge — wire it",
-		"● warn · on wi-fi · engine reconnects 5.0/h", // the verdict names its reasons
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("overlay missing %q:\n%s", want, out)
-		}
-	}
-	// the stacked layout carries the same rows
-	m.cols = 70
-	out = stripANSI(m.viewContent())
-	for _, want := range []string{"power-on", "software reboot", "100 reconnects", "on wi-fi"} {
-		if want == "power-on" {
-			continue // the second record replaced the reason
-		}
-		if !strings.Contains(out, want) {
-			t.Errorf("stacked overlay missing %q:\n%s", want, out)
-		}
-	}
-	// no reason shipped (an older loop): no boot row at all
-	if f := bootFact(protocol.DiagnosticSnapshot{DevInfo: &protocol.DevInfo{Net: "eth"}}, now); f != "" {
-		t.Errorf("boot fact without a reason = %q", f)
-	}
-	// any other report is carried in the box's words
-	d := protocol.DiagnosticSnapshot{Ops: &protocol.DevOps{OTAOK: true, OTAText: "update available", OTAAt: now.Add(-time.Hour)}}
-	if f := boxUpdateFact(d, now); f != "update available · the box asked 60m ago · it asks every 4 h" {
-		t.Errorf("offered fact = %q", f)
+	m.key(kr('i'))
+	m.key(kr('u'))
+	if m.view == viewDiag || st.DiagnosticView().OTAPending {
+		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.view == viewDiag, st.DiagnosticView().OTAPending)
 	}
 }

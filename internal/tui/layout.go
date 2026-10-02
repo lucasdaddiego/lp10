@@ -67,14 +67,6 @@ func padDisp(s string, w int) string {
 	return s
 }
 
-// rpadDisp left-pads s with spaces to display width w (right-justify); no-op if ≥ w.
-func rpadDisp(s string, w int) string {
-	if d := w - DispW(s); d > 0 {
-		return spaces(d) + s
-	}
-	return s
-}
-
 // padVis right-pads a (possibly ANSI-styled) string to visible width w, measuring
 // with visWidth so colour escapes aren't counted. The diag cards and the player
 // columns lean on it to stay aligned once styling is applied on a real terminal.
@@ -110,4 +102,13 @@ func splitWidth(total, n int) []int {
 		}
 	}
 	return w
+}
+
+// sectionHead is a page's rule-and-title row (the equalizer, the help page),
+// matching the dashboard's divider so the views read as the same product.
+func (m *model) sectionHead(title string, W int) string {
+	lead := 2
+	body := " " + title + " "
+	rest := max(W-lead-DispW(body), 0)
+	return m.sty.pens().dmr.render(strings.Repeat("─", lead) + body + strings.Repeat("─", rest))
 }

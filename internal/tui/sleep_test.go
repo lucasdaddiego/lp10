@@ -1,12 +1,11 @@
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // ---- sleep timer: arming ------------------------------------------------------
@@ -55,41 +54,53 @@ func TestSleepKeysArmAndCancel(t *testing.T) {
 	if m.sleepAt.IsZero() {
 		t.Fatal("s should arm the timer")
 	}
+	if want := "sleep timer set · " + GL["sleep"] + " 15m"; m.notice != want {
+		t.Errorf("notice = %q, want %q", m.notice, want)
+	}
 	if got := collect(); len(got) != 0 {
-		t.Errorf("arming must send nothing to the device, sent %+v", got)
+		t.Errorf("arming must send nothing to the device, sent %v", wire(got))
 	}
 	m.key(kr('S'))
-	if !m.sleepAt.IsZero() {
-		t.Error("S should cancel the timer")
+	if !m.sleepAt.IsZero() || m.notice != "sleep timer cancelled" {
+		t.Errorf("S should cancel the timer: at=%v notice=%q", m.sleepAt, m.notice)
 	}
 	// S with nothing armed is inert
 	m.key(kr('S'))
 	if !m.sleepAt.IsZero() || m.sleepPreset != 0 {
 		t.Error("S on an idle timer should stay off")
 	}
-	// the keys work from the EQ pane too (global rune keys)
-	m.view = viewEQ
-	m.key(kr('s'))
-	if m.sleepAt.IsZero() {
-		t.Error("s should arm from the EQ pane")
+	// the keys work from the other views too (global rune keys)
+	for _, v := range []view{viewEQ, viewDiag, viewHelp} {
+		m.sleepCancel()
+		m.setView(v)
+		m.key(kr('s'))
+		if m.sleepAt.IsZero() {
+			t.Errorf("s should arm from the %s view", viewNames[v])
+		}
+	}
+	// stepping past the last preset says it is off
+	m.sleepCancel()
+	for range len(sleepPresets) + 1 {
+		m.key(kr('s'))
+	}
+	if !m.sleepAt.IsZero() || m.notice != "sleep timer off" {
+		t.Errorf("past the last preset: at=%v notice=%q", m.sleepAt, m.notice)
 	}
 }
 
 // ---- sleep timer: firing ------------------------------------------------------
 
+// At the deadline the timer pauses once — a POP, since that is the device's
+// play/pause — flips the screen at once and disarms.
 func TestSleepFiresPauseOnceWhilePlaying(t *testing.T) {
 	m, st, collect := makeModel(t)
-	if st.Snap().Playing != 0 {
-		t.Fatal("setup: should start playing")
-	}
 	m.sleepAt = time.Now().Add(-time.Second) // deadline already passed
 	m.dispatch(logicMsg{})
-	got := collect()
-	if len(got) != 1 || got[0].Mid != 40 || got[0].Data != "PAUSE" {
-		t.Fatalf("sent = %+v, want [40 PAUSE]", got)
+	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
+		t.Fatalf("sent %v, want [POP]", got)
 	}
 	s := st.Snap()
-	if s.Playing == 0 {
+	if s.Playing {
 		t.Error("playing should optimistically flip to paused")
 	}
 	if s.Error != "" {
@@ -98,10 +109,13 @@ func TestSleepFiresPauseOnceWhilePlaying(t *testing.T) {
 	if !m.sleepAt.IsZero() {
 		t.Error("the timer must disarm after firing")
 	}
-	// one-shot: the next tick sends nothing (and never a RESUME)
+	if !m.flash["toggle"].After(time.Now()) {
+		t.Error("the fire should flash the play/pause button like the space bar")
+	}
+	// one-shot: the next tick sends nothing (and never a second POP that would resume)
 	m.dispatch(logicMsg{})
 	if got := collect(); len(got) != 0 {
-		t.Errorf("second tick sent %+v, want nothing", got)
+		t.Errorf("second tick sent %v, want nothing", wire(got))
 	}
 }
 
@@ -110,49 +124,49 @@ func TestSleepDoesNotFireBeforeDeadline(t *testing.T) {
 	m.sleepAt = time.Now().Add(time.Hour)
 	m.dispatch(logicMsg{})
 	if got := collect(); len(got) != 0 {
-		t.Errorf("sent %+v before the deadline", got)
+		t.Errorf("sent %v before the deadline", wire(got))
 	}
-	if m.sleepAt.IsZero() || st.Snap().Playing != 0 {
+	if m.sleepAt.IsZero() || !st.Snap().Playing {
 		t.Error("an unexpired timer must stay armed and leave playback alone")
 	}
 }
 
-// Already paused (or idle) at the deadline: disarm quietly, never RESUME.
+// POP is a toggle: already paused (or idle) at the deadline, the timer must
+// disarm quietly — a POP there would RESUME the room.
 func TestSleepNeverResumes(t *testing.T) {
 	m, st, collect := makeModel(t)
-	st.ToggleOptimistic() // now paused
-	collect()
+	st.ApplyPlaying(false) // the device paused
 	m.sleepAt = time.Now().Add(-time.Second)
 	m.dispatch(logicMsg{})
 	if got := collect(); len(got) != 0 {
-		t.Errorf("paused at the deadline: sent %+v, want nothing", got)
+		t.Errorf("paused at the deadline: sent %v, want nothing", wire(got))
 	}
-	if !m.sleepAt.IsZero() {
-		t.Error("the timer should disarm even when there was nothing to pause")
+	if !m.sleepAt.IsZero() || st.Snap().Playing {
+		t.Error("the timer should disarm and leave the pause alone")
 	}
 
-	// idle (no track) at the deadline
-	m2, _, collect2 := modelWith(protocol.NewState())
+	// idle (connected, no track) at the deadline
+	m2, _, collect2 := modelWith(idleState())
 	m2.sleepAt = time.Now().Add(-time.Second)
 	m2.dispatch(logicMsg{})
 	if got := collect2(); len(got) != 0 {
-		t.Errorf("idle at the deadline: sent %+v, want nothing", got)
+		t.Errorf("idle at the deadline: sent %v, want nothing", wire(got))
+	}
+	if !m2.sleepAt.IsZero() {
+		t.Error("an idle deadline should disarm")
 	}
 }
 
-// Playing with no track metadata (a source without @@B, a garbage read) is
-// still playing: the timer pauses it rather than shrugging.
+// Playing with no track metadata (a run that started mid-track) is still
+// playing: the timer pauses it rather than shrugging.
 func TestSleepFiresPauseWithoutTrackMetadata(t *testing.T) {
-	st := protocol.NewState()
-	protocol.ApplyRecord(st, protocol.Record{"v": {"Data:44"}}) // the link is up
-	st.ToggleOptimistic()                                       // playing, no track
-	m, _, collect := modelWith(st)
+	m, st, collect := modelWith(untitledState())
 	m.sleepAt = time.Now().Add(-time.Second)
 	m.dispatch(logicMsg{})
-	if got := collect(); len(got) != 1 || got[0].Mid != 40 || got[0].Data != "PAUSE" {
-		t.Fatalf("sent = %+v, want [40 PAUSE]", got)
+	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
+		t.Fatalf("sent %v, want [POP]", got)
 	}
-	if st.Snap().Playing == 0 || !m.sleepAt.IsZero() {
+	if st.Snap().Playing || !m.sleepAt.IsZero() {
 		t.Error("must flip to paused and disarm")
 	}
 }
@@ -189,7 +203,6 @@ func TestSleepLabelRoundsUpAndFlagsFinalMinute(t *testing.T) {
 
 func TestSleepShowsInHeaderAndKeepsWidth(t *testing.T) {
 	m, st, _ := makeModel(t)
-	m.sty = newTheme()
 	now := time.Now()
 	W := FullCols - 6
 	base := stripANSI(m.headerRow(st.Snap(), now, W, true))
@@ -207,7 +220,14 @@ func TestSleepShowsInHeaderAndKeepsWidth(t *testing.T) {
 			t.Errorf("full=%v: header width = %d, want exactly %d", full, got, W)
 		}
 	}
+	// the final minute switches the countdown to the warn pen
+	m.sleepAt = now.Add(30 * time.Second)
+	final := m.headerRow(st.Snap(), now, W, true)
+	if !strings.Contains(stripANSI(final), GL["sleep"]+" 30s") || !strings.Contains(final, m.sty.pens().warn.render(GL["sleep"]+" 30s")) {
+		t.Errorf("final-minute header = %q, want the countdown in the warn pen", stripANSI(final))
+	}
 	// disconnected: rides after the reconnecting status without breaking width
+	m.sleepAt = now.Add(30 * time.Minute)
 	st.Disconnect()
 	styled := m.headerRow(st.Snap(), now, W, true)
 	if plain := stripANSI(styled); !strings.Contains(plain, "connecting") || !strings.Contains(plain, GL["sleep"]) {
@@ -218,17 +238,25 @@ func TestSleepShowsInHeaderAndKeepsWidth(t *testing.T) {
 	}
 }
 
-func TestSleepShowsOnMiniLine(t *testing.T) {
+// The countdown reaches every face of the player: the mini line, and under
+// the idle screen's clock.
+func TestSleepShowsOnMiniLineAndIdleScreen(t *testing.T) {
 	m, st, _ := makeModel(t)
-	m.sty = newTheme()
 	m.rows, m.cols = MiniRows-1, 120
 	m.sleepAt = time.Now().Add(45 * time.Minute)
-	if got := stripANSI(m.renderMini(st.Snap())); !strings.Contains(got, GL["sleep"]+" 45m") {
+	if got := stripANSI(render(t, m)); !strings.Contains(got, GL["sleep"]+" 45m") {
 		t.Errorf("mini line = %q, want the countdown", got)
 	}
 	m.sleepCancel()
 	if got := stripANSI(m.renderMini(st.Snap())); strings.Contains(got, GL["sleep"]) {
 		t.Errorf("mini line = %q, timer off but still shown", got)
+	}
+	mi, _, _ := modelWith(idleState())
+	mi.rows, mi.cols = 40, 120
+	mi.sleepAt = time.Now().Add(45 * time.Minute)
+	out := clean(render(t, mi))
+	if n := strings.Count(out, GL["sleep"]+" 45m"); n != 2 {
+		t.Errorf("idle screen shows the countdown %d times, want 2 (header + under the clock):\n%s", n, out)
 	}
 }
 
@@ -236,7 +264,6 @@ func TestSleepShowsOnMiniLine(t *testing.T) {
 // narrowest content width unclipped.
 func TestSleepFooterHintFitsMinimumWidth(t *testing.T) {
 	m, _, _ := makeModel(t)
-	m.sty = newTheme()
 	got := stripANSI(m.footerRow(FullCols - 6))
 	if !strings.Contains(got, "s sleep") {
 		t.Errorf("footer = %q, want the sleep hint", got)
@@ -255,90 +282,7 @@ func TestSleepGlyphHasASCIIFallback(t *testing.T) {
 	}
 }
 
-// ---- bedtime chord ----------------------------------------------------------
-
-func TestBedtimeArmsSleepAndNightThenRestores(t *testing.T) {
-	m, st, collect := makeModel(t)
-	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=off"}}) // baseline: night off
-	m.key(kr('b'))
-	if m.sleepAt.IsZero() || !m.bedtime {
-		t.Fatal("b should arm the timer and mark it bedtime")
-	}
-	got := collect()
-	if len(got) != 1 || got[0].Mid != 91 || got[0].Data != "1" {
-		t.Fatalf("sent = %+v, want [91 1] (night on)", got)
-	}
-	if s := st.Snap(); !s.Night {
-		t.Error("night should be on optimistically")
-	}
-	// stepping again keeps night on without resending it
-	m.key(kr('b'))
-	if got := collect(); len(got) != 0 {
-		t.Errorf("second b sent %+v, want nothing (night already on)", got)
-	}
-	// the timer fires: pause, then night back to the baseline (off)
-	m.sleepAt = time.Now().Add(-time.Second)
-	m.dispatch(logicMsg{})
-	got = collect()
-	if len(got) != 2 || got[0].Mid != 40 || got[0].Data != "PAUSE" || got[1].Mid != 91 || got[1].Data != "0" {
-		t.Errorf("fire sent %+v, want [40 PAUSE] [91 0]", got)
-	}
-	if m.bedtime || !m.sleepAt.IsZero() || st.Snap().Night {
-		t.Error("after the fire: bedtime cleared, timer off, night restored")
-	}
-}
-
-func TestBedtimeCancelAndCycleOffRestoreNight(t *testing.T) {
-	m, st, collect := makeModel(t)
-	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=off"}})
-	m.key(kr('b'))
-	collect()
-	m.key(kr('S')) // cancel restores night
-	if got := collect(); len(got) != 1 || got[0].Mid != 91 || got[0].Data != "0" {
-		t.Errorf("S sent %+v, want [91 0]", got)
-	}
-	if m.bedtime || st.Snap().Night {
-		t.Error("cancel should clear bedtime and restore night")
-	}
-	// cycling past the last preset turns everything off too
-	m.key(kr('b'))
-	collect()
-	for range len(sleepPresets) - 1 {
-		m.key(kr('b'))
-	}
-	if m.sleepAt.IsZero() {
-		t.Fatal("should still be armed on the last preset")
-	}
-	collect()
-	m.key(kr('b')) // -> off
-	if got := collect(); len(got) != 1 || got[0].Data != "0" || !m.sleepAt.IsZero() || m.bedtime {
-		t.Errorf("cycle-off sent %+v, timer=%v bedtime=%v", got, m.sleepAt, m.bedtime)
-	}
-	// a plain 's' timer never touches night mode
-	protocol.ApplyRecord(st, protocol.Record{"n": {"  : values=on"}})
-	m.key(kr('s'))
-	m.sleepAt = time.Now().Add(-time.Second)
-	m.dispatch(logicMsg{})
-	for _, c := range collect() {
-		if c.Mid == 91 {
-			t.Errorf("a plain sleep timer sent a night-mode command: %+v", c)
-		}
-	}
-	// night already on at connect (baseline on): bedtime leaves it on at the end
-	st2 := protocol.NewState()
-	protocol.ApplyRecord(st2, protocol.Record{"n": {"  : values=on"}})
-	m2, _, c2 := modelWith(st2)
-	m2.key(kr('b'))
-	if got := c2(); len(got) != 0 {
-		t.Errorf("night already on: b sent %+v, want nothing", got)
-	}
-	m2.key(kr('S'))
-	if got := c2(); len(got) != 0 {
-		t.Errorf("baseline on: cancel sent %+v, want nothing", got)
-	}
-}
-
-// With the ssh link down at the deadline the timer stays armed: a PAUSE queued
+// With the tunnel down at the deadline the timer stays armed: a POP queued
 // into a dead link would expire unheard while the room plays on. It fires as
 // soon as the link is back.
 func TestSleepWaitsForTheLinkThenFires(t *testing.T) {
@@ -347,17 +291,34 @@ func TestSleepWaitsForTheLinkThenFires(t *testing.T) {
 	m.sleepAt = time.Now().Add(-time.Second)
 	m.dispatch(logicMsg{})
 	if got := collect(); len(got) != 0 {
-		t.Fatalf("fired into a dead link: sent %+v", got)
+		t.Fatalf("fired into a dead link: sent %v", wire(got))
 	}
 	if m.sleepAt.IsZero() {
 		t.Fatal("the timer must stay armed while the link is down")
 	}
-	protocol.ApplyRecord(st, playingRecord()) // the link is back, still playing
+	connect(st) // the link is back, still playing
 	m.dispatch(logicMsg{})
-	if got := collect(); len(got) != 1 || got[0].Data != "PAUSE" {
-		t.Fatalf("after reconnect sent %+v, want [40 PAUSE]", got)
+	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
+		t.Fatalf("after reconnect sent %v, want [POP]", got)
 	}
 	if !m.sleepAt.IsZero() {
 		t.Error("the timer must disarm once it has fired")
+	}
+}
+
+// The device paused on its own between the tick's snapshot and the fire: the
+// decision is State's, under its lock, so the stale snapshot cannot turn the
+// timer's POP into a resume.
+func TestSleepFireDecidesUnderTheLock(t *testing.T) {
+	m, st, collect := makeModel(t)
+	snap := st.Snap() // playing, as the tick saw it
+	st.ApplyPlaying(false)
+	m.sleepAt = time.Now().Add(-time.Second)
+	m.sleepFire(time.Now(), snap)
+	if got := collect(); len(got) != 0 {
+		t.Errorf("a pause that landed after the snapshot still sent %v", wire(got))
+	}
+	if st.Snap().Playing {
+		t.Error("the timer resumed a paused room")
 	}
 }

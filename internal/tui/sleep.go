@@ -1,5 +1,5 @@
 // The sleep timer: a host-side "pause in N minutes" that needs nothing from the
-// device beyond the ordinary PAUSE the space bar sends. The LP10's own sleep
+// device beyond the ordinary play/pause the space bar sends. The LP10's own sleep
 // timer is hidden on this MCU build, so the deadline lives here — armed and
 // stepped with 's', cancelled with 'S', checked on the logic tick, and shown
 // beside the clock. It is deliberately not persisted: a timer that outlives
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
 )
 
 // sleepPresets are the minutes 's' cycles through, in order; one more press
@@ -40,50 +41,29 @@ func (m *model) sleepCycle(now time.Time) {
 	m.sleepAt = now.Add(time.Duration(sleepPresets[m.sleepPreset]) * time.Minute)
 }
 
-// sleepCancel disarms the timer (idempotent). A bedtime arming also puts
-// night mode back (see bedtimeCycle).
+// sleepCancel disarms the timer (idempotent).
 func (m *model) sleepCancel() {
 	m.sleepAt = time.Time{}
 	m.sleepPreset = 0
-	if m.bedtime {
-		m.bedtime = false
-		m.nightRestore()
-	}
-}
-
-// bedtimeCycle is the 'b' chord: the same preset step as 's', plus night mode
-// switched on for the duration — so one key does "compress the dynamics and
-// pause in 30 minutes". The timer's fire, a cancel, or cycling past the last
-// preset puts night mode back to its connect-time value; pressing 'd' while
-// it runs is allowed and simply changes what there is to restore.
-func (m *model) bedtimeCycle(now time.Time) {
-	m.sleepCycle(now)
-	if m.sleepAt.IsZero() {
-		return // cycled to off: sleepCancel already restored night mode
-	}
-	m.bedtime = true
-	if s := m.st.Snap(); !(s.NightKnown && s.Night) {
-		m.nightToggle()
-	}
 }
 
 // sleepFire is the tick hook: once the deadline passes it pauses the player —
 // optimistically, like the space bar, so the screen flips at once and the
 // device's echo is held off — and disarms. Already paused or idle, it just
-// disarms. The pause is one-way and decided inside State under its lock
-// (PauseOptimistic): a timer must never RESUME, and a device-side pause
+// disarms. The device's POP is a toggle, so the pause is decided inside State
+// under its lock (PauseOptimistic): the POP goes out only while the device
+// last said it plays — a timer must never RESUME, and a device-side pause
 // landing between the tick's snapshot and the flip would have turned the
-// space bar's toggle into exactly that. It also needs no track metadata, so a
-// source playing without @@B still goes quiet. One-shot by construction. No
-// note is posted: the seek row's amber "Paused" and the countdown leaving the
+// toggle into exactly that. It needs no track metadata, so a source playing
+// without a title still goes quiet. One-shot by construction. No note is
+// posted: the status row's amber "Paused" and the countdown leaving the
 // header say it all, and State's note slot renders as the red error line.
 //
-// With the ssh link down at the deadline the timer stays armed and fires on
-// reconnect: a PAUSE queued into a dead link expires unheard ("command not
-// delivered") while the room plays on all night, and a bedtime arming would
-// have put its night-mode restore through the same dead pipe. A reconnect
-// more than sleepLate past the deadline cancels the timer instead of pausing
-// — putting night mode back just as a fire would — and says so.
+// With the tunnel down at the deadline the timer stays armed and fires on
+// reconnect: a POP queued into a dead link expires unheard ("command not
+// delivered") while the room plays on all night. A reconnect more than
+// sleepLate past the deadline cancels the timer instead of pausing, and says
+// so.
 func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 	if m.sleepAt.IsZero() || now.Before(m.sleepAt) {
 		return
@@ -92,15 +72,15 @@ func (m *model) sleepFire(now time.Time, s protocol.Snapshot) {
 		return
 	}
 	if late := now.Sub(m.sleepAt); late > sleepLate {
-		m.sleepCancel() // also restores night mode after a bedtime arming
+		m.sleepCancel()
 		m.notify("sleep timer cancelled · it ran out "+fmtAgeShort(late)+" ago", noticeFor*2)
 		return
 	}
 	if m.st.PauseOptimistic() {
 		m.flash["toggle"] = now.Add(FlashDuration)
-		m.send(40, "PAUSE")
+		m.send(tunnel.ToggleCode, 0)
 	}
-	m.sleepCancel() // after the pause: also restores night mode after a bedtime arming
+	m.sleepCancel()
 }
 
 // sleepLabel is the countdown shown beside the clock ("☾ 29m"; "☾ 45s" inside

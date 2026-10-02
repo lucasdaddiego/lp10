@@ -33,9 +33,6 @@ func TestPaintedBlockWidths(t *testing.T) {
 		if got := lipgloss.Width(th.lineMeter(0.42, cells)); got != cells {
 			t.Errorf("lineMeter(%d) width %d", cells, got)
 		}
-		if got := lipgloss.Width(th.gaugeBar(0.42, cells, th.sAcc)); got != cells {
-			t.Errorf("gaugeBar(%d) width %d", cells, got)
-		}
 	}
 	for _, ln := range th.vbar(0.5, 9) {
 		if got := lipgloss.Width(ln); got != 1 {
