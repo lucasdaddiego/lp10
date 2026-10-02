@@ -1366,3 +1366,24 @@ func TestSourceChangeDropsTheService(t *testing.T) {
 		t.Errorf("after NET → BT: service %q, track %+v, source %q", s.Service, s.Track, s.Source)
 	}
 }
+
+// A level another app sets inside lp10's own volume hold updates the
+// register only (firmware 8747); the first reading after the hold must still
+// bridge it, though the held reading already moved devVol to that level.
+func TestForeignLevelInsideTheHoldIsBridged(t *testing.T) {
+	st := NewState()
+	st.ApplyVolume(30)
+	takeBridge(t, st, 30, true)
+	st.SetVol(40)      // lp10's key: VOL:40 goes out and reaches the room
+	st.ApplyVolume(40) // its echo, held
+	st.ApplyVolume(25) // the Spotify slider 1s later: register only, held
+	takeBridge(t, st, 0, false)
+	expireVolHold(st)
+	st.ApplyVolume(25) // the next poll after the hold
+	if got := st.Snap().Vol; got != 25 {
+		t.Fatalf("Vol = %d, want 25 on screen", got)
+	}
+	takeBridge(t, st, 25, true) // the room is at 40 until 25 goes through the MCU
+	st.ApplyVolume(25)
+	takeBridge(t, st, 0, false) // once
+}

@@ -44,9 +44,13 @@ type State struct {
 	devVolKnown   bool
 	bridgeVol     int
 	bridgePending bool
-	muted         bool
-	muteHold      time.Time
-	mcu           string // the MCU firmware as VER reports it, "29-1d316f0c-10"
+	// setVol is the level lp10 last set; setPending holds it until the first
+	// reading after its hold, which bridges when the device holds another
+	setVol     int
+	setPending bool
+	muted      bool
+	muteHold   time.Time
+	mcu        string // the MCU firmware as VER reports it, "29-1d316f0c-10"
 
 	errMsg string
 	errAt  time.Time
@@ -234,8 +238,15 @@ func (st *State) ApplySource(source string) {
 
 func (st *State) applyVolLocked(vol int, now time.Time) {
 	vol = clamp100(vol)
-	if (!st.devVolKnown || vol != st.devVol) && !held(st.volHold, now) {
-		st.bridgeVol, st.bridgePending = vol, true
+	if !held(st.volHold, now) {
+		foreign := !st.devVolKnown || vol != st.devVol
+		if st.setPending {
+			foreign = foreign || vol != st.setVol
+			st.setPending = false
+		}
+		if foreign {
+			st.bridgeVol, st.bridgePending = vol, true
+		}
 	}
 	st.devVol, st.devVolKnown = vol, true
 	st.volLive = true
@@ -383,6 +394,7 @@ func (st *State) applyVol(target func(cur int) int) int {
 	st.vol = clamp100(target(st.vol))
 	st.volHold = time.Now().Add(VolHoldDuration)
 	st.bridgePending = false
+	st.setVol, st.setPending = st.vol, true
 	return st.vol
 }
 
