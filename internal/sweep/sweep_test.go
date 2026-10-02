@@ -1642,3 +1642,44 @@ func TestRecheckHonoursRecheckTimeout(t *testing.T) {
 		t.Errorf("scan with a 1 s recheck took %v: the recheck gave up at %v", took, s.timeout)
 	}
 }
+
+// The budget can expire while the recheck runs. The fast pass answered every
+// port, so the scan must still not claim a complete answer: the known port
+// it missed was never confirmed, and saving it as closed makes a false change.
+func TestRecheckCutByBudgetIsNotOK(t *testing.T) {
+	var mu sync.Mutex
+	tries := map[int]int{}
+	dial := func(ctx context.Context, _, addr string) (net.Conn, error) {
+		_, ps, _ := net.SplitHostPort(addr)
+		p, _ := strconv.Atoi(ps)
+		mu.Lock()
+		tries[p]++
+		n := tries[p]
+		mu.Unlock()
+		if n == 1 { // the fast pass: a slow LAN, 9095's SYN dropped
+			select {
+			case <-time.After(250 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if p == 9095 {
+				return nil, &net.OpError{Op: "dial", Err: timeoutErr{}}
+			}
+			return nil, &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED}
+		}
+		select { // the recheck: 9095 is open but answers after the budget
+		case <-time.After(100 * time.Millisecond):
+			a, b := net.Pipe()
+			b.Close()
+			return a, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	s := scanSpec{lo: 9090, hi: 9099, workers: 10, timeout: time.Second, budget: 300 * time.Millisecond,
+		recheck: []int{9095}, recheckTimeout: time.Second, recheckTries: 2, dial: dial}
+	open, _, err := scanPorts(context.Background(), "192.0.2.13", s)
+	if err == nil && !slices.Contains(open, 9095) {
+		t.Errorf("scan = %v with no error: the budget cut the recheck, yet the scan claims a complete answer", open)
+	}
+}

@@ -526,6 +526,9 @@ func scanPorts(ctx context.Context, host string, s scanSpec) (open []int, debugC
 	wg.Wait()
 	if fatal == nil && ctx.Err() == nil {
 		open = append(open, recheckPorts(ctx, ip, redial, s, open)...)
+		if ctx.Err() != nil { // the budget cut the recheck: a missed known port is unconfirmed
+			fatal = fmt.Errorf("scan cut off: the recheck of the known ports ran past %s", s.budget)
+		}
 	}
 	slices.Sort(open)
 	debugChecked = debugOK == len(first)
