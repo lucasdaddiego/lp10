@@ -110,9 +110,13 @@ func Lookup(code string) (Spec, bool) {
 	return s, ok
 }
 
-// Clamp constrains v to a known code's [Min,Max]; an unknown code passes through.
+// Clamp constrains v to a known code's [Min,Max] — a control's or a player
+// setting's (VOL, MUT); an unknown code passes through.
 func Clamp(code string, v int) int {
 	s, ok := specByCode[code]
+	if !ok {
+		s, ok = playerSpecs[code]
+	}
 	if !ok {
 		return v
 	}

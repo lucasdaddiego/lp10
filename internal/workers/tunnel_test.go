@@ -651,6 +651,31 @@ func TestSendBatchPaced(t *testing.T) {
 	}
 }
 
+// A command the sender drops (expired, or a code lp10 never sends) costs no
+// gap: only two writes are spaced. A batch of stale sets behind a fresh one
+// must not hold the sender 50ms per dropped command.
+func TestSendBatchPacedSkipsTheGapForADroppedCommand(t *testing.T) {
+	t.Parallel()
+	old := time.Now().Add(-CommandDeadline - time.Second)
+	cmds := []Command{{Code: "BAS", Val: 1, TS: time.Now()}}
+	for v := range 10 {
+		cmds = append(cmds, Command{Code: "TRE", Val: v, TS: old}, Command{Code: "NOPE", Val: v})
+	}
+	cmds = append(cmds, Command{Code: "MID", Val: 2, TS: time.Now()})
+	c := &scriptConn{}
+	start := time.Now()
+	sendBatchPaced(context.Background(), protocol.NewState(), c, cmds)
+	if took := time.Since(start); took > 2*tunnelSpacing {
+		t.Errorf("the batch took %v for two writes, want one gap (%v)", took, tunnelSpacing/3)
+	}
+	if got := c.written(); !slices.Equal(got, []string{"BAS:1;", "MID:2;"}) {
+		t.Errorf("wrote %q", got)
+	}
+	if gap := c.at[1].Sub(c.at[0]); gap < tunnelSpacing/3-5*time.Millisecond {
+		t.Errorf("the two writes were %v apart, want ≥ %v", gap, tunnelSpacing/3)
+	}
+}
+
 // drainOnStop writes what is queued at quit (coalesced) and never blocks on
 // an empty queue.
 func TestDrainOnStop(t *testing.T) {

@@ -338,17 +338,23 @@ func sendBatch(ctx context.Context, st *protocol.State, conn net.Conn, cmds []Co
 // window is over, and a pasted line of play/skip keys (actions never coalesce)
 // would otherwise hold the quit 50ms per command.
 func sendBatchPaced(ctx context.Context, st *protocol.State, conn net.Conn, cmds []Command) (carry []Command, dead, vol bool) {
+	wrote := false
 	for i, c := range cmds {
 		if ctx.Err() != nil {
 			return cmds[i:], false, vol
 		}
-		if i > 0 {
-			time.Sleep(tunnelSpacing / 3) // a short gap: back-to-back frames can be dropped
+		// A short gap between two writes: back-to-back frames can be dropped.
+		// A command tunnelSend will drop (expired or refused) gets none.
+		wire, stale := commandWire(c, time.Now())
+		writes := wire != "" && !stale
+		if wrote && writes {
+			time.Sleep(tunnelSpacing / 3)
 		}
 		failed, d := tunnelSend(st, conn, c)
 		if d {
 			return append([]Command{*failed}, cmds[i+1:]...), true, vol
 		}
+		wrote = wrote || writes
 		vol = vol || (c.Code == tunnel.VolumeCode && !c.Query)
 	}
 	return nil, false, vol

@@ -41,6 +41,15 @@ func TestSetAndQuery(t *testing.T) {
 	if got := Set("MXV", 250); got != "MXV:100;" { // clamped
 		t.Errorf("Set MXV 250 = %q (want clamp to 100)", got)
 	}
+	// the player's settable codes clamp to their own range too
+	for in, want := range map[int]string{150: "VOL:100;", -5: "VOL:0;", 44: "VOL:44;"} {
+		if got := Set("VOL", in); got != want {
+			t.Errorf("Set VOL %d = %q, want %q", in, got, want)
+		}
+	}
+	if got := Set("MUT", 3); got != "MUT:1;" {
+		t.Errorf("Set MUT 3 = %q, want MUT:1;", got)
+	}
 	if got := Set("BAS", -99); got != "BAS:-10;" {
 		t.Errorf("Set BAS -99 = %q (want clamp to -10)", got)
 	}
