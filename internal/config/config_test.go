@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -332,5 +333,20 @@ func TestUnknownKeysStillComplain(t *testing.T) {
 	}
 	if cfg != before {
 		t.Errorf("unknown and retired keys changed the config: %+v", cfg)
+	}
+}
+
+// An empty host is refused with a complaint, keeping the default: it would
+// dial ":2018", which Go dials on the local machine, when discovery is off
+// or finds nothing (and the sweep would inventory this machine).
+func TestEmptyHostIsRefused(t *testing.T) {
+	t.Setenv(HostEnv, "")
+	writeConfig(t, "host = \"\"\ndiscover = false\n")
+	cfg := Load()
+	if cfg.Host == "" {
+		t.Errorf("host = \"\" accepted: the tunnel would dial %q", net.JoinHostPort(cfg.Host, "2018"))
+	}
+	if !strings.Contains(cfg.Warn, "host ignored (empty)") {
+		t.Errorf("warning %q does not name the empty host", cfg.Warn)
 	}
 }

@@ -149,7 +149,12 @@ func applyTOML(cfg *Config, data map[string]any) (complaints []string) {
 		switch k {
 		case "host", "name":
 			var sv string
-			if sv, ok = v.(string); ok {
+			if sv, ok = v.(string); ok && k == "host" && strings.TrimSpace(sv) == "" {
+				// an empty host dials ":2018", which Go dials on THIS machine
+				complaints = append(complaints, "host ignored (empty)")
+				continue
+			}
+			if ok {
 				if k == "host" {
 					cfg.Host = sv
 				} else {
