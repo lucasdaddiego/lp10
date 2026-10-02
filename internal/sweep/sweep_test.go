@@ -1621,3 +1621,24 @@ type timeoutErr struct{}
 func (timeoutErr) Error() string   { return "i/o timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
+
+// The live recheck must dial with recheckTimeout, not the fast pass's
+// timeout: a net.Dialer stops at the earlier of its Timeout and the ctx
+// deadline, so reusing the fast dialer ended each recheck try at 400 ms,
+// before the ~1 s SYN retransmit that gets through a dropped first SYN.
+// 127.0.0.2 on macOS lo0 swallows SYNs, a local stand-in for a drop.
+func TestRecheckHonoursRecheckTimeout(t *testing.T) {
+	d := net.Dialer{Timeout: 300 * time.Millisecond}
+	if _, err := d.Dial("tcp", "127.0.0.2:9"); err == nil || errors.Is(err, syscall.ECONNREFUSED) || !portClosed(err) {
+		t.Skipf("127.0.0.2 does not drop SYNs here (%v)", err)
+	}
+	s := scanSpec{lo: 9, hi: 9, workers: 1, timeout: 100 * time.Millisecond, budget: 10 * time.Second,
+		recheck: []int{9}, recheckTimeout: time.Second, recheckTries: 1} // dial nil: the live dialer
+	start := time.Now()
+	if _, _, err := scanPorts(context.Background(), "127.0.0.2", s); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took < 900*time.Millisecond { // fast pass 100 ms + one 1 s recheck try
+		t.Errorf("scan with a 1 s recheck took %v: the recheck gave up at %v", took, s.timeout)
+	}
+}

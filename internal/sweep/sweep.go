@@ -452,10 +452,14 @@ func scanPorts(ctx context.Context, host string, s scanSpec) (open []int, debugC
 	if err != nil {
 		return nil, false, err
 	}
-	dial := s.dial
+	dial, redial := s.dial, s.dial
 	if dial == nil {
 		d := net.Dialer{Timeout: s.timeout}
 		dial = d.DialContext
+		// the recheck's own patience: a Dialer stops at the EARLIER of its
+		// Timeout and the ctx deadline, so the fast dialer would cap it at s.timeout
+		r := net.Dialer{Timeout: s.recheckTimeout}
+		redial = r.DialContext
 	}
 	var first []int // the debug ports in the range, scanned before the rest
 	for _, d := range debugPorts {
@@ -521,7 +525,7 @@ func scanPorts(ctx context.Context, host string, s scanSpec) (open []int, debugC
 	close(ports)
 	wg.Wait()
 	if fatal == nil && ctx.Err() == nil {
-		open = append(open, recheckPorts(ctx, ip, dial, s, open)...)
+		open = append(open, recheckPorts(ctx, ip, redial, s, open)...)
 	}
 	slices.Sort(open)
 	debugChecked = debugOK == len(first)
