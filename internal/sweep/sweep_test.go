@@ -1705,3 +1705,36 @@ func TestUPnPIgnoresTheEnvProxy(t *testing.T) {
 		}
 	}
 }
+
+// A CDN answer without a Content-Length leaves the bundle's size unknown: the
+// report says so, never "-1 bytes".
+func TestWriteBundleWithoutLength(t *testing.T) {
+	pr := Probes{Head: func(context.Context, string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", ContentLength: -1,
+			Header: http.Header{"Etag": {`"6abcc3dc-5561400"`}}, Body: http.NoBody}, nil
+	}}
+	r := fullReport(time.Now())
+	r.Bundle.URL = "https://cdn.example/lp10_AR241CP_8747_29_6701c857.swu"
+	headBundle(context.Background(), pr, r.Bundle.URL, &r.Bundle)
+	var out bytes.Buffer
+	Write(&out, r, nil, time.Now())
+	if strings.Contains(out.String(), "-1 bytes") || !strings.Contains(out.String(), "size unknown · — · etag 6abcc3dc-5561400\n") {
+		t.Errorf("a bundle without a length:\n%s", out.String())
+	}
+}
+
+// short cuts runes, not bytes: a vendor md5 with a multi-byte rune at the cut
+// stays valid UTF-8.
+func TestShortCutsRunes(t *testing.T) {
+	for in, want := range map[string]string{
+		"b1dadf706b06ee96":            "b1dadf706b06…",
+		"b1dadf706b0é6ee96":           "b1dadf706b0é…",
+		"b1dadf706b06":                "b1dadf706b06",
+		strings.Repeat("é", 12):       strings.Repeat("é", 12),
+		strings.Repeat("é", 13) + "x": strings.Repeat("é", 12) + "…",
+	} {
+		if got := short(in); got != want || !utf8.ValidString(got) {
+			t.Errorf("short(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

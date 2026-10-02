@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"os"
@@ -169,5 +170,25 @@ func TestSignalContextEndsDiscoveryWindow(t *testing.T) {
 	base := config.Config{Host: "lp10.local", Name: config.DefaultName, Discover: true}
 	if cfg := resolveDevice(cancelled, base, quiet, quiet); cfg.Host != "lp10.local" || calls != 1 {
 		t.Errorf("cancelled window: cfg %+v calls %d (the fallback must not get a window of its own)", cfg, calls)
+	}
+}
+
+// Ctrl-C during the sweep's discovery window ends the run there, with the
+// signal's code: a sweep on the cancelled context would print a report that
+// holds nothing but the cancellation.
+func TestRunSweepInterruptedDuringDiscovery(t *testing.T) {
+	t.Setenv(config.HostEnv, "")
+	t.Setenv("LP10_STATE_DIR", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interrupted := func(context.Context, string, time.Duration) (discovery.Device, bool) {
+		cancel() // the Ctrl-C lands mid-search
+		return discovery.Device{}, false
+	}
+	cfg := config.Config{Host: "192.0.2.13", Name: config.DefaultName, Discover: true}
+	var stdout, stderr bytes.Buffer
+	code := runSweep(ctx, func() int { return 130 }, cfg, interrupted, interrupted, nil, &stdout, &stderr)
+	if code != 130 || stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("exit %d, stdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 }

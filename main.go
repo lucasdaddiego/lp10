@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -151,6 +152,23 @@ func resolveDevice(ctx context.Context, cfg config.Config, find, fallback finder
 	return cfg
 }
 
+// runSweep is `lp10 sweep`: discovery, then the sweep, both under ctx (the
+// signal context finish closes). Its exit code is the sweep's, or the
+// signal's when one arrived. A signal during discovery ends the run there: a
+// sweep started on the cancelled context would print a report of nothing but
+// the cancellation.
+func runSweep(ctx context.Context, finish func() int, cfg config.Config, find, fallback finder, args []string, stdout, stderr io.Writer) int {
+	cfg = resolveDevice(ctx, cfg, find, fallback)
+	if ctx.Err() != nil {
+		return finish()
+	}
+	code := sweep.Main(ctx, cfg, args, stdout, stderr)
+	if c := finish(); c != 0 {
+		code = c
+	}
+	return code
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -163,12 +181,7 @@ func main() {
 			return
 		case "sweep":
 			ctx, finish := signalContext()
-			cfg := resolveDevice(ctx, config.Load(), discovery.FindLP10, discovery.FindLP10LSSDP)
-			code := sweep.Main(ctx, cfg, os.Args[2:], os.Stdout, os.Stderr)
-			if c := finish(); c != 0 {
-				code = c
-			}
-			os.Exit(code)
+			os.Exit(runSweep(ctx, finish, config.Load(), discovery.FindLP10, discovery.FindLP10LSSDP, os.Args[2:], os.Stdout, os.Stderr))
 		}
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)

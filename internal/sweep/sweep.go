@@ -1315,7 +1315,11 @@ func Write(w io.Writer, r Report, prev *Report, now time.Time) {
 		f("newest bundle", "none offered — the manifest names no package, even for an old build")
 	case r.Bundle.URL != "":
 		f("newest bundle", r.Bundle.Build+" · "+r.Bundle.URL)
-		f("", fmt.Sprintf("%d bytes · %s · etag %s", r.Bundle.Size, dash(r.Bundle.LastModified), dash(r.Bundle.ETag)))
+		size := "size unknown" // the CDN sent no Content-Length (Size -1)
+		if r.Bundle.Size >= 0 {
+			size = fmt.Sprintf("%d bytes", r.Bundle.Size)
+		}
+		f("", size+" · "+dash(r.Bundle.LastModified)+" · etag "+dash(r.Bundle.ETag))
 	}
 	switch {
 	case r.VendorApp.OK:
@@ -1427,9 +1431,10 @@ func joinSet(sep string, parts ...string) string {
 	return strings.Join(slices.DeleteFunc(parts, func(s string) bool { return s == "" }), sep)
 }
 
+// short cuts h to its first 12 runes, marking the cut.
 func short(h string) string {
-	if len(h) > 12 {
-		return h[:12] + "…"
+	if utf8.RuneCountInString(h) > 12 {
+		return string([]rune(h)[:12]) + "…"
 	}
 	return h
 }
