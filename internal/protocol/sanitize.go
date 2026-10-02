@@ -64,15 +64,17 @@ const zwj = '\u200d'
 //   - runs of combining marks are capped at maxMarkRun (zalgo flood);
 //   - a ZWJ is kept when (and only when) it sits between two kept runes, so
 //     emoji ZWJ sequences survive while the invisible-character class stays
-//     stripped everywhere else.
+//     stripped everywhere else. Neither of them is a space: beside a space
+//     a ZWJ joins nothing, and it would shield that space from a trim.
 func printable(s string) string {
 	s = norm.NFC.String(s)
 	var b strings.Builder
 	marks := 0         // consecutive combining marks kept
 	joinArmed := false // a ZWJ waiting for a kept rune on its right
+	var last rune      // the last kept rune
 	for _, c := range s {
 		if c == zwj {
-			joinArmed = b.Len() > 0
+			joinArmed = b.Len() > 0 && last != ' '
 			continue
 		}
 		if c != ' ' && unicode.In(c, unicode.C, unicode.Z) {
@@ -87,11 +89,12 @@ func printable(s string) string {
 		} else {
 			marks = 0
 		}
-		if joinArmed {
+		if joinArmed && c != ' ' {
 			b.WriteRune(zwj)
-			joinArmed = false
 		}
+		joinArmed = false
 		b.WriteRune(c)
+		last = c
 	}
 	return norm.NFC.String(b.String())
 }

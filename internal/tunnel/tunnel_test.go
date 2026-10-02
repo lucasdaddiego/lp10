@@ -518,3 +518,30 @@ func TestParsePresetsUseTheSharedStrip(t *testing.T) {
 		t.Errorf(`parsePresets("0@Fl@at") = %q, want [Flat]`, names)
 	}
 }
+
+// Every device text is trimmed (FuzzParseFrames' checkText). A ZWJ beside a
+// space shielded the space from the trim; the final strip then dropped the
+// edge ZWJ and exposed it: " ‍ Big Bang" became " Big Bang".
+func TestZWJBesideASpaceLeavesNoEdgeSpace(t *testing.T) {
+	for _, c := range []struct{ name, in string }{
+		{"TIT, leading", "TIT: ‍ Big Bang;"},
+		{"SRC, trailing at the 16-rune clip", "SRC:" + strings.Repeat("A", 14) + " ‍B;"},
+		{"TIT, trailing at the 200-rune clip", "TIT:" + strings.Repeat("x", maxText-2) + " ‍B;"},
+	} {
+		out, _ := ParseFrames(c.in)
+		if len(out) != 1 {
+			t.Fatalf("%s: updates = %+v", c.name, out)
+		}
+		if s := out[0].Text; s != strings.TrimSpace(s) {
+			t.Errorf("%s: text %q is not trimmed", c.name, s[max(0, len(s)-20):])
+		}
+	}
+	out, _ := ParseFrames("STA:" + strings.Repeat("A", 14) + " ‍B,0,30,0,0,0,0,1,1,0;")
+	if s := out[0].Status.Source; s != strings.TrimSpace(s) {
+		t.Errorf("STA source = %q: not trimmed", s)
+	}
+	out, _ = ParseFrames("PEQ:0@Flat,1@ ‍ Pop;")
+	if s := out[0].Names[1]; s != strings.TrimSpace(s) {
+		t.Errorf("preset name = %q: not trimmed", s)
+	}
+}
