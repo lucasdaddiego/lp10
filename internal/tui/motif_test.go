@@ -74,6 +74,17 @@ func TestFastSinAccuracy(t *testing.T) {
 	}
 }
 
+// A tiny negative argument wraps t to -1e-18+1, which rounds to exactly 1.0:
+// the table index lands on its last entry and the interpolation read one past
+// it, a panic in the middle of a paint.
+func TestFastSinTinyNegative(t *testing.T) {
+	for _, x := range []float64{-1e-17, -1e-300, -math.SmallestNonzeroFloat64, -2 * math.Pi * 1e-17} {
+		if d := math.Abs(fastSin(x) - math.Sin(x)); d > 5e-7 {
+			t.Errorf("fastSin(%g) off by %g", x, d)
+		}
+	}
+}
+
 func absInt(v int) int {
 	if v < 0 {
 		return -v

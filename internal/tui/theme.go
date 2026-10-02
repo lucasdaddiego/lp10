@@ -359,6 +359,9 @@ func (t *theme) motifBlock(w, h, frame int) []string {
 func fastSin(x float64) float64 {
 	t := x * (1 / (2 * math.Pi))
 	t -= math.Floor(t) // wrap into [0,1)
+	if t >= 1 {
+		t = 0 // a tiny negative x wraps to -1e-18+1, which rounds to 1.0
+	}
 	f := t * sinLUTSize
 	i := int(f)
 	return sinLUT[i] + (sinLUT[i+1]-sinLUT[i])*(f-float64(i))
