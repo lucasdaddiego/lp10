@@ -236,7 +236,9 @@ of wide rows — the **EQ** switch and the **Preset** it applies (Flat ·
 Classical · Pop · Jazz · Rock · Vocal, named by the device), the **Treble / Mid
 / Bass** tone, the deep-bass **Sub bass** switch and its **Sub level**,
 **Balance**, and **Max volume**, the output cap, kept last as it's rarely
-touched. `↑` / `↓` select a row; `←` / `→` adjust it; `enter` flips a switch or
+touched (never written below 30, the device's own floor — a cap set lower by
+another client still shows as it is). `↑` / `↓` select a row; `←` / `→` adjust
+it; `enter` flips a switch or
 steps to the next preset. Under the rows, a short note explains the selected
 control. On a short terminal the rows scroll, so the selected one is always on
 screen.

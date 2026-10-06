@@ -103,17 +103,37 @@ func TestTabSwitchesView(t *testing.T) {
 	}
 }
 
-func TestEQClampsAtMin(t *testing.T) {
+// Max volume is written no lower than 30, the device's documented floor:
+// holding ← used to send MXV:25 … MXV:0, and a cap the MCU took that low
+// would leave the room silent with no phone or remote able to raise it. A
+// cap the device holds below the floor still shows as it is: ← on it sends
+// nothing, → lifts it to the floor, and at the floor ← sends nothing.
+func TestEQMaxVolumeFloor(t *testing.T) {
 	m, st, collect := eqModel(t)
 	st.ApplyTunnel("MXV", 0)
 	m.key(kr('e'))
 	m.eqFocus = len(eqOrder) - 1 // Max volume is the last display slot
-	m.key(ke(kLeft))             // already 0 -> clamps
+	m.key(ke(kLeft))
 	if v, _ := st.EQValue("MXV"); v != 0 {
-		t.Errorf("MXV=%d want 0 (clamped)", v)
+		t.Errorf("MXV=%d after ← on 0, want 0 (shown as the device holds it)", v)
 	}
-	if got := wire(collect()); !slices.Equal(got, []string{"MXV:0"}) {
-		t.Errorf("queued %v, want [MXV:0]", got)
+	if got := wire(collect()); len(got) != 0 {
+		t.Errorf("← on a cap of 0 queued %v, want nothing", got)
+	}
+	m.key(ke(kRight))
+	if got := wire(collect()); !slices.Equal(got, []string{"MXV:30"}) {
+		t.Errorf("→ on a cap of 0 queued %v, want [MXV:30]", got)
+	}
+	if v, _ := st.EQValue("MXV"); v != 30 {
+		t.Errorf("MXV=%d after →, want 30 (the value sent)", v)
+	}
+	m.key(ke(kLeft))
+	if got := wire(collect()); len(got) != 0 {
+		t.Errorf("← at the floor queued %v, want nothing", got)
+	}
+	m.key(ke(kRight))
+	if got := wire(collect()); !slices.Equal(got, []string{"MXV:35"}) {
+		t.Errorf("→ at the floor queued %v, want [MXV:35]", got)
 	}
 }
 

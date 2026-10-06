@@ -96,7 +96,15 @@ func (m *model) eqAdjust(dir int) {
 	case step < 0 && target > cur:
 		target = sp.Min
 	}
-	target = tunnel.Clamp(sp.Code, target)
+	// The write range, so the value painted is the value sent: MXV has a
+	// floor of 30 on the wire. A ← the floor would turn into a raise — the
+	// cap at the floor, or held below it by another client — sends nothing;
+	// → lifts such a cap to the floor.
+	write := tunnel.ClampWrite(sp.Code, target)
+	if step < 0 && write > tunnel.Clamp(sp.Code, target) {
+		return
+	}
+	target = write
 	if sp.Kind == tunnel.Choice {
 		// The preset index stops at the last NAMED preset once the device has
 		// listed them (PEQ); before that the spec bound applies.

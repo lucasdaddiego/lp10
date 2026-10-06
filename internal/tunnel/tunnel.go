@@ -55,7 +55,22 @@ type Spec struct {
 	Code     string
 	Kind     Kind
 	Min, Max int
-	Step     int
+	// Floor, when set (non-zero) and above Min, is the least value lp10
+	// writes for the code: the display keeps Min, so a value another client
+	// set below it still shows, while an outbound set stops at Floor. MXV's
+	// documented range starts at 30; a cap written below it, if the MCU took
+	// it, would leave the room silent with no phone or remote able to raise
+	// it.
+	Floor int
+	Step  int
+}
+
+// writeMin is the least value an outbound set carries for sp.
+func (sp Spec) writeMin() int {
+	if sp.Floor != 0 && sp.Floor > sp.Min {
+		return sp.Floor
+	}
+	return sp.Min
 }
 
 // Specs is the control set. Codes verified live on FW AR241CE_9243 / MCU 16
@@ -63,8 +78,8 @@ type Spec struct {
 // AR241CE_8530 / MCU 23 (2026-09-02): the MCU's command table and the PEQ
 // preset list are byte-identical across the two mcu.bin images, and every
 // getter below answered with the same shape on the live box.
-//   - MXV  max-volume cap (30..100 per the doc; the slider keeps 0 so a
-//     device-set low cap still displays).
+//   - MXV  max-volume cap (30..100 per the doc: Floor 30 on the wire; the
+//     slider keeps 0 so a device-set low cap still displays).
 //   - EQE  the EQ enable — whether the selected preset is applied at all.
 //   - EQS  the EQ preset INDEX into the device's PEQ list (0@Flat,1@Classical,
 //     2@Pop,3@Jazz,4@Rock,5@Vocal on this box). NOT an on/off switch: earlier
@@ -75,7 +90,7 @@ type Spec struct {
 //
 // Tone bounds are conservative (device clamps).
 var Specs = []Spec{
-	{Code: "MXV", Kind: Ranged, Min: 0, Max: 100, Step: 5},
+	{Code: "MXV", Kind: Ranged, Min: 0, Max: 100, Floor: 30, Step: 5},
 	{Code: "EQE", Kind: Toggle, Min: 0, Max: 1, Step: 1},
 	{Code: "EQS", Kind: Choice, Min: 0, Max: MaxPresets - 1, Step: 1},
 	{Code: "BAS", Kind: Ranged, Min: -10, Max: 10, Step: 1},
@@ -110,23 +125,39 @@ func Lookup(code string) (Spec, bool) {
 	return s, ok
 }
 
-// Clamp constrains v to a known code's [Min,Max] — a control's or a player
-// setting's (VOL, MUT); an unknown code passes through.
+// Clamp constrains v to a known code's display range [Min,Max] — a control's
+// or a player setting's (VOL, MUT); an unknown code passes through.
 func Clamp(code string, v int) int {
-	s, ok := specByCode[code]
-	if !ok {
-		s, ok = playerSpecs[code]
-	}
+	s, ok := anySpec(code)
 	if !ok {
 		return v
 	}
 	return max(s.Min, min(s.Max, v))
 }
 
+// ClampWrite constrains v to the range lp10 writes for a known code: Clamp's,
+// raised to the code's Floor (MXV: 30). An unknown code passes through.
+func ClampWrite(code string, v int) int {
+	s, ok := anySpec(code)
+	if !ok {
+		return v
+	}
+	return max(s.writeMin(), min(s.Max, v))
+}
+
+// anySpec is the Spec for a control or a player setting.
+func anySpec(code string) (Spec, bool) {
+	s, ok := specByCode[code]
+	if !ok {
+		s, ok = playerSpecs[code]
+	}
+	return s, ok
+}
+
 // Set is the wire string that assigns a value, e.g. Set("MXV", 100) == "MXV:100;".
-// The value is clamped to the code's range first.
+// The value is clamped to the code's write range first (ClampWrite).
 func Set(code string, v int) string {
-	return code + ":" + strconv.Itoa(Clamp(code, v)) + ";"
+	return code + ":" + strconv.Itoa(ClampWrite(code, v)) + ";"
 }
 
 // Query is the wire string that reads a value, e.g. Query("MXV") == "MXV;".
@@ -194,17 +225,14 @@ func Wire(code string, val int, query bool) (string, bool) {
 		}
 		return Query(code), true
 	}
-	sp, ok := specByCode[code]
-	if !ok {
-		sp, ok = playerSpecs[code]
-	}
+	sp, ok := anySpec(code)
 	if !ok {
 		return "", false
 	}
 	if query {
 		return Query(code), true
 	}
-	return code + ":" + strconv.Itoa(max(sp.Min, min(sp.Max, val))) + ";", true
+	return code + ":" + strconv.Itoa(max(sp.writeMin(), min(sp.Max, val))) + ";", true
 }
 
 // IsAction reports whether code is one of the bare actions (POP, NXT, PRE).

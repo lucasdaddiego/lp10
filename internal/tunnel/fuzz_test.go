@@ -196,8 +196,8 @@ func FuzzWire(f *testing.F) {
 			if len(out) != 1 || rest != "" || out[0].Code != code {
 				t.Fatalf("set %q does not read back: %+v rest %q", frame, out, rest)
 			}
-			if v := out[0].Val; v < spec.Min || v > spec.Max || v != max(spec.Min, min(spec.Max, val)) {
-				t.Fatalf("set of %q to %d sent %d, bounds %d..%d", code, val, v, spec.Min, spec.Max)
+			if v := out[0].Val; v < spec.Min || v > spec.Max || v != ClampWrite(code, val) {
+				t.Fatalf("set of %q to %d sent %d, bounds %d..%d (write floor %d)", code, val, v, spec.Min, spec.Max, spec.writeMin())
 			}
 		default:
 			t.Fatalf("Wire allowed the code %q", code)

@@ -12,7 +12,7 @@ func TestCov_LookupKnown(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lookup(%q) ok=false, want true", "MXV")
 	}
-	want := Spec{Code: "MXV", Kind: Ranged, Min: 0, Max: 100, Step: 5}
+	want := Spec{Code: "MXV", Kind: Ranged, Min: 0, Max: 100, Floor: 30, Step: 5}
 	if got != want {
 		t.Errorf("Lookup(%q)=%+v want %+v", "MXV", got, want)
 	}

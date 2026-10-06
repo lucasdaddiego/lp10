@@ -100,7 +100,7 @@ func TestWire(t *testing.T) {
 		{"MXV", 0, true, "MXV;"},
 		{"MXV", 50, false, "MXV:50;"},
 		{"MXV", 250, false, "MXV:100;"},
-		{"MXV", -1, false, "MXV:0;"},
+		{"MXV", -1, false, "MXV:30;"}, // the write floor, not the display's 0
 		{"EQE", 7, false, "EQE:1;"},
 		{"EQS", 2, false, "EQS:2;"},
 		{"EQS", 99, false, "EQS:15;"},
@@ -552,5 +552,32 @@ func TestZWJBesideASpaceLeavesNoEdgeSpace(t *testing.T) {
 	out, _ = ParseFrames("PEQ:0@Flat,1@ \u200d Pop;")
 	if s := out[0].Names[1]; s != strings.TrimSpace(s) {
 		t.Errorf("preset name = %q: not trimmed", s)
+	}
+}
+
+// MXV's documented range starts at 30: a set below it stops at the floor on
+// the wire (Set, Wire, ClampWrite), while the display range (Clamp) keeps 0
+// so a cap another client set below it still shows. No other code has a
+// floor: its write range is its display range.
+func TestMXVWriteFloor(t *testing.T) {
+	if got := Set("MXV", 10); got != "MXV:30;" {
+		t.Errorf("Set MXV 10 = %q, want MXV:30;", got)
+	}
+	if got, ok := Wire("MXV", 0, false); !ok || got != "MXV:30;" {
+		t.Errorf("Wire MXV 0 = (%q, %v), want (MXV:30;, true)", got, ok)
+	}
+	for _, c := range []struct {
+		code             string
+		in, write, shown int
+	}{
+		{"MXV", 25, 30, 25}, {"MXV", -5, 30, 0}, {"MXV", 30, 30, 30}, {"MXV", 250, 100, 100},
+		{"BAS", -99, -10, -10}, {"VOL", -5, 0, 0}, {"ZZZ", 7, 7, 7},
+	} {
+		if got := ClampWrite(c.code, c.in); got != c.write {
+			t.Errorf("ClampWrite(%q, %d) = %d, want %d", c.code, c.in, got, c.write)
+		}
+		if got := Clamp(c.code, c.in); got != c.shown {
+			t.Errorf("Clamp(%q, %d) = %d, want %d", c.code, c.in, got, c.shown)
+		}
 	}
 }
