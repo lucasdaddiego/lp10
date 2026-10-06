@@ -113,22 +113,37 @@ func (m *model) volumeNotice(value int) {
 	m.notify(fmt.Sprintf("volume %d%%", value), noticeFor)
 }
 
-// volumeLive reports whether the volume in State is the device's own, read
-// this run. Until then it is the snapshot cached by the last run, and a step
-// computed from it lands on the device as an absolute level: cached 40, the
-// phone set 70 meanwhile, ↑ during "connecting…" sends VOL:42 and the room
-// drops to 42 on connect. A later outage keeps the keys: the level in hand is
-// this run's own, and a key pressed during a blip is delivered when it ends.
-// The first status read also brings the mute, so the mute key waits on it too.
-func (m *model) volumeLive() bool {
-	return m.st.Snap().VolLive
+// volumeWritable reports whether a volume or mute key may act now, and says
+// why not on the notice line otherwise.
+//
+// The level in hand must be the device's own, read this run (VolLive). Until
+// then it is the snapshot cached by the last run, and a step computed from it
+// lands on the device as an absolute level: cached 40, the phone set 70
+// meanwhile, ↑ during "connecting…" sends VOL:42 and the room drops to 42 on
+// connect. The first status read also brings the mute, so the mute key waits
+// on it too.
+//
+// And the tunnel must be up. While it is down the keys are refused like the
+// equalizer's: the write would wait in the queue until the worker dropped it
+// (CommandDeadline), two ↑ would show "volume 44%" and move the rail, and
+// the rail would snap back on reconnect.
+func (m *model) volumeWritable() bool {
+	s := m.st.Snap()
+	switch {
+	case !s.VolLive:
+		m.notify("volume not read yet · waiting for the device", noticeFor)
+	case !s.Connected:
+		m.notifyWarn("volume read-only · the :2018 tunnel is down", noticeFor)
+	default:
+		return true
+	}
+	return false
 }
 
 func (m *model) do(action string) {
 	switch action {
 	case "volup", "voldn", "mute":
-		if !m.volumeLive() {
-			m.notify("volume not read yet · waiting for the device", noticeFor)
+		if !m.volumeWritable() {
 			return
 		}
 	}

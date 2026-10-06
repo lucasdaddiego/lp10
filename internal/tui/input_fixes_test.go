@@ -367,17 +367,33 @@ func TestVolumeKeysWaitForTheLiveVolume(t *testing.T) {
 	if got := wire(collect()); !slices.Equal(got, []string{"MUT:1"}) {
 		t.Errorf("m after the live read sent %v, want [MUT:1]", got)
 	}
-	// a later outage keeps the keys: the volume in hand is this run's own
+	// a later outage refuses the keys, like the equalizer: the write would
+	// wait in the queue until the worker dropped it, with the rail moved
 	m.dispatch(logicMsg{})
 	st.Disconnect()
+	for _, ev := range []keyEvent{kr('-'), ke(kUp), kr('m')} {
+		m.key(ev)
+	}
+	if got := collect(); len(got) != 0 {
+		t.Errorf("keys during an outage sent %v, want nothing", wire(got))
+	}
+	if s := st.Snap(); s.Vol != 72 || !s.Muted {
+		t.Errorf("the rail moved during an outage: %d (muted %v), want 72 (muted true) as before", s.Vol, s.Muted)
+	}
+	if !strings.Contains(m.notice, "volume read-only") || !m.noticeWarn {
+		t.Errorf("notice = %q (warn=%v), want the read-only warning", m.notice, m.noticeWarn)
+	}
+	// the tunnel back, the same key goes through
+	connect(st)
 	m.key(kr('-'))
 	if got := wire(collect()); !slices.Equal(got, []string{"VOL:70"}) {
-		t.Errorf("- during a later outage sent %v, want [VOL:70]", got)
+		t.Errorf("- with the tunnel back sent %v, want [VOL:70]", got)
 	}
 	// a VOL push alone (no status) makes the level live too
 	st2 := protocol.NewState()
 	st2.Preload(40)
 	m2, _, collect2 := modelWith(st2)
+	connect(st2)
 	st2.ApplyVolume(55)
 	m2.key(kr('+'))
 	if got := wire(collect2()); !slices.Equal(got, []string{"VOL:57"}) {
