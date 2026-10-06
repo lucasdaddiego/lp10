@@ -371,7 +371,8 @@ framing and no auth (TEARDOWN §6.3):
   protocol state holds only the lock-protected player, EQ and liveness model
   the UI reads.
 - **Firmware now** — `AR241CP_8747.29.2` / MCU v29 (the vendor's OTA of
-  2026-09-30, a production build; TEARDOWN §14.5), re-swept 2026-10-01. It
+  2026-09-30, a production build; TEARDOWN §14.5), last re-swept 2026-10-06
+  (unchanged, §14.7). It
   deleted ssh, telnet and adb, so lp10 became tunnel-only. The MCU's command
   table and preset list are unchanged from v23; the tunnel pushes the track,
   the play state and the Spotify app's volume; the Spotify app's own volume no

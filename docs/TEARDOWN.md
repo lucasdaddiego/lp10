@@ -6,11 +6,11 @@
 > line-out + optical (TOSLINK) out**, plus a **3.5 mm line-in**. **No power amp** (no speaker
 > terminals) and **no phono stage** (line-level aux input, not RIAA).
 >
-> **This unit, as of 2026-10-01:** SoC Amlogic **A113L "A1"** (`a1-a113l-ad403-spk`) · platform **LibreWireless LS8** ·
+> **This unit, as of 2026-10-06:** SoC Amlogic **A113L "A1"** (`a1-a113l-ad403-spk`) · platform **LibreWireless LS8** ·
 > serial `RKARYLLP10<redacted>` · firmware **`AR241CP_8747.29.2`** / MCU **v29** — a **production** build
 > (`libre_ls8_24G_v1_c4a_production_release_defconfig`; 8530 was the `…_debug_release` one), taken by the box's own OTA
 > check on 2026-09-30 (§14.5) · **no ssh, telnet or adb** (the build deleted `dropbear`, `telnetd` and `adbd`, §9) ·
-> vendor app `rakoit_app` **v42** (installed 2026-09-17; the vendor's CDN index still names v42 on 2026-10-01) · Spotify
+> vendor app `rakoit_app` **v42** (installed 2026-09-17; the vendor's CDN index still names v42 on 2026-10-06) · Spotify
 > on the **Pro engine** (eSDK **3.216.31**, ZeroConf `:9095`) · wired `eth0` at **`<device-ip>`** / `<device>.local`
 > (over a TL-WPA4220 powerline link).
 >
@@ -32,12 +32,15 @@
 > 06-30 control-plane writes (OLED via `-remote 42`) · 07-01 OTA endpoint probed, `mcu.bin` pulled and reversed, MsgBox
 > table reversed · 08-22 `:2018` identified as the Arylic UART API (`EQS`/`EQE` corrected) · 09-02 the 8530 OTA
 > re-analysed (bundle diff, MCU v23, `rakoit_app` v32) · 09-12 re-sweep: no newer OTA; env store decoded; Pro engine
-> since 09-04 · 09-23 re-sweep: `rakoit_app` v42; the manifest offers 8530 to no older build; the syslog's rotated
+> since 09-04 · 09-23 re-sweep: `rakoit_app` v42; the manifest offers 8530 to no older build (likely the per-`deviceId`
+> quota found on 10-03, §14.6); the syslog's rotated
 > history on flash; eSDK reconnects on both engines · **10-01 re-sweep without ssh (`AR241CP_8747.29.2` / MCU 29): the
 > production build drops dropbear, telnet and adb; the `:2018` tunnel pushes the track, play state and volume; the
 > Spotify app's volume no longer reaches the softvol; the web UI's log download read in place of ssh (§14.5).** · 10-01
 > later: the web UI's Spotify switch decoded (the HiFi flag only, §8.1); §0–§2 corrected to the August finding that the
-> WM8904 is absent and the BP10xx MCU is the DAC (§2).
+> WM8904 is absent and the BP10xx MCU is the DAC (§2). · 10-03 re-sweep: the box and the vendor unchanged; the manifest
+> counts its offers per `deviceId` — five, then "no update" (§10.1, §14.6); two counts from the log download corrected.
+> · 10-06 re-sweep: nothing changed; §15's manifest recipe sends a fresh `deviceId` (§14.7).
 
 ---
 
@@ -903,7 +906,8 @@ own factory pair is also `0/1`. The phone is only a remote — the **speaker** a
   using amixer command: amixer -D softvoldefault sset 'Master' 46%` → luci writes MID 64 = 46 and sends `[LS->MCU] MB#
   64 RESPONSE 46` (so `STA` / `VOL` then report 46) → **no `processVolumeChange()`**. The register, the MCU and the
   Spotify slider all say 46; the softvol — the audible stage — stays where it was. Counts over the log: on 8530
-  (09-13 → 09-30) 340 of 445 Spotify volume events were followed by `processVolumeChange() Applied volume: <same>`, and
+  (09-13 → 09-30) 384 of 445 Spotify volume events were followed by `processVolumeChange() Applied volume: <same>`
+  (recounted 2026-10-03 by event order; the first count, 340, looked only 30–40 lines ahead), and
   `UpdateAppVolume` ran 58 times with **0** amixer failures; on 8747 every app-originated change fails (13
   `UpdateAppVolume`, 16 amixer failures including `lp10`'s test sets) and none is applied — the only applied ones were
   `lp10`'s tunnel `VOL:` sets. The knob, the remote and a tunnel `VOL:` take the MCU path (§6.3) and still work. The
@@ -1034,7 +1038,9 @@ rootfs: `usr/sbin/dropbear`, `etc/init.d/S50dropbear`, `etc/dropbear`, `usr/bin/
 `S89usbgadget` comments out `usb_net_ipconfig`. tcp 22, 23, 5037 and 5555 are closed. The root hash in `/etc/shadow`
 changed (whether the password changed: not established). There is no ssh server binary in the image, so no env flag or
 web setting can bring ssh back on this build. **What remains:**
-- the **serial console** — `ttyS0::respawn:-/bin/sh` (`inittab` unchanged), a root shell on the serial port;
+- the **serial console** — `ttyS0::respawn:-/bin/sh` (`inittab` unchanged), a root shell on the serial port with no
+  login. Not used for this document: it needs the case opened, and the debug pads are not located. The console's baud
+  rate was never read (115200 is the Amlogic default; not verified here);
 - **`bluetoothd -n -d`** — still in debug mode: `S44bluetooth` drops `-d` only on a defconfig tagged `nodi`, and the
   production defconfig is not;
 - the **`:2018` tunnel** — player, volume, mute and EQ for anyone on the LAN, no auth (§6.3);
@@ -1084,8 +1090,16 @@ device auth**; the client's mTLS is not required). Up to date → `{"errorCode":
 an **older `fwVersion`** → `{"errorCode":1000,"errorString":"SUCCESS","url":"…","version":"AR241CE_8530","otapackage":"…",
 "castVersion":"0.0.0","mcuOnlyUpdate":false}`. **As of 2026-10-01 the newest build is `AR241CP_8747`:** an older
 `fwVersion` (a synthetic `AR241CP_1` or `AR241CE_0001`) is offered `lp10_AR241CP_8747_29_6701c857.swu`, and
-`AR241CP_8747` gets `1001`. (On 09-23 the manifest offered 8530 to no build at all — §14.4.) All three bundles are
-still on the CDN.
+`AR241CP_8747` gets `1001`. All three bundles are still on the CDN.
+
+**The offers are counted per `deviceId` (measured 2026-10-03, §14.6).** One id is offered the bundle five times; from
+its sixth old-build request on it gets `1001`, for every build it names (requests about the current build, which get
+`1001` anyway, do not count). A fresh id sent in the same minute still gets
+the offer, so the count is per id, not per address; both manifest hosts share it. Whether it resets (with time, or with
+a new release) is not established. `lp10` sent the fixed id `lp10` until that day, so `lp10 sweep` read "none offered"
+once the id was used up, and `u` would have called an outdated box current; it now sends a fresh id with every request
+(Appendix B). The 09-23 reading that the manifest offered 8530 to no build at all (§14.4) is likely this quota — likely,
+not verified.
 
 **The bundle is public and unauthenticated** — `https://cdn.rakoit-ota.com/lp10/` (Cloudflare CDN, `accept-ranges: bytes`):
 
@@ -1270,9 +1284,10 @@ library or script in the rootfs reads the key (what does, if anything: not estab
 
 **The web UI's log download writes your secrets into the log it serves (seen 2026-10-01).** A download from the web
 page makes the box append `ps`, `ifconfig`, `date`, `logctrl --list` and a **full env dump, secrets included** (Wi-Fi
-PSK, Spotify blob, web password …) to its own syslog, then serve the bundle — 1,750 such lines in the 2026-10-01
-download. Anyone who holds a downloaded log holds those secrets. On the web server `/logs` is a symlink to `/tmp/libre/logdump/`; `/logs/` itself
-redirects to `index.asp`; whether a dump file is served without login is not established.
+PSK, Spotify blob, web password …) to its own syslog, then serve the bundle — 472 such lines in the 2026-10-01
+download (274 env, 119 `ps`, 54 `logctrl --list`, 24 `ifconfig`, 1 `date`). Anyone who holds a downloaded log holds
+those secrets. On the web server `/logs` is a symlink to `/tmp/libre/logdump/`; `/logs/` itself redirects to
+`index.asp`; whether a dump file is served without login is not established.
 
 **The 8747 metrics uploader — dormant.** `system_monitor` grew a metrics server: it listens on the Unix socket
 `/tmp/libre/metrics.sock` (fed by `metrics_client_test network_up` from `S98system_monitor` on each network event),
@@ -1405,10 +1420,12 @@ build date 2026-09-29. Spotify eSDK `v3.203.239` (HiFi) / `v3.216.31` (Pro, 8747
 | 2026-09-12 | re-sweep — **no newer OTA**; manifest, CDN and loader unchanged | — | §14.3 |
 | 2026-09-17 02:57 | `rakoit_app` **v42** installed by its loader (no reboot) | — | §10.2 |
 | 2026-09-19 ≈03:07 | a network event restarts `rakoit_app` and the Pro engine (init, not ssh) | — | §14.4 |
-| 2026-09-23 | re-sweep — no newer OTA; the manifest now offers 8530 to **no** older build | — | §14.4 |
+| 2026-09-23 | re-sweep — no newer OTA; the manifest now offers 8530 to **no** older build (likely the `deviceId` quota, §14.6) | — | §14.4 |
 | 2026-09-25 15:45 → 09-28 ≈23:57 | **power loss**, somewhere in that gap (when: not established); 8530 cold boot, first NTP sync 09-28 23:59 | — | §14.5 |
 | 2026-09-30 07:52 → 07:57 | the vendor OTA, found by the box's own 4-hourly check (07:52:43, bundle on the CDN 05:10 local), downloaded in 36 s, installed 07:53:21, reboot after 07:55:18; 8747 up, NTP 07:57:14 | **`AR241CP_8747.29.2` / 29** (`2026-09-29`, svn 366, production) | §14.5 |
 | 2026-10-01 | re-sweep without ssh — no ssh, telnet or adb on 8747; the tunnel becomes `lp10`'s only channel | — | §14.5 |
+| 2026-10-03 | re-sweep — the box and the vendor unchanged; the manifest counts its offers per `deviceId` | — | §14.6 |
+| 2026-10-06 | re-sweep — the box and the vendor unchanged; no restart seen since 10-01 | — | §14.7 |
 
 ### 14.1 AR241CE_9243.16.2 — the June 2026 baseline
 
@@ -1575,8 +1592,9 @@ Nothing was written to the device.
 - **Listeners** — tcp 22 23 80 2018 2345 5037 5555 7000 7777 9095 **46835** 49494; udp 68 123 1800 1900 3721 5353 + three
   dynamic. Off the LAN while playing: only the Spotify access point (104.154.127.247, **tcp 80** this session) and the
   audio CDN (Akamai `:443`).
-- **The vendor** — 8530 is still current, but the manifest now offers it to no older build (§10.1); the bundles on the
-  CDN are unchanged. The box's own 4-hourly check keeps answering `NO_UPDATE` (MsgBox 223, 167 reports since 08-25).
+- **The vendor** — 8530 is still current, but the manifest now offers it to no older build (§10.1; *2026-10-03: likely
+  the per-`deviceId` offer quota, not a vendor change — §14.6*); the bundles on the CDN are unchanged. The box's own
+  4-hourly check keeps answering `NO_UPDATE` (MsgBox 223, 167 reports since 08-25).
 - **The 09-19 restart, explained** (study, same day): two eth0 carrier drops at 03:03 and 03:07, and in between a
   180 s lease of 192.168.0.100 from a second DHCP server — a TP-Link unit at 192.168.0.41, probably the powerline
   extender (§7).
@@ -1617,7 +1635,9 @@ bridge re-sending the Spotify app's levels.
   `CurrentPlayBackState: 'Stopped'` — the OTA installs only when playback is stopped — then `UpdateAvailable` → Download
   (`swupdate --recovery -b "0 1 2 3 4 5 " -k /etc/swupdate-public.pem -d '-u https://cdn.rakoit-ota…'`, 89.5 MB in
   36 s) → 07:53:21 Install (`swupdate -k /etc/swupdate-public.pem -i /data/software.swu -l 6 -L`) → 07:55:18
-  WaitForReboot → reboot → 8747 up, NTP 07:57:14, first check 07:57:18 `Idle`; every 4-hourly check since: `Idle`. The
+  WaitForReboot → reboot → 8747 up, NTP 07:57:14, first check 07:57:18 `Idle`; every 4-hourly check since: `Idle` (and
+  one more at 10-01 21:10:39, outside the cadence, 8 s after the log download's web session opened — also `Idle`; what
+  triggers it is not established). The
   bundle's CDN Last-Modified is 08:10 GMT = 05:10 -03, so the 03:52 check found nothing and the 07:52 one did. The Pro
   engine's session had gone silent after a lost connection at 07:28; the OTA reboot ended it.
 - **`cold_boot` after an OTA.** The OTA's reboot logs `reboot_mode=cold_boot` — the flag a power-on sets — so
@@ -1689,7 +1709,7 @@ bridge re-sending the Spotify app's levels.
   1.68.cast_20240119_0202_RC07.599752810`.
 - **`io_handler`** — `Feature IO_handler is not Supported!!!` (env `iohandler` 0): inert.
 - **The download itself** appends `ps`, `ifconfig`, `date`, `logctrl --list` and a full env dump, **secrets
-  included**, to the syslog it serves (1,750 such lines in this one) — §10.4.
+  included**, to the syslog it serves (472 such lines in this one) — §10.4.
 
 #### Spotify on 8747
 
@@ -1726,6 +1746,55 @@ the tunnel getters, the CDN app index and the UPnP description beside LSSDP, Zer
 bundle; the syslog reconnect history and the box's own OTA verdict left with ssh — the log download is the manual
 substitute.
 
+### 14.6 Re-sweep 2026-10-03 — nothing changed; the manifest counts its offers per `deviceId`
+
+Routine re-scan two days after §14.5: `lp10 sweep` twice (01:12 and 01:24 -03), 32 manifest requests by hand with
+synthetic ids, CDN `HEAD`s, and a second read of the 10-01 log download (the same file; no new download). Nothing was
+written to the device.
+
+- **The box — unchanged.** `AR241CP_8747.29.2` / MCU `29-1d316f0c-10`; TCP 80 2018 2345 7000 7777 9095 49494 and the
+  same dynamic 44317 as on 10-01; 22 / 23 / 5037 / 5555 closed; eSDK 3.216.31, ZeroConf 2.10.0; LSSDP `State:S · ETH0`.
+- **The vendor — unchanged.** `AR241CP_8747` → `1001`; the 8747, 8530 and 9243 bundles on the CDN with the same size,
+  date and etag; the app index still names `rakoit_app` v42 (same md5).
+- **The manifest counts its offers per `deviceId`.** The first sweep printed `newest bundle: AR241CP_8747 → none
+  offered` — yet a request by hand, with another id, got the offer. Measured: a fresh id asking about `AR241CP_1` got
+  `1000` five times in 8 s, then `1001` from the sixth request on — and `1001` for `AR241CE_8530` too; a second fresh
+  id, asked seconds later, still got the offer for both builds; a third asked about `AR241CP_8747` five times (`1001`
+  each) and then still got the offer for `AR241CP_1`. So the count is of offers, per id: not per address, not per build.
+  The id `lp10` sent (`lp10`) and the one in this document's recipes (`000000000000`) are both used up. Whether the
+  count resets is not established — §10.1.
+- **What it retracts.** §14.4's "the manifest now offers 8530 to no older build" was likely this quota — likely, not
+  verified.
+- **The log download, re-read.** What §14.5, §7 and §8.1 quote from it reproduces — the OTA timeline, both boots, the
+  DHCP sequence, the engine sessions by PID, the reconnects per day, the now-playing records, the 8747 volume
+  failures, the `ps` list, the non-secret env keys — except two counts. The 8530 volume events followed by an applied
+  volume are **384** of 445 by event order (383 within 1 s; the first count, 340, looked only 30–40 lines ahead). The
+  download's own dump is **472** lines, not 1,750 (that is every line from the web session's start at 21:10:31). One
+  line not noted before: an OTA check at 21:10:39, outside the 4-hourly cadence (§14.5).
+
+**Net effect on `lp10`:** every manifest request — `u`, and the sweep's two questions — now carries a fresh `deviceId`
+(`lp10-<8 hex>`); the second sweep read the 8747 bundle again.
+
+### 14.7 Re-sweep 2026-10-06 — nothing changed
+
+Routine re-scan three days after §14.6: one `lp10 sweep` (11:45 -03, a fresh `deviceId` per manifest request since
+§14.6) and four manifest requests by hand, each with a fresh id. Nothing was written to the device.
+
+- **The box — unchanged.** `AR241CP_8747.29.2` / MCU `29-1d316f0c-10`, `STA` upgrading flag `0`; TCP 80 2018 2345 7000
+  7777 9095 49494; 22 / 23 / 5037 / 5555 closed; eSDK 3.216.31, ZeroConf 2.10.0; LSSDP `State:S · ETH0`; the UPnP
+  description, presets, sources and EQ settings as on 10-03.
+- **No restart seen.** The dynamic `rakoit_app` listener is still on 44317, as on 10-01 and 10-03. That port moves when
+  the app restarts, so the app has likely run since before 10-01 and the box has likely not rebooted — likely, not
+  verified (a log download would settle it).
+- **The vendor — unchanged.** Both manifest hosts (`lp10.arylic.rakoit-ota.com`, `lp10-ota.rakoit.com`) offer
+  `AR241CP_8747` to an old build (`AR241CE_0001`) and answer `1001` for `AR241CP_8747`; the 8747 bundle on the CDN has
+  the same size, date and etag; the app index still names `rakoit_app` v42 (same md5).
+- **A recipe fixed.** §15's manifest request used the fixed id `000000000000`, which is past the offer quota (§14.6).
+  Asked about 8747 it still reads `1001` correctly today, but once a newer build is out it would have read `1001` too
+  and called 8747 current. It now sends a fresh id.
+
+**Net effect on `lp10`:** none.
+
 ---
 
 ## 15. Verify it yourself (read-only)
@@ -1753,9 +1822,10 @@ dns-sd -L <device-name> _airplay._tcp local.
 dns-sd -L <device-name> _spotify-connect._tcp local.          # then: curl "http://<device-ip>:<port>/zc?action=getInfo"
 # the DLNA renderer's description (§8.7)
 curl -s http://<device-ip>:49494/description.xml
-# the vendor: the manifest verdict for the running build (§10.1), the app index the loader fetches (§10.2), the bundle
+# the vendor: the manifest verdict for the running build (§10.1), the app index the loader fetches (§10.2), the bundle;
+# a fresh deviceId each time — the vendor offers a bundle to one id five times only (§10.1)
 curl -s -X POST -H 'Content-Type: application/json' \
-  -d '{"device":{"brand":"Arylic","deviceId":"000000000000","fwVersion":"AR241CP_8747","model":"LP10"}}' \
+  -d '{"device":{"brand":"Arylic","deviceId":"probe'"$(date +%s)"'","fwVersion":"AR241CP_8747","model":"LP10"}}' \
   https://lp10.arylic.rakoit-ota.com/v1
 curl -s https://cdn.rakoit-ota.com/download/LP10/app-0.json
 curl -sI https://cdn.rakoit-ota.com/lp10/lp10_AR241CP_8747_29_6701c857.swu
@@ -1889,7 +1959,8 @@ It writes the box only an allowlist of tunnel commands and reads everything else
    after that, while connected, they run only while the diagnostics show their answers (every 30 s), and while
    disconnected every 5 s (LSSDP) and 10 s (ZeroConf), so the connecting screen can say whether the box is on the LAN.
 5. **`u` in the diagnostics** asks the vendor's manifest whether the LSSDP build is current — the one request that
-   leaves the LAN, and only on that keystroke; a verdict answers repeats for 30 min.
+   leaves the LAN, and only on that keystroke; a verdict answers repeats for 30 min. Each request carries a fresh
+   synthetic `deviceId`, because the vendor stops offering to an id after five offers (§10.1).
 6. **`lp10 sweep`** (2026-09-12; without ssh since 2026-10-01) automates §14.5's inventory, diffed against the previous
    run's baseline in the state dir: a TCP connect scan of every port — 768 connects in flight with a 400 ms timeout,
    ≈25–35 s, because a closed port on 8747 refuses only after ≈1 s; at that rate the box drops a SYN to an open port now
@@ -1976,3 +2047,12 @@ store's secrets — only non-secret keys and counts are quoted here); and a live
 bridge re-sending the Spotify app's levels. Found: the remote-access removal, the tunnel's pushes, the Spotify app's
 inaudible volume on 8747, `cold_boot` after an OTA reboot, the vendor-app index path, a second DHCP server after the
 09-28 power-on.*
+
+*Re-sweep **2026-10-03** (§14.6): two `lp10 sweep` runs, 32 manifest requests with synthetic ids, CDN `HEAD`s and a
+second read of the 10-01 log download. The box and the vendor were unchanged. Found: the manifest counts its offers per
+`deviceId` (five, then `1001`), which explains the sweep's "none offered" and likely the 09-23 "silent manifest"; two
+counts from the log corrected (§8.1, §10.4). Nothing was written to the device.*
+
+*Re-sweep **2026-10-06** (§14.7): one `lp10 sweep` run and four manifest requests with fresh synthetic ids, two to each
+manifest host. The box and the vendor were unchanged; the dynamic app port suggests no restart since 10-01. Fixed: §15's
+manifest recipe, whose fixed id was past the offer quota. Nothing was written to the device.*
