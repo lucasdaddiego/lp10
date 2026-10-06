@@ -1181,6 +1181,48 @@ func TestOTAHandshake(t *testing.T) {
 	}
 }
 
+// The OTA worker sleeps on OTAWake: a request wakes it, so does an LSSDP
+// answer landing while a request is held for its build; several requests
+// before it wakes are one wake, and an answer with nothing held is none.
+func TestOTAWakeFollowsRequestsAndTheBuild(t *testing.T) {
+	st := NewState()
+	st.SetLSSDP(&LSSDPInfo{FW: "AR241CP_8747.29.2"})
+	if otaWoke(st) {
+		t.Error("an LSSDP answer with no request held woke the worker")
+	}
+	st.RequestOTA()
+	st.RequestOTA()
+	if !otaWoke(st) || otaWoke(st) {
+		t.Error("two requests before the worker woke, want exactly one wake")
+	}
+	// held: no build yet; the answer that brings one wakes the worker
+	st2 := NewState()
+	st2.RequestOTA()
+	if !otaWoke(st2) {
+		t.Fatal("the request did not wake the worker")
+	}
+	if _, ok := st2.TakeOTARequest(); ok {
+		t.Fatal("handed over without a build")
+	}
+	st2.SetLSSDP(&LSSDPInfo{FW: "AR241CP_8747.29.2"})
+	if !otaWoke(st2) {
+		t.Error("the build landing for a held request did not wake the worker")
+	}
+	if build, ok := st2.TakeOTARequest(); !ok || build != "AR241CP_8747" {
+		t.Errorf("after the wake: (%q, %v)", build, ok)
+	}
+}
+
+// otaWoke drains one wake if there is one.
+func otaWoke(st *State) bool {
+	select {
+	case <-st.OTAWake():
+		return true
+	default:
+		return false
+	}
+}
+
 func TestFirmwareBuild(t *testing.T) {
 	for in, want := range map[string]string{
 		"AR241CP_8747.29.2": "AR241CP_8747",

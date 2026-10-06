@@ -78,10 +78,12 @@ type State struct {
 	// firmware update check: the TUI raises otaWant when u is pressed in the
 	// diagnostics, the OTA worker takes it — otaBusy from then until its
 	// answer lands — and answers with ota (the vendor manifest's verdict) —
-	// see RequestOTA / TakeOTARequest / SetOTA.
+	// see RequestOTA / TakeOTARequest / SetOTA. otaWake (one slot) is what
+	// the worker sleeps on: a request, or a build landing for a held one.
 	otaWant bool
 	otaBusy bool
 	ota     *OTAInfo
+	otaWake chan struct{}
 
 	// probeQuiet is raised by the TUI while no view shows what the LSSDP and
 	// ZeroConf probes find (anything but the diagnostics); the probe workers
@@ -95,8 +97,9 @@ type State struct {
 // NewState returns an initialized State.
 func NewState() *State {
 	return &State{
-		eqVals: map[string]int{},
-		eqHold: map[string]time.Time{},
+		eqVals:  map[string]int{},
+		eqHold:  map[string]time.Time{},
+		otaWake: make(chan struct{}, 1),
 	}
 }
 
@@ -573,6 +576,9 @@ func (st *State) SetLSSDP(info *LSSDPInfo) {
 		FW: printable(info.FW), State: printable(info.State), NetMode: printable(info.NetMode),
 	}
 	st.lssdpOKAt = now
+	if st.otaWant {
+		st.wakeOTA() // a held request: the build it waited for may have landed
+	}
 }
 
 // SetSpotifyZC records a ZeroConf probe: the engine's answer (control-stripped)
@@ -618,7 +624,24 @@ func (st *State) RequestOTA() {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	st.otaWant = true
+	st.wakeOTA()
 }
+
+// wakeOTA nudges the OTA worker without ever blocking: one nudge is enough
+// for any number of requests, so a full slot is left as it is. Called with
+// the lock held.
+func (st *State) wakeOTA() {
+	select {
+	case st.otaWake <- struct{}{}:
+	default:
+	}
+}
+
+// OTAWake is the channel the OTA worker waits on: it receives when a request
+// is raised, and when an LSSDP answer lands while one is held for its build.
+// A wake is a hint — the worker then asks TakeOTARequest, which may still
+// hold the request back.
+func (st *State) OTAWake() <-chan struct{} { return st.otaWake }
 
 // reBuild is the shape of a firmware build the vendor manifest is asked about
 // ("AR241CP_8747"): the string is LAN input and lands in a request body.

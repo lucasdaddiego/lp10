@@ -55,6 +55,9 @@ func (s *runSignal) Set() {
 	}
 }
 
+// Done is closed once the signal is set, for a select.
+func (s *runSignal) Done() <-chan struct{} { return s.ch }
+
 func (s *runSignal) IsSet() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

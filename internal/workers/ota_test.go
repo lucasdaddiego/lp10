@@ -169,6 +169,10 @@ func TestOTACheckFreshDeviceID(t *testing.T) {
 	}
 }
 
+// otaSettle is long enough for a worker that was going to act to have done
+// so: it wakes on the request itself, not on a poll.
+const otaSettle = 300 * time.Millisecond
+
 // runOTA runs otaWorker on st until until holds (or 5 s pass) and returns
 // the diagnostics at that moment.
 func runOTA(t *testing.T, st *protocol.State, until func(d protocol.DiagnosticSnapshot) bool) protocol.DiagnosticSnapshot {
@@ -213,7 +217,7 @@ func TestOTAWorker(t *testing.T) {
 		st := protocol.NewState()
 		st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CE_8530.23.2"})
 		start := time.Now()
-		d := runOTA(t, st, func(protocol.DiagnosticSnapshot) bool { return time.Since(start) > 3*otaPoll })
+		d := runOTA(t, st, func(protocol.DiagnosticSnapshot) bool { return time.Since(start) > otaSettle })
 		if d.OTA != nil || hits("AR241CE_8530") != 0 {
 			t.Fatalf("unrequested check: %+v hits=%d", d.OTA, hits("AR241CE_8530"))
 		}
@@ -277,7 +281,7 @@ func TestOTAWorker(t *testing.T) {
 			cancel()
 			<-done
 		}()
-		time.Sleep(3 * otaPoll)
+		time.Sleep(otaSettle)
 		if d := st.DiagnosticView(); d.OTA != nil || !d.OTAPending || hits("AR241CE_7777") != 0 {
 			t.Errorf("unknown firmware: verdict %+v pending=%v hits=%d, want the request held", d.OTA, d.OTAPending, hits("AR241CE_7777"))
 		}
@@ -287,6 +291,23 @@ func TestOTAWorker(t *testing.T) {
 			t.Errorf("build landed: verdict %+v pending=%v hits=%d, want one check", d.OTA, d.OTAPending, hits("AR241CE_7777"))
 		}
 	})
+}
+
+// The worker sleeps on the wake channel, so a stop must end it without a
+// request ever arriving — Runtime.Close sets stop before it cancels.
+func TestOTAWorkerEndsOnStop(t *testing.T) {
+	t.Setenv("LP10_OTA_URL", "http://127.0.0.1:1/v1")
+	st := protocol.NewState()
+	control := newRunControl()
+	done := make(chan struct{})
+	go func() { otaWorker(context.Background(), control, st); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+	control.stop.Set()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the worker did not end on stop")
+	}
 }
 
 // Set-but-empty LP10_OTA_URL disables the worker: it returns at once and

@@ -35,7 +35,6 @@ const (
 	// (the pre-8530 host, lp10-ota.rakoit.com, still answers identically).
 	otaManifestURL = "https://lp10.arylic.rakoit-ota.com/v1"
 	otaTimeout     = 6 * time.Second
-	otaPoll        = 500 * time.Millisecond
 	// otaFresh is how long a verdict answers repeat requests without another
 	// round trip to the vendor: pressing `u` a few times in a session should
 	// not mean a few POSTs.
@@ -130,21 +129,22 @@ func OTACheck(ctx context.Context, url, build string) protocol.OTAInfo {
 	return info
 }
 
-// otaWorker waits for requests and serves each from the last verdict when it
-// is fresh and was for the same build, else from one manifest round trip.
+// otaWorker sleeps until State wakes it (a request, or a build landing for a
+// held one) and serves each request from the last verdict when it is fresh
+// and was for the same build, else from one manifest round trip.
 func otaWorker(ctx context.Context, control *runControl, st *protocol.State) {
 	url, ok := otaURL()
 	if !ok {
 		return
 	}
 	var last *protocol.OTAInfo
-	poll := time.NewTicker(otaPoll)
-	defer poll.Stop()
 	for !control.stop.IsSet() && ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
 			return
-		case <-poll.C:
+		case <-control.stop.Done():
+			return
+		case <-st.OTAWake():
 		}
 		build, pending := st.TakeOTARequest()
 		if !pending {
