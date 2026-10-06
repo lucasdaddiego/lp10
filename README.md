@@ -445,8 +445,11 @@ window. With more than one LP10, set `name` to the target's advertised name to
 pick it (e.g. `name = "Living"`); otherwise the sole/first one is used. It is
 pure UDP — no bound port, no dependency, ~tens of milliseconds when the device
 is present, and it falls back to `host` if nothing answers, so startup never
-blocks on a missing device. Set `discover = false` to pin `host` (an IP, or a
-`.local` name your OS resolves).
+blocks on a missing device. An address a responder advertises is used only when
+it is on the LAN (private or link-local): a rogue responder cannot send lp10 —
+or `lp10 sweep`'s scan of every port — to a public host, and the sweep prints
+its target before it dials anything. Set `discover = false` to pin `host` (an
+IP, or a `.local` name your OS resolves).
 
 `LP10_HOST` overrides `host` for a single run and skips discovery. Persistent
 state (the volume and EQ snapshot used for instant first paint, and the `lp10

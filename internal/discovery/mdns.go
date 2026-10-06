@@ -41,6 +41,16 @@ type Device struct {
 	IP    net.IP // first IPv4 A record, when one arrived
 }
 
+// lanScoped reports whether discovery may hand ip out as a device's address:
+// a private (RFC 1918, ULA), link-local or loopback one. An mDNS A record and
+// an LSSDP reply's source are the responder's to choose — a rogue responder on
+// a shared LAN advertising am=LP10 with a public address would otherwise send
+// the TUI's :2018 dial, and `lp10 sweep`'s connect scan of every port, to a
+// third party. Loopback is in for the suite's fake boxes.
+func lanScoped(ip net.IP) bool {
+	return ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback()
+}
+
 // Addr is the address to connect to: the IP when known, else the .local host
 // (which the OS resolver handles on macOS).
 func (d Device) Addr() string {
@@ -256,8 +266,14 @@ func (c *collector) devices() []Device {
 		}
 		if h, ok := c.srv[key]; ok {
 			d.Host = h
-			if ips := c.a[dnsKey(h)]; len(ips) > 0 {
-				d.IP = ips[0]
+			ips := c.a[dnsKey(h)]
+			if i := slices.IndexFunc(ips, lanScoped); i >= 0 {
+				d.IP = ips[i]
+			} else if len(ips) > 0 {
+				// every address the responder claims is off this LAN: not
+				// a device to dial — not by its .local name either, which
+				// the OS resolver would ask the same responder about
+				d.Host = ""
 			}
 		}
 		ds = append(ds, d)

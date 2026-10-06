@@ -1476,6 +1476,9 @@ func Main(ctx context.Context, cfg config.Config, args []string, stdout, stderr 
 		fmt.Fprintln(stderr, "lp10 sweep: takes no positional arguments")
 		return 2
 	}
+	// The target, before anything is dialled: discovery hands Run the address
+	// a responder chose, and the scan that follows touches every port of it.
+	fmt.Fprintln(stderr, "lp10 sweep: "+targetNote(ctx, cfg))
 	path := config.SweepPath(cfg)
 	prev := Load(path)
 	r := Run(ctx, cfg, probesFor())
@@ -1510,4 +1513,22 @@ func Main(ctx context.Context, cfg config.Config, args []string, stdout, stderr 
 		return 1
 	}
 	return 0
+}
+
+// targetNote names the host the sweep is about to scan, the address it
+// resolves to when that differs, and where the host came from: discovery, the
+// LP10_HOST override or the config.
+func targetNote(ctx context.Context, cfg config.Config) string {
+	how := "from config"
+	switch {
+	case cfg.Discovered:
+		how = "found on the LAN"
+	case os.Getenv(config.HostEnv) != "":
+		how = "from " + config.HostEnv
+	}
+	note := "target " + cfg.Host
+	if ip, err := resolveHost(ctx, cfg.Host); err == nil && ip != cfg.Host {
+		note += " (" + ip + ")"
+	}
+	return note + ", " + how
 }

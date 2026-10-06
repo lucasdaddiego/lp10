@@ -357,3 +357,49 @@ func TestParseNameCapsTotalLength(t *testing.T) {
 		t.Errorf("a 252-byte name was rejected: ok=%v len=%d", ok, len(name))
 	}
 }
+
+// An A record is the responder's claim, not where its packet came from: a
+// rogue responder advertising am=LP10 with a public address must not point
+// the TUI's dial, or the sweep's scan of every port, at a third party. Such a
+// device is dropped whole — its .local name would resolve to the same claim.
+func TestCollectorAcceptsLANAddressesOnly(t *testing.T) {
+	const inst = "AABB@Living._raop._tcp.local"
+	base := []rr{
+		{name: service, typ: typePTR, target: inst},
+		{name: inst, typ: typeSRV, target: "Living.local"},
+		{name: inst, typ: typeTXT, txt: []string{"am=LP10"}},
+	}
+	c := newCollector()
+	c.add(append(base, rr{name: "Living.local", typ: typeA, ip: net.IPv4(203, 0, 113, 9)}))
+	ds := c.devices()
+	if len(ds) != 1 || ds[0].IP != nil || ds[0].Host != "" {
+		t.Errorf("a public A record: devices = %+v, want neither an IP nor a host", ds)
+	}
+	if _, ok := pickLP10(ds, ""); ok {
+		t.Error("a device with a public address only was picked")
+	}
+	// the first LAN address wins, whatever came before it
+	c = newCollector()
+	c.add(append(base,
+		rr{name: "Living.local", typ: typeA, ip: net.IPv4(203, 0, 113, 9)},
+		rr{name: "Living.local", typ: typeA, ip: net.IPv4(169, 254, 7, 7)},
+		rr{name: "Living.local", typ: typeA, ip: net.IPv4(192, 168, 1, 40)}))
+	if ds := c.devices(); len(ds) != 1 || ds[0].Addr() != "169.254.7.7" || ds[0].Host != "Living.local" {
+		t.Errorf("mixed A records: devices = %+v, want the link-local one", ds)
+	}
+}
+
+func TestLanScoped(t *testing.T) {
+	for ip, want := range map[string]bool{
+		"192.168.1.40": true, "10.0.0.9": true, "172.16.3.4": true, "169.254.7.7": true, "127.0.0.1": true,
+		"fd12::1": true, "fe80::1": true,
+		"203.0.113.9": false, "8.8.8.8": false, "2001:db8::1": false, "224.0.0.251": false, "0.0.0.0": false,
+	} {
+		if got := lanScoped(net.ParseIP(ip)); got != want {
+			t.Errorf("lanScoped(%s) = %v, want %v", ip, got, want)
+		}
+	}
+	if lanScoped(nil) {
+		t.Error("lanScoped(nil) = true")
+	}
+}

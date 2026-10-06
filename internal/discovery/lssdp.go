@@ -158,7 +158,7 @@ func FindLP10LSSDP(ctx context.Context, nameHint string, timeout time.Duration) 
 	var early Device
 	out := query(ctx, lssdpMulticast, []byte(msearch), timeout, false, func(r reply) bool {
 		info, ok := parseLSSDP(r.data)
-		if !ok {
+		if !ok || !lanScoped(r.from) { // an off-LAN source is nothing to dial
 			return false
 		}
 		info.IP = r.from

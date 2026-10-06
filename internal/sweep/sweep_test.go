@@ -972,8 +972,8 @@ func TestMainFlagsAndExitCodes(t *testing.T) {
 	if b := Load(config.SweepPath(cfg)); b == nil || b.Tunnel.OK || b.Tunnel.Err == "" || b.Carried != nil {
 		t.Errorf("an empty first sweep should save as it is: %+v", b)
 	}
-	if stderr.Len() != 0 {
-		t.Errorf("a saved sweep has nothing for stderr, got:\n%s", stderr.String())
+	if got := stderr.String(); got != "lp10 sweep: target 192.0.2.13, from config\n" {
+		t.Errorf("a saved sweep has only the target line for stderr, got:\n%s", got)
 	}
 	// the box answers: exit 0
 	box = true
@@ -1736,5 +1736,25 @@ func TestShortCutsRunes(t *testing.T) {
 		if got := short(in); got != want || !utf8.ValidString(got) {
 			t.Errorf("short(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The target line names the host, its address when that differs, and where
+// the host came from — printed before anything is dialled, so a sweep sent
+// somewhere unexpected by a rogue responder can be stopped at once.
+func TestTargetNote(t *testing.T) {
+	ctx := context.Background()
+	if got := targetNote(ctx, config.Config{Host: "192.0.2.13"}); got != "target 192.0.2.13, from config" {
+		t.Errorf("configured ip: %q", got)
+	}
+	if got := targetNote(ctx, config.Config{Host: "localhost"}); got != "target localhost (127.0.0.1), from config" {
+		t.Errorf("configured name: %q", got)
+	}
+	if got := targetNote(ctx, config.Config{Host: "192.0.2.13", Discovered: true}); got != "target 192.0.2.13, found on the LAN" {
+		t.Errorf("discovered: %q", got)
+	}
+	t.Setenv(config.HostEnv, "192.0.2.13")
+	if got := targetNote(ctx, config.Config{Host: "192.0.2.13"}); got != "target 192.0.2.13, from LP10_HOST" {
+		t.Errorf("pinned: %q", got)
 	}
 }
