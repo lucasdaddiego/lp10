@@ -19,13 +19,7 @@ import (
 // Pure display/formatting helpers — called directly, every branch.
 // ============================================================================
 
-func TestCov_firstSegToneStrBalStrPresetName(t *testing.T) {
-	if firstSeg("29-1d316f0c-10", '-') != "29" {
-		t.Error("firstSeg with sep wrong")
-	}
-	if firstSeg("nosep", '-') != "nosep" {
-		t.Error("firstSeg without sep should pass through")
-	}
+func TestCov_toneStrBalStrPresetName(t *testing.T) {
 	if toneStr(0) != "0" || toneStr(3) != "+3" || toneStr(-6) != "-6" {
 		t.Errorf("toneStr wrong: %q %q %q", toneStr(0), toneStr(3), toneStr(-6))
 	}

@@ -320,7 +320,7 @@ func Run(ctx context.Context, cfg config.Config, pr Probes) Report {
 	} else {
 		r.VendorApp = parseAppIndex(b)
 	}
-	build, _, _ := strings.Cut(r.LSSDP.FW, ".")
+	build := protocol.FirmwareBuild(r.LSSDP.FW)
 	if build == "" {
 		return r
 	}

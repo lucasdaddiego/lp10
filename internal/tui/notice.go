@@ -85,11 +85,11 @@ func startupSummary(d protocol.DiagnosticSnapshot) string {
 	if d.LSSDP != nil && d.LSSDP.FW != "" {
 		parts = append(parts, "firmware "+d.LSSDP.FW)
 	}
-	if mcu := firstSeg(d.MCU, '-'); mcu != "" {
+	if mcu := protocol.Before(d.MCU, "-"); mcu != "" {
 		parts = append(parts, "MCU "+mcu)
 	}
 	if d.SpotifyZC != nil && d.SpotifyZC.LibraryVersion != "" {
-		parts = append(parts, "Spotify eSDK "+firstSeg(d.SpotifyZC.LibraryVersion, '-'))
+		parts = append(parts, "Spotify eSDK "+protocol.Before(d.SpotifyZC.LibraryVersion, "-"))
 	}
 	return strings.Join(parts, " · ")
 }

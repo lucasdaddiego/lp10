@@ -302,7 +302,7 @@ func sweepDeltaFact(fw, mcu, sdk string, base *sweep.Report) string {
 		}
 	}
 	compare("lssdp", "firmware", base.LSSDP.FW, fw)
-	compare("tunnel.ver", "mcu", base.Tunnel.MCU, firstSeg(mcu, '-')) // the sweep keeps VER's version field
+	compare("tunnel.ver", "mcu", base.Tunnel.MCU, protocol.Before(mcu, "-")) // the sweep keeps VER's version field
 	compare("zeroconf", "eSDK", base.ZeroConf.LibraryVersion, sdk)
 	if read.IsZero() {
 		return ""
@@ -655,12 +655,4 @@ const diagLabelW = 10
 // never produce a negative (panicking) repeat count.
 func labelGap(label string, col int) string {
 	return strings.Repeat(" ", max(0, col-DispW(label)))
-}
-
-// firstSeg is s up to the first sep ("29-1d316f0c-10" → "29"), or s whole.
-func firstSeg(s string, sep byte) string {
-	if before, _, ok := strings.Cut(s, string(sep)); ok {
-		return before
-	}
-	return s
 }

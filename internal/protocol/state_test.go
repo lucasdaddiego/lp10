@@ -1189,8 +1189,19 @@ func TestFirmwareBuild(t *testing.T) {
 		".29":               "",
 		"a.b.c":             "a",
 	} {
-		if got := firmwareBuild(in); got != want {
-			t.Errorf("firmwareBuild(%q) = %q, want %q", in, got, want)
+		if got := FirmwareBuild(in); got != want {
+			t.Errorf("FirmwareBuild(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if Before("29-1d316f0c-10", "-") != "29" || Before("nosep", "-") != "nosep" || Before("", "-") != "" {
+		t.Error("Before: the first field, or the whole string without the separator")
+	}
+	for in, want := range map[string]bool{
+		"AR241CP_8747": true, "AR241CE_8530": true, "AR241CP_8747.29.2": false, "": false,
+		"ar241cp_8747": false, "AR241CE_8530; drop": false, "A_8747": false, "AR241CP_123456789": false,
+	} {
+		if got := ValidBuild(in); got != want {
+			t.Errorf("ValidBuild(%q) = %v, want %v", in, got, want)
 		}
 	}
 }

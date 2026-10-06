@@ -621,9 +621,12 @@ func (st *State) RequestOTA() {
 }
 
 // reBuild is the shape of a firmware build the vendor manifest is asked about
-// ("AR241CP_8747") — the same shape the OTA worker insists on before the
-// string goes into a request body.
+// ("AR241CP_8747"): the string is LAN input and lands in a request body.
 var reBuild = regexp.MustCompile(`^[A-Z0-9]{2,12}_[0-9]{1,8}$`)
+
+// ValidBuild reports whether build has the shape the manifest is asked about
+// (reBuild). The OTA worker insists on it before the string goes out.
+func ValidBuild(build string) bool { return reBuild.MatchString(build) }
 
 // TakeOTARequest hands a pending request to the worker (clearing it, and
 // marking the check in flight until SetOTA), with the firmware build to ask
@@ -634,11 +637,11 @@ var reBuild = regexp.MustCompile(`^[A-Z0-9]{2,12}_[0-9]{1,8}$`)
 func (st *State) TakeOTARequest() (build string, pending bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !st.otaWant || st.lssdp == nil || !reBuild.MatchString(firmwareBuild(st.lssdp.FW)) {
+	if !st.otaWant || st.lssdp == nil || !ValidBuild(FirmwareBuild(st.lssdp.FW)) {
 		return "", false
 	}
 	st.otaWant, st.otaBusy = false, true
-	return firmwareBuild(st.lssdp.FW), true
+	return FirmwareBuild(st.lssdp.FW), true
 }
 
 // SetOTA records the worker's verdict (strings control-stripped), which ends
@@ -651,13 +654,15 @@ func (st *State) SetOTA(info OTAInfo) {
 	st.ota, st.otaBusy = &info, false
 }
 
-// firmwareBuild is the manifest's fwVersion: the build before the first dot
-// ("AR241CP_8747.29.2" → "AR241CP_8747").
-func firmwareBuild(fw string) string {
-	if before, _, ok := strings.Cut(fw, "."); ok {
-		return before
-	}
-	return fw
+// FirmwareBuild is the manifest's fwVersion: the build before the first dot
+// of a firmware string ("AR241CP_8747.29.2" → "AR241CP_8747").
+func FirmwareBuild(fw string) string { return Before(fw, ".") }
+
+// Before is s up to its first sep ("29-1d316f0c-10", "-" → "29"), or s whole:
+// the first field of the dotted and dashed version strings the box reports.
+func Before(s, sep string) string {
+	before, _, _ := strings.Cut(s, sep)
+	return before
 }
 
 // ---- diagnostics view ----

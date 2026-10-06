@@ -24,7 +24,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -43,10 +42,6 @@ const (
 	otaFresh   = 30 * time.Minute
 	otaMaxBody = 16 << 10
 )
-
-// reBuild is the shape of a firmware build the manifest is asked about
-// ("AR241CE_8530"): the device string is LAN input and lands in a request body.
-var reBuild = regexp.MustCompile(`^[A-Z0-9]{2,12}_[0-9]{1,8}$`)
 
 // otaURL is the manifest endpoint: the default, or LP10_OTA_URL (tests point it
 // at a local server; set-but-empty disables the worker, as the hermetic e2e
@@ -79,7 +74,7 @@ func deviceID() string {
 // size and date).
 func OTACheck(ctx context.Context, url, build string) protocol.OTAInfo {
 	info := protocol.OTAInfo{At: time.Now(), Asked: build}
-	if !reBuild.MatchString(build) {
+	if !protocol.ValidBuild(build) { // LAN input, bound for a request body
 		info.Err = "unrecognised firmware string"
 		return info
 	}
