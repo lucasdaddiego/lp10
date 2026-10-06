@@ -4,6 +4,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -75,7 +76,7 @@ func isText(k tea.Key) bool {
 // normally carries a single printable rune, but Key.Text may carry several
 // (legacy fast-typing/IME paths coalesce); each must be dispatched in order or
 // the whole batch is silently lost. A bracketed paste arrives separately as
-// tea.PasteMsg — Update feeds its text through runeEvents for the same effect.
+// tea.PasteMsg — Update feeds its text through pasteEvents.
 func translateAll(msg tea.KeyPressMsg) []keyEvent {
 	k := tea.Key(msg)
 	if isText(k) && len(k.Text) > 1 {
@@ -85,8 +86,8 @@ func translateAll(msg tea.KeyPressMsg) []keyEvent {
 }
 
 // runeEvents turns a run of printable text into one rune-key event per
-// character, preserving the historical behaviour that pasted/scripted input
-// (e.g. `tmux send-keys`) drives the hotkeys exactly like typed input.
+// character: scripted input (`tmux send-keys`) arrives as key presses and
+// drives the hotkeys exactly like typed input.
 func runeEvents(s string) []keyEvent {
 	rs := []rune(s)
 	evs := make([]keyEvent, len(rs))
@@ -94,6 +95,30 @@ func runeEvents(s string) []keyEvent {
 		evs[i] = keyEvent{kind: kRune, r: r}
 	}
 	return evs
+}
+
+// pasteMax is the longest bracketed paste dispatched as hotkeys.
+const pasteMax = 3
+
+// hotkeys are the characters the views act on as a bare key (viewKey,
+// playbackKey, key's q, the diagnostics' u).
+const hotkeys = "123?iIeEqQ np+=-_msSuU"
+
+// pasteEvents is what a bracketed paste stands for: one rune event per
+// character when every one is a hotkey and there are at most pasteMax, else
+// nothing. A pasted Spotify link used to run its letters as hotkeys — prev,
+// two sleep-timer steps, the equalizer, a skipped track and a quit.
+func pasteEvents(s string) []keyEvent {
+	rs := []rune(s)
+	if len(rs) == 0 || len(rs) > pasteMax {
+		return nil
+	}
+	for _, r := range rs {
+		if !strings.ContainsRune(hotkeys, r) {
+			return nil
+		}
+	}
+	return runeEvents(s)
 }
 
 // key dispatches one key event. The view strip is global — 1-3 and tab

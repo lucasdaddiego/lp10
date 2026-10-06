@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // 1 2 3 pick a view outright; e and i open theirs and close it again; ? is
@@ -116,5 +120,29 @@ func TestSleepNotice(t *testing.T) {
 	m.sleepAt = time.Now().Add(30 * time.Minute)
 	if got := m.sleepNotice(); got != "sleep timer set · "+GL["sleep"]+" 30m" {
 		t.Errorf("armed: %q", got)
+	}
+}
+
+// A bracketed paste is dispatched only when it is a few hotkeys and nothing
+// else: a pasted Spotify link used to run prev, two sleep-timer steps, the
+// equalizer, a skipped track and a quit.
+func TestPasteIsOnlyAFewHotkeys(t *testing.T) {
+	m, _, collect := makeModel(t)
+	for _, s := range []string{"https://open.spotify.com/track/x", "nnnn", "nx", "n\n", "", "ñ"} {
+		m.notice = ""
+		if _, cmd := m.Update(tea.PasteMsg{Content: s}); cmd != nil {
+			t.Errorf("paste %q returned a command", s)
+		}
+		if got := collect(); len(got) != 0 || m.view != viewPlayer {
+			t.Errorf("paste %q sent %v, view %v; want nothing", s, wire(got), m.view)
+		}
+		if !strings.Contains(m.notice, "paste ignored") {
+			t.Errorf("paste %q: notice %q, want it ignored", s, m.notice)
+		}
+	}
+	// up to three hotkeys still work as typed: next, volume up, the equalizer
+	m.Update(tea.PasteMsg{Content: "n+e"})
+	if got := wire(collect()); !slices.Equal(got, []string{"NXT", "VOL:46"}) || m.view != viewEQ {
+		t.Errorf("paste n+e sent %v, view %v; want [NXT VOL:46] and the equalizer", got, m.view)
 	}
 }

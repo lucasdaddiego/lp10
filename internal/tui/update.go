@@ -218,9 +218,14 @@ func (m *model) dispatch(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.PasteMsg:
-		// Bracketed paste: drive the hotkeys with the pasted text, exactly like
-		// the same characters typed (see runeEvents).
-		if m.dispatchKeys(runeEvents(msg.Content)) {
+		// Bracketed paste: a few hotkeys drive the views as if typed; anything
+		// else — a link, a line of text — is dropped with a notice (pasteEvents).
+		evs := pasteEvents(msg.Content)
+		if evs == nil {
+			m.notify("paste ignored · type the keys", noticeFor)
+			return m, nil
+		}
+		if m.dispatchKeys(evs) {
 			return m, tea.Quit
 		}
 		return m, nil
