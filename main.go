@@ -12,7 +12,7 @@
 // discover, theme. Unless discover=false or LP10_HOST is set, a startup mDNS
 // query finds the LP10 on the LAN (am=LP10) — the device's own LSSDP responder
 // (UDP:1800) gets a window when mDNS is quiet — and uses its current address,
-// with host as the fallback. State: ~/.local/state/lp10/.
+// with host as the fallback. State: ~/.local/state/lp10/ ($XDG_STATE_HOME/lp10/).
 package main
 
 import (

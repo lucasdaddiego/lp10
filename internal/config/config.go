@@ -201,15 +201,19 @@ func applyTOML(cfg *Config, data map[string]any) (complaints []string) {
 }
 
 // StateDir is the persistent-state directory, or "" when it cannot be created —
-// callers degrade to a session without persistence rather than crashing.
+// callers degrade to a session without persistence rather than crashing. It
+// is LP10_STATE_DIR, else $XDG_STATE_HOME/lp10 (an absolute XDG_STATE_HOME,
+// as the spec asks: a relative one is ignored), else ~/.local/state/lp10.
 func StateDir() string {
 	d := os.Getenv("LP10_STATE_DIR")
 	if d == "" {
-		h := homeDir()
-		if h == "" {
+		if x := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(x) {
+			d = filepath.Join(x, "lp10")
+		} else if h := homeDir(); h != "" {
+			d = filepath.Join(h, ".local", "state", "lp10")
+		} else {
 			return "" // no home: degrade to no-persistence, not a cwd-relative dir
 		}
-		d = filepath.Join(h, ".local", "state", "lp10")
 	}
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return ""

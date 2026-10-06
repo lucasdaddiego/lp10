@@ -132,6 +132,7 @@ func TestCov_StateDirDerivesFromHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("LP10_STATE_DIR", "")
+	t.Setenv("XDG_STATE_HOME", "")
 	got := StateDir()
 	want := filepath.Join(home, ".local", "state", "lp10")
 	if got != want {

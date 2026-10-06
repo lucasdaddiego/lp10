@@ -29,12 +29,35 @@ func writeConfig(t *testing.T, content string) {
 func TestStateDirHonorsEnv(t *testing.T) {
 	d := filepath.Join(t.TempDir(), "s")
 	t.Setenv("LP10_STATE_DIR", d)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "xdg")) // LP10_STATE_DIR wins
 	got := StateDir()
 	if got != d {
 		t.Fatalf("StateDir = %q, want %q", got, d)
 	}
 	if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
 		t.Errorf("state dir not created")
+	}
+}
+
+// XDG_STATE_HOME places the state dir like XDG_CONFIG_HOME places the
+// config; a relative one is ignored, as the spec asks, so the dir never
+// depends on the cwd.
+func TestStateDirHonorsXDGStateHome(t *testing.T) {
+	t.Setenv("LP10_STATE_DIR", "")
+	x := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_STATE_HOME", x)
+	want := filepath.Join(x, "lp10")
+	if got := StateDir(); got != want {
+		t.Fatalf("StateDir = %q, want %q", got, want)
+	}
+	if fi, err := os.Stat(want); err != nil || !fi.IsDir() {
+		t.Errorf("state dir not created at %q", want)
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "relative/state")
+	if got, want := StateDir(), filepath.Join(home, ".local", "state", "lp10"); got != want {
+		t.Errorf("relative XDG_STATE_HOME: StateDir = %q, want the home default %q", got, want)
 	}
 }
 

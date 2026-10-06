@@ -456,8 +456,9 @@ IP, or a `.local` name your OS resolves).
 `LP10_HOST` overrides `host` for a single run and skips discovery. Persistent
 state (the volume and EQ snapshot used for instant first paint, and the `lp10
 sweep` baseline `sweep-<host>.json`, whose `carried` map dates each fact kept
-from an earlier sweep) lives under `~/.local/state/lp10/`, in files keyed on
-the configured `host` (so a new DHCP lease found by discovery keeps them).
+from an earlier sweep) lives under `~/.local/state/lp10/` (or
+`$XDG_STATE_HOME/lp10/`), in files keyed on the configured `host` (so a new
+DHCP lease found by discovery keeps them).
 
 ### Environment overrides
 
@@ -468,7 +469,7 @@ switches off the probe it names for `LP10_LSSDP_HOST`, `LP10_ZC_ADDR` and
 
 | Variable | Effect |
 |----------|--------|
-| `LP10_STATE_DIR` | state directory instead of `~/.local/state/lp10/` |
+| `LP10_STATE_DIR` | state directory instead of `$XDG_STATE_HOME/lp10/` / `~/.local/state/lp10/` |
 | `LP10_TUNNEL_ADDR` | the `:2018` tunnel's `host:port` — the whole connection to the box (the suite points it at an in-process fake) |
 | `LP10_LSSDP_HOST` | the UDP:1800 liveness probe's target (`host` or `host:port`) |
 | `LP10_ZC_ADDR` | a fixed Spotify ZeroConf `host:port`, skipping mDNS |
