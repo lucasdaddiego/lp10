@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +125,47 @@ func TestOTACheckVerdicts(t *testing.T) {
 	defer cut.Close()
 	if v := OTACheck(ctx, cut.URL, "AR241CE_8530"); v.Err != "vendor unreachable" {
 		t.Errorf("truncated reply: %+v", v)
+	}
+}
+
+// The vendor offers a bundle to one deviceId five times, then answers "no
+// update" to that id: every check carries an id of its own, so the sixth and
+// later ones still see the offer.
+func TestOTACheckFreshDeviceID(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	asked := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Device map[string]string `json:"device"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		id := body.Device["deviceId"]
+		mu.Lock()
+		asked[id]++
+		n := asked[id]
+		mu.Unlock()
+		if n > 5 {
+			_, _ = w.Write([]byte(`{"errorCode":1001,"errorString":"No update available"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"errorCode":1000,"errorString":"SUCCESS","url":"https://cdn/x.swu","version":"AR241CP_8747"}`))
+	}))
+	defer srv.Close()
+	for i := range 8 {
+		if v := OTACheck(context.Background(), srv.URL, "AR241CP_1"); v.Offered != "AR241CP_8747" {
+			t.Fatalf("check %d: %+v, want the offer", i+1, v)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(asked) != 8 {
+		t.Errorf("8 checks sent %d distinct deviceIds: %v", len(asked), asked)
+	}
+	for id := range asked {
+		if !strings.HasPrefix(id, "lp10-") || len(id) != len("lp10-00000000") {
+			t.Errorf("deviceId %q, want lp10-<8 hex>", id)
+		}
 	}
 }
 

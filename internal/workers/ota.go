@@ -10,6 +10,8 @@
 // via the device's fwdownload_xml env). The body names the brand, model and
 // the current build; a synthetic deviceId is accepted. Reply: errorCode 1001
 // "No update available", or 1000 with the offered version and package URL.
+// The vendor counts its offers per deviceId — five, then 1001 for every build
+// — so each request carries an id of its own (deviceID).
 
 package workers
 
@@ -17,7 +19,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"regexp"
@@ -59,6 +63,15 @@ func otaURL() (string, bool) {
 // which asks the vendor on purpose.
 func ManifestURL() (string, bool) { return otaURL() }
 
+// deviceID is the synthetic id one manifest request carries, a new one each
+// time. The vendor offers a bundle to one deviceId five times and then answers
+// "no update" to it for every build (measured 2026-10-03): under the fixed id
+// lp10 used to send, the sweep read "none offered" and `u` would have called a
+// box up to date while a newer build was out.
+func deviceID() string {
+	return fmt.Sprintf("lp10-%08x", rand.Uint32())
+}
+
 // OTACheck performs one manifest request for build and turns the reply into a
 // verdict. Every failure is a verdict too (Err set), so the overlay never waits
 // on a check that silently went nowhere. When the vendor offers a build, the
@@ -71,7 +84,7 @@ func OTACheck(ctx context.Context, url, build string) protocol.OTAInfo {
 		return info
 	}
 	body, _ := json.Marshal(map[string]any{"device": map[string]string{
-		"brand": "arylic", "deviceId": "lp10", "fwVersion": build, "model": "LP10",
+		"brand": "arylic", "deviceId": deviceID(), "fwVersion": build, "model": "LP10",
 	}})
 	rctx, cancel := context.WithTimeout(ctx, otaTimeout)
 	defer cancel()

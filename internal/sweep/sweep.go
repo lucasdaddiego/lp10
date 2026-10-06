@@ -176,7 +176,8 @@ type ManifestFacts struct {
 // BundleFacts describes the newest bundle the vendor serves, learnt by asking
 // the manifest about an old build and HEADing what it offers. None is an
 // answer, not a failure: the manifest said "no update" even for the old build,
-// so it names no package at all (the vendor's state in mid-September 2026).
+// so it names no package at all. (A deviceId past the vendor's five offers gets
+// that answer too, which is why workers.OTACheck sends a fresh id each time.)
 type BundleFacts struct {
 	Build        string `json:"build"`
 	URL          string `json:"url"`

@@ -399,7 +399,9 @@ framing and no auth (TEARDOWN §6.3):
   answer cannot inject an escape sequence or widen the frame.
 - **What leaves the LAN.** Only `u` in the diagnostics (one manifest request)
   and `lp10 sweep` (the manifest, the vendor's app index and one `HEAD` of the
-  newest bundle). Nothing else lp10 does reaches past the LAN.
+  newest bundle). Each manifest request carries a random synthetic
+  `deviceId`, never the box's MAC or serial. Nothing else lp10 does reaches
+  past the LAN.
 
 Do not expose the LP10 to the public internet, and don't run lp10 across an
 untrusted network. There is no transport hardening to add: the tunnel is plain
