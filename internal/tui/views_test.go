@@ -115,3 +115,23 @@ func TestPlaybackKeysWorkAcrossViews(t *testing.T) {
 		t.Errorf("no s was pressed, yet the sleep timer reads %q", lbl)
 	}
 }
+
+// The strip has a short form between the full names and the numerals, and the
+// footer rotates a second page of rarer keys for four seconds in sixteen.
+func TestStripShortFormAndFooterRotation(t *testing.T) {
+	m, _, _ := makeModel(t)
+	if s, w := m.viewStrip(30); stripANSI(s) != "1 play  2 eq  3 diag" || w != 20 {
+		t.Errorf("short strip = %q (%d)", stripANSI(s), w)
+	}
+	m.scroll = 0
+	first := stripANSI(m.footerRow(120))
+	m.scroll = 130
+	second := stripANSI(m.footerRow(120))
+	if !strings.Contains(first, "space play/pause") || !strings.Contains(second, "S cancel sleep") || first == second {
+		t.Errorf("footer pages:\n%q\n%q", first, second)
+	}
+	m.scroll = 160
+	if got := stripANSI(m.footerRow(120)); got != first {
+		t.Errorf("footer should be back on the first page: %q", got)
+	}
+}

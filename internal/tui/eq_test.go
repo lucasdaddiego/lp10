@@ -308,3 +308,233 @@ func TestEQViewRendersEveryControl(t *testing.T) {
 		}
 	}
 }
+
+func TestCov_toneStrBalStrPresetName(t *testing.T) {
+	if toneStr(0) != "0" || toneStr(3) != "+3" || toneStr(-6) != "-6" {
+		t.Errorf("toneStr wrong: %q %q %q", toneStr(0), toneStr(3), toneStr(-6))
+	}
+	if balStr(0) != "0" || balStr(-20) != "L20" || balStr(35) != "R35" {
+		t.Errorf("balStr wrong: %q %q %q", balStr(0), balStr(-20), balStr(35))
+	}
+	names := []string{"Flat", "", "Pop"}
+	for idx, want := range map[int]string{0: "Flat", 1: "preset 1", 2: "Pop", 3: "preset 3", -1: "preset -1"} {
+		if got := presetName(names, idx); got != want {
+			t.Errorf("presetName(%d) = %q, want %q", idx, got, want)
+		}
+	}
+	if plural(1) != "" || plural(0) != "s" || plural(2) != "s" {
+		t.Error("plural wrong")
+	}
+	if btoi(true) != 1 || btoi(false) != 0 {
+		t.Error("btoi wrong")
+	}
+}
+
+func TestCov_eqToggleNoop(t *testing.T) {
+	m, st, collect := modelWith(protocol.NewState())
+	// eqToggleFocused is a no-op on a ranged control
+	st.ApplyTunnel("TRE", 3)
+	m.view, m.eqFocus = viewEQ, 2 // TRE (ranged)
+	m.eqToggleFocused()
+	if nv, _ := st.EQValue("TRE"); nv != 3 {
+		t.Error("eqToggleFocused on a ranged control must be a no-op")
+	}
+	if got := collect(); len(got) != 0 {
+		t.Errorf("a ranged enter sent %v", wire(got))
+	}
+}
+
+func TestCov_eqSliderRow(t *testing.T) {
+	m, _, _ := modelWith(protocol.NewState())
+	const w = 60
+	mxv, eqe, bas := eqSpecIndex("MXV"), eqSpecIndex("EQE"), eqSpecIndex("BAS")
+	// toggle ON and OFF
+	if got := stripANSI(m.eqSliderRow(eqe, map[string]int{"EQE": 1}, false, w)); !strings.Contains(got, "● on") {
+		t.Errorf("toggle on = %q", got)
+	}
+	if got := stripANSI(m.eqSliderRow(eqe, map[string]int{"EQE": 0}, false, w)); !strings.Contains(got, "○ off") {
+		t.Errorf("toggle off = %q", got)
+	}
+	// ranged unknown value -> "—"
+	if got := stripANSI(m.eqSliderRow(mxv, map[string]int{}, false, w)); !strings.HasSuffix(got, "—") {
+		t.Errorf("ranged unknown = %q", got)
+	}
+	// ranged tone +/- and a non-negative-min ranged (MXV) accent knob, focused
+	if got := stripANSI(m.eqSliderRow(bas, map[string]int{"BAS": 5}, true, w)); !strings.HasSuffix(got, "+5") {
+		t.Errorf("ranged +5 = %q", got)
+	}
+	if got := stripANSI(m.eqSliderRow(bas, map[string]int{"BAS": -5}, true, w)); !strings.HasSuffix(got, "-5") {
+		t.Errorf("ranged -5 = %q", got)
+	}
+	if got := stripANSI(m.eqSliderRow(mxv, map[string]int{"MXV": 50}, true, w)); !strings.HasSuffix(got, "50") {
+		t.Errorf("ranged MXV = %q", got)
+	}
+	// every row is exactly w wide, whatever the value
+	for _, row := range []string{
+		m.eqSliderRow(bas, map[string]int{"BAS": 1000}, false, w),  // over the max: the knob clamps
+		m.eqSliderRow(bas, map[string]int{"BAS": -1000}, false, w), // under the min
+		m.eqSliderRow(bas, map[string]int{"BAS": 0}, true, w),
+		m.eqSliderRow(eqe, map[string]int{"EQE": 1}, true, w),
+		m.eqSliderRow(eqe, map[string]int{}, false, w),
+	} {
+		if got := DispW(stripANSI(row)); got != w {
+			t.Errorf("row width = %d, want %d: %q", got, w, stripANSI(row))
+		}
+	}
+	// trackW < 1 (very narrow) still renders without panicking
+	_ = m.eqSliderRow(bas, map[string]int{"BAS": 0}, false, 5)
+	_ = m.eqSliderRow(eqe, map[string]int{"EQE": 1}, false, 9)
+
+	// the warm (boost) and cool (cut) focused knobs emit different styling
+	warm := m.eqSliderRow(bas, map[string]int{"BAS": 5}, true, w)
+	cool := m.eqSliderRow(bas, map[string]int{"BAS": -5}, true, w)
+	if warm == cool {
+		t.Error("a boosted (warm) and cut (cool) knob should differ in styling")
+	}
+}
+
+// eqSpecIndex is the tunnel.Specs index of a wire code.
+func eqSpecIndex(code string) int {
+	return slices.IndexFunc(tunnel.Specs, func(sp tunnel.Spec) bool { return sp.Code == code })
+}
+
+// eqRowDrawn reports whether a frame draws the slider row of the control
+// labelled label (its label column, not a note that merely names it).
+func eqRowDrawn(frame, label string) bool {
+	for ln := range strings.SplitSeq(frame, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(strings.Trim(ln, "┃")), padDisp(label, sliderLabelW)) {
+			return true
+		}
+	}
+	return false
+}
+
+// The nine slider rows need 17 terminal rows. At 15, Balance and Max volume
+// were cut off, yet ↑ from the first row wraps the focus onto Max volume and
+// ← then lowered the output cap with nothing on screen.
+func TestEQFocusedRowStaysDrawnOnAShortFrame(t *testing.T) {
+	m, st, _ := makeModel(t)
+	st.PreloadEQ(map[string]int{"MXV": 100})
+	m.rows, m.cols = 15, 80
+	m.key(kr('2'))
+	m.key(ke(kUp)) // wraps from EQ to the last row
+	if code := m.eqSpec().Code; code != "MXV" {
+		t.Fatalf("setup: focus on %s", code)
+	}
+	if out := clean(render(t, m)); !eqRowDrawn(out, "Max volume") {
+		t.Errorf("focus is on Max volume but the row is not drawn:\n%s", out)
+	}
+	// one row up the window stays put: both rows are already on screen
+	m.key(ke(kUp))
+	out := clean(render(t, m))
+	for _, label := range []string{"Balance", "Max volume"} {
+		if !eqRowDrawn(out, label) {
+			t.Errorf("%s is not drawn after ↑ from Max volume:\n%s", label, out)
+		}
+	}
+	// a frame tall enough for all nine shows them all again
+	m.rows = 40
+	out = clean(render(t, m))
+	for _, code := range eqDisplay {
+		if !eqRowDrawn(out, eqLabel[code]) {
+			t.Errorf("a tall frame lacks the %s row", eqLabel[code])
+		}
+	}
+	if m.eqScroll != 0 {
+		t.Errorf("a frame with room for every row keeps the window at 0, got %d", m.eqScroll)
+	}
+}
+
+// At 80×14 with the tunnel live: ↓ walks the focus through every row, each is
+// drawn when focused, and ← on Max volume changes what is on screen.
+func TestEQFocusedRowIsVisibleAt80x14(t *testing.T) {
+	m, st, collect := makeModel(t)
+	for _, sp := range tunnel.Specs {
+		st.ApplyTunnel(sp.Code, max(sp.Min, 0))
+	}
+	st.ApplyTunnel("MXV", 100)
+	m.rows, m.cols = 14, 80
+	m.setView(viewEQ)
+	for d := range eqOrder {
+		if d > 0 {
+			m.key(ke(kDown))
+		}
+		if label := eqLabel[m.eqSpec().Code]; !eqRowDrawn(clean(render(t, m)), label) {
+			t.Errorf("focus on %s, but its row is not drawn at 80x14", label)
+		}
+	}
+	if code := m.eqSpec().Code; code != "MXV" {
+		t.Fatalf("setup: focus on %s", code)
+	}
+	m.key(ke(kLeft))
+	if got := wire(collect()); !slices.Equal(got, []string{"MXV:95"}) {
+		t.Errorf("← on Max volume queued %v, want [MXV:95]", got)
+	}
+	// a frame with room for a single row still shows the focused one
+	m.eqScroll = 0
+	if rows := m.eqWindow(m.eqSliders(74), 0); len(rows) != 1 || !strings.HasPrefix(stripANSI(rows[0]), "Max volume") {
+		t.Errorf("a zero-room window = %q, want the focused row alone", rows)
+	}
+}
+
+// A dead :2018 tunnel "only marks the equalizer read-only", and the view's
+// banner says the values are the last known. ←/→ used to paint the change
+// and queue it; the worker dropped it after its deadline, and nothing
+// reverted the painted value.
+func TestDeadTunnelLeavesTheEqualizerReadOnly(t *testing.T) {
+	st := protocol.NewState()
+	st.PreloadEQ(map[string]int{"TRE": 0, "EQE": 0}) // cached; the tunnel never came up
+	m, _, collect := modelWith(st)
+	m.rows, m.cols = 40, 100
+	m.setView(viewEQ)
+	for m.eqSpec().Code != "TRE" {
+		m.key(ke(kDown))
+	}
+	m.key(ke(kRight))
+	out := clean(render(t, m))
+	if row := frameRowWith(out, "Treble"); !strings.HasSuffix(row, " 0") {
+		t.Errorf("tunnel down, yet the Treble row now reads %q", row)
+	}
+	if !strings.Contains(out, "the :2018 control tunnel is down — values are the last known until it returns") {
+		t.Errorf("the read-only banner is missing:\n%s", out)
+	}
+	m.eqFocus = 0 // the EQ switch: enter is refused too
+	m.key(ke(kEnter))
+	if got := collect(); len(got) != 0 {
+		t.Errorf("%v queued into a dead tunnel", wire(got))
+	}
+	if v, _ := st.EQValue("EQE"); v != 0 {
+		t.Errorf("EQE painted as %d with the tunnel down", v)
+	}
+	if !strings.Contains(m.notice, "equalizer read-only") || !m.noticeWarn {
+		t.Errorf("notice = %q (warn=%v), want the read-only warning", m.notice, m.noticeWarn)
+	}
+	// the tunnel back, the same key goes through
+	connect(st)
+	m.key(ke(kEnter))
+	if got := wire(collect()); !slices.Equal(got, []string{"EQE:1"}) {
+		t.Errorf("enter with the tunnel up queued %v, want [EQE:1]", got)
+	}
+	if out := clean(render(t, m)); strings.Contains(out, "control tunnel is down") {
+		t.Error("the banner should leave with the tunnel back")
+	}
+}
+
+// A switch the device has not reported rendered "○ off", where the ranged
+// rows say "—" for the same state.
+func TestEQUnknownSwitchIsNotOff(t *testing.T) {
+	m, st, _ := makeModel(t)
+	_, vals := st.EQView() // nothing reported yet
+	row := stripANSI(m.eqSliderRow(eqSpecIndex("EQE"), vals, false, 80))
+	if strings.Contains(row, "off") || !strings.Contains(row, "—") {
+		t.Errorf("unreported EQ switch renders as %q, want —", strings.TrimSpace(row))
+	}
+	if DispW(row) != 80 {
+		t.Errorf("row width = %d, want 80", DispW(row))
+	}
+	for v, want := range map[int]string{0: "○ off", 1: "● on"} {
+		if row := stripANSI(m.eqSliderRow(eqSpecIndex("EQE"), map[string]int{"EQE": v}, false, 80)); !strings.Contains(row, want) {
+			t.Errorf("EQE=%d renders %q, want %q", v, strings.TrimSpace(row), want)
+		}
+	}
+}

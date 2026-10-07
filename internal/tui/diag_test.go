@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/lipgloss/v2"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/sweep"
 )
@@ -681,5 +682,87 @@ func TestFooterFit(t *testing.T) {
 	// a fact wider than the row is clipped, never wrapped
 	if got := m.footerFit(diagFooters, strings.Repeat("x", 90), 90, 74); visWidth(got) != 74 {
 		t.Errorf("an over-wide fact is %d wide at 74", visWidth(got))
+	}
+}
+
+func TestCov_clipStyled(t *testing.T) {
+	if got := clipStyled("abc", 10); got != "abc" {
+		t.Errorf("clipStyled fits = %q", got)
+	}
+	if got := clipStyled("abcdefgh", 4); stripANSI(got) != "abc"+GL["ell"] {
+		t.Errorf("clipStyled overflow = %q", stripANSI(got))
+	}
+	if got := clipStyled("abcdefgh", 0); got != "" {
+		t.Errorf("clipStyled w=0 = %q, want empty", got)
+	}
+	if got := clipStyled("abcdefgh", 1); stripANSI(got) != "a" {
+		t.Errorf("clipStyled no-ellipsis-room = %q, want hard cut", stripANSI(got))
+	}
+}
+
+// LP10_OTA_URL="" switches the vendor check off (its worker never starts),
+// but u still raised the request and the vendor line said "checking…" for the
+// rest of the run.
+func TestUpdateCheckSwitchedOffDoesNotHang(t *testing.T) {
+	t.Setenv("LP10_OTA_URL", "")
+	m, st, _ := makeModel(t)
+	st.SetLSSDP(&protocol.LSSDPInfo{FW: "AR241CP_8747.29.2", State: "S", NetMode: "ETH0"})
+	m.rows, m.cols = 60, 160
+	m.key(kr('3'))
+	m.key(kr('u'))
+	if out := clean(render(t, m)); strings.Contains(out, "checking…") {
+		t.Error("with the check switched off, u leaves the vendor line on \"checking…\" forever")
+	}
+	if !strings.Contains(m.notice, "update check is off") {
+		t.Errorf("notice = %q, want the check named off", m.notice)
+	}
+	// switched on, u raises the request (no OTA worker runs here, so nothing
+	// leaves the test)
+	t.Setenv("LP10_OTA_URL", "http://127.0.0.1:9/")
+	m.key(kr('U'))
+	if !st.DiagnosticView().OTAPending {
+		t.Error("with the check on, U should raise the request")
+	}
+	if m.view != viewDiag {
+		t.Error("u must not leave the diagnostics")
+	}
+}
+
+// The diagnostics show the friendly reason, not the raw dial error — the
+// masthead already says "disconnected" and the tunnel row "down".
+func TestDiagErrorIsFriendly(t *testing.T) {
+	st := protocol.NewState()
+	st.StartConnection()
+	st.Note("cannot reach :2018: dial tcp: lookup lp10.local: no such host")
+	m, _, _ := modelWith(st)
+	m.rows, m.cols = 32, 100
+	m.view = viewDiag
+	view := clean(render(t, m))
+	if strings.Contains(view, "lookup lp10.local") {
+		t.Error("the diagnostics must not show the raw dial error")
+	}
+	if !strings.Contains(view, "can't find the device") {
+		t.Error("the diagnostics should show the friendly reason")
+	}
+}
+
+// A clipped styled row keeps its per-segment colours — it used to be stripped
+// and re-rendered uniformly dim, so the rows "lost their colours" the moment a
+// larger font cost the column a couple of cells.
+func TestClipStyledKeepsColours(t *testing.T) {
+	sty := newTheme()
+	row := sty.sAcc.Render("●") + " " + sty.sTxt.Render("Spotify and more text")
+	got := clipStyled(row, 12)
+	if w := lipgloss.Width(got); w > 12 {
+		t.Errorf("clipped width = %d, want ≤ 12", w)
+	}
+	if !strings.Contains(got, "\x1b[") {
+		t.Errorf("clipped row lost its styling: %q", got)
+	}
+	if !strings.HasSuffix(stripANSI(got), GL["ell"]) {
+		t.Errorf("clipped row should end with the ellipsis, got %q", stripANSI(got))
+	}
+	if !strings.HasPrefix(got, sty.pens().acc.render("●")) {
+		t.Errorf("the first segment should keep its accent: %q", got)
 	}
 }

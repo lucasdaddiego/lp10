@@ -133,3 +133,27 @@ func TestEQNotesForTheFocusedControl(t *testing.T) {
 		}
 	}
 }
+
+// The preset selector drew names left to right and stopped at the row's end;
+// at the narrowest frame that is not the mini line the current preset (Vocal,
+// the sixth) was never drawn, so nothing on the row was lit.
+func TestEQCurrentPresetIsDrawnAtTheNarrowestFrame(t *testing.T) {
+	m, st, _ := makeModel(t)
+	st.SetEQPresets([]string{"Flat", "Classical", "Pop", "Jazz", "Rock", "Vocal"})
+	st.ApplyTunnel("EQS", 5)
+	_, vals := st.EQView()
+	W := MiniCols - 6 // the narrowest frame that is not the mini line
+	row := stripANSI(m.eqSliderRow(eqSpecIndex("EQS"), vals, false, W))
+	if !strings.Contains(row, "Vocal") {
+		t.Errorf("W=%d: the current preset is not on the row: %q", W, row)
+	}
+	if DispW(row) != W {
+		t.Errorf("row width = %d, want %d: %q", DispW(row), W, row)
+	}
+	// a current preset that fits from the first name leaves the list there
+	st.ApplyTunnel("EQS", 1)
+	_, vals = st.EQView()
+	if row := stripANSI(m.eqSliderRow(eqSpecIndex("EQS"), vals, false, W)); !strings.Contains(row, "Flat · Classical") {
+		t.Errorf("W=%d, Classical current: %q, want the list from Flat", W, row)
+	}
+}

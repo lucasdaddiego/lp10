@@ -353,3 +353,45 @@ func TestSleepFireDecidesUnderTheLock(t *testing.T) {
 		t.Error("the timer resumed a paused room")
 	}
 }
+
+// A deadline the link kept from firing that ran out long before the link came
+// back (an outage through the night) no longer pauses the morning's playback
+// on reconnect: the timer is cancelled with a notice. A short blip still ends
+// in the pause.
+func TestSleepTooLateOnReconnectIsCancelled(t *testing.T) {
+	m, st, collect := makeModel(t)
+	m.key(kr('s'))
+	collect()
+	st.Disconnect()
+	m.sleepAt = time.Now().Add(-8 * time.Hour) // it ran out overnight, the link still down
+	m.dispatch(logicMsg{})
+	if got := collect(); len(got) != 0 {
+		t.Fatalf("sent %v while the link was down", wire(got))
+	}
+	connect(st) // morning: the link is back and music plays
+	m.dispatch(logicMsg{})
+	if got := wire(collect()); slices.Contains(got, "POP") {
+		t.Errorf("the overnight timer paused the morning's playback: %v", got)
+	}
+	if !m.sleepAt.IsZero() || !st.Snap().Playing {
+		t.Errorf("after the reconnect: timer %v, playing %v", m.sleepAt, st.Snap().Playing)
+	}
+	if want := "sleep timer cancelled · it ran out 8h ago"; m.notice != want {
+		t.Errorf("notice = %q, want %q", m.notice, want)
+	}
+
+	// nine minutes late (a blip): it still pauses
+	m.key(kr('s'))
+	st.Disconnect()
+	m.sleepAt = time.Now().Add(-9 * time.Minute)
+	m.dispatch(logicMsg{})
+	connect(st)
+	st.ApplyStatus("NET", false, 44, true) // the new link's seed: still playing
+	m.dispatch(logicMsg{})
+	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
+		t.Errorf("a blip past the deadline sent %v, want [POP]", got)
+	}
+	if st.Snap().Playing {
+		t.Error("the late-but-close timer should pause")
+	}
+}
