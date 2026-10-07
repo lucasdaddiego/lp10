@@ -474,6 +474,7 @@ switches off the probe it names for `LP10_LSSDP_HOST`, `LP10_ZC_ADDR` and
 | `LP10_LSSDP_HOST` | the UDP:1800 liveness probe's target (`host` or `host:port`) |
 | `LP10_ZC_ADDR` | a fixed Spotify ZeroConf `host:port`, skipping mDNS |
 | `LP10_OTA_URL` | the vendor's firmware manifest URL — set it empty to switch the on-demand check off (`u` then says the check is off) |
+| `LP10_DEBUG` | append every `:2018` chunk, both directions, to this file (created `0600`, one quoted line per chunk) for a bug report — tunnel traffic only, never a path, an address or a config value |
 | `LP10_COVERDIR` · `LP10_DUMP_DIR` | `make cover` instrumentation · dump every layout the invariants test renders |
 
 `LC_ALL` / `LC_CTYPE` / `LANG` pick the ASCII glyph set under a CJK locale.
@@ -509,6 +510,7 @@ internal/discovery/     mDNS discovery, the LSSDP (UDP:1800) probe and fallback,
 internal/workers/       the tunnel worker (seed, poll, commands, volume bridge), the LSSDP / ZeroConf / OTA probes, persistence
 internal/mediakey/      macOS media-key event tap (play/next/prev system-wide)
 internal/atomicfile/    temp-sibling + fsync + rename writes for the persisted state
+internal/debuglog/      the opt-in `LP10_DEBUG` frame log of the tunnel's traffic
 internal/tui/           Bubble Tea model, rendering, input dispatch, helpers
 internal/sweep/         `lp10 sweep` — the read-only inventory, its baseline and diff
 internal/testutil/      test helpers (env isolation, the binary builder, a fake :2018 tunnel)

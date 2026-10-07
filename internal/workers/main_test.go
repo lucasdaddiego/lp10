@@ -20,7 +20,7 @@ import (
 // mDNS lookup never puts multicast on the wire: it finds only what a test
 // advertises with advertiseZC.
 func TestMain(m *testing.M) {
-	for _, v := range []string{"LP10_TUNNEL_ADDR", "LP10_LSSDP_HOST", "LP10_ZC_ADDR", "LP10_HOST"} {
+	for _, v := range []string{"LP10_TUNNEL_ADDR", "LP10_LSSDP_HOST", "LP10_ZC_ADDR", "LP10_HOST", "LP10_DEBUG"} {
 		os.Unsetenv(v)
 	}
 	os.Setenv("LP10_OTA_URL", "")

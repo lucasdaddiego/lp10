@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lucasdaddiego/lp10/internal/config"
+	"github.com/lucasdaddiego/lp10/internal/debuglog"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/tunnel"
 )
@@ -134,6 +135,12 @@ func tunnelOnceContext(ctx context.Context, control *runControl, st *protocol.St
 	// Not "connected" yet: a dial that succeeds proves only that something
 	// accepted. The first parsed frame — the seed replies land within
 	// milliseconds on a live link — is what marks the link live (Received).
+
+	// LP10_DEBUG: every chunk either way goes to the frame log as well,
+	// opened per connection (append) so the file follows a reconnect.
+	frames := debuglog.Open()
+	defer frames.Close()
+	conn = debuglog.Wrap(conn, frames)
 
 	done := make(chan struct{})
 	go tunnelReader(st, conn, done)

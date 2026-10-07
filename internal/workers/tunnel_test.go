@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -241,6 +243,35 @@ func TestTunnelWorkerAgainstALiveBox(t *testing.T) {
 	}
 	if !r.control.drained.IsSet() {
 		t.Error("the worker ended without marking the drain done")
+	}
+}
+
+// LP10_DEBUG set, the worker's connection is wrapped: the seed queries it
+// writes and the replies it reads land in the file, each direction marked.
+func TestTunnelFrameLogRecordsBothDirections(t *testing.T) {
+	dev := newLiveBox()
+	box := newFakeBox(t, dev.answer)
+	t.Setenv("LP10_TUNNEL_ADDR", box.addr)
+	logPath := filepath.Join(t.TempDir(), "frames.log")
+	t.Setenv("LP10_DEBUG", logPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	r := runTunnel(t, ctx, cancel, make(chan Command))
+	box.waitFrame(t, 3*time.Second, "the seed's last query", is("VER"))
+	eventually(t, "the VER reply applied", time.Second, func() bool { return r.st.DiagnosticView().MCU != "" })
+	cancel()
+	<-r.done
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+	for _, want := range []string{` > "STA;"`, ` > "VER;"`, ` < "VER:29-1d316f0c-10;"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the frame log lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, box.addr) || strings.Contains(got, logPath) {
+		t.Error("the frame log names an address or a path")
 	}
 }
 

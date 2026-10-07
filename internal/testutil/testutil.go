@@ -19,7 +19,7 @@ import (
 // envVars are the ambient LP10_* overrides a test must not inherit.
 var envVars = []string{
 	"LP10_HOST", "LP10_STATE_DIR", "LP10_TUNNEL_ADDR",
-	"LP10_LSSDP_HOST", "LP10_ZC_ADDR", "LP10_OTA_URL",
+	"LP10_LSSDP_HOST", "LP10_ZC_ADDR", "LP10_OTA_URL", "LP10_DEBUG",
 }
 
 // Isolate clears ambient LP10_* env and points state + config at temp dirs, so
