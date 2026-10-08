@@ -162,7 +162,7 @@ Requires **macOS or Linux** and a recent **Go** toolchain (1.27+). Nothing
 else at runtime — no ssh client, no secret store, no password to set up.
 
 ```sh
-# Build a stripped release binary into ~/.bin (make sure it's on your PATH).
+# Build a stripped release ./lp10 and link it from ~/.bin (make sure ~/.bin is on your PATH).
 make install
 
 # Run — no arguments, just one screen. (`lp10 --version` prints the build.)
@@ -485,9 +485,9 @@ switches off the probe it names for `LP10_LSSDP_HOST`, `LP10_ZC_ADDR` and
 make test     # go vet + the full suite, fully off-device
 make ci       # exactly what CI runs (gofmt, vet, go fix -diff, staticcheck, govulncheck, -race), under go.mod's toolchain
 make cover    # merged unit + integration coverage of the shipped packages -> coverage.out
-make build    # ./lp10
+make build    # ./lp10 (unstripped; replaces the linked command)
 make run      # launch the live TUI
-make install  # a stripped release binary into ~/.bin
+make install  # a stripped release ./lp10, linked from ~/.bin
 ```
 
 The suite never touches a real device: the tests point `LP10_TUNNEL_ADDR` at

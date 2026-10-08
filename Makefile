@@ -2,7 +2,7 @@
 # Run `make` (or `make help`) to list targets.
 
 BINARY      := lp10
-INSTALL_DIR := $(HOME)/.bin
+INSTALL_DIR ?= $(HOME)/.bin
 # Release build: strip symbols/DWARF (-s -w) and local paths (-trimpath).
 RELEASE     := -trimpath -ldflags "-s -w"
 
@@ -17,7 +17,7 @@ CI_GO       := go$(shell awk '/^go /{print $$2}' go.mod)
 help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## Compile the binary into ./lp10
+build: ## Compile the binary into ./lp10 (unstripped; replaces the ~/.bin-linked command)
 	go build -o $(BINARY) .
 
 run: ## Launch the live TUI (needs a terminal and the box on the LAN)
@@ -60,7 +60,7 @@ cover: ## Merged unit + integration coverage of the shipped packages -> coverage
 	mv "$$out" coverage.out; \
 	echo "shipped-package coverage (test scaffolding excluded); HTML: go tool cover -html=coverage.out"
 
-install: ## Install a stripped release binary into ~/.bin
-	@mkdir -p $(INSTALL_DIR)
-	go build $(RELEASE) -o "$(INSTALL_DIR)/$(BINARY)" .
-	@echo "installed $(INSTALL_DIR)/$(BINARY)"
+install: ## Build a stripped release ./lp10 and link it from ~/.bin
+	go build $(RELEASE) -o $(BINARY) .
+	@mkdir -p "$(INSTALL_DIR)"
+	ln -sfn "$(CURDIR)/$(BINARY)" "$(INSTALL_DIR)/$(BINARY)"
