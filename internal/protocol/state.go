@@ -654,13 +654,15 @@ func ValidBuild(build string) bool { return reBuild.MatchString(build) }
 // TakeOTARequest hands a pending request to the worker (clearing it, and
 // marking the check in flight until SetOTA), with the firmware build to ask
 // about: the LSSDP answer's, the one place the box names its build without
-// ssh. Before an answer with a build has arrived the request is NOT handed
-// over — the worker polls again, and the diagnostics keep saying "checking…"
-// until one lands.
+// ssh. Before an LSSDP answer has arrived the request is NOT handed over —
+// SetLSSDP wakes the worker when one lands, and the diagnostics say "waiting
+// for the firmware build" meanwhile. An answer whose build has the wrong
+// shape IS handed over: OTACheck turns it into the "unrecognised firmware
+// string" verdict (it never goes out), so the wait cannot last for ever.
 func (st *State) TakeOTARequest() (build string, pending bool) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if !st.otaWant || st.lssdp == nil || !ValidBuild(FirmwareBuild(st.lssdp.FW)) {
+	if !st.otaWant || st.lssdp == nil {
 		return "", false
 	}
 	st.otaWant, st.otaBusy = false, true
@@ -712,9 +714,11 @@ type DiagnosticSnapshot struct {
 
 	// OTA is the last firmware-check verdict (nil: never asked this run);
 	// OTAPending is a check u asked for that has not answered yet — still
-	// waiting for the worker, or in flight to the vendor.
+	// waiting for the worker, or in flight to the vendor. OTAHeld is the part
+	// of that wait spent on the firmware build: no LSSDP answer yet.
 	OTA        *OTAInfo
 	OTAPending bool
+	OTAHeld    bool
 }
 
 // DiagnosticView returns every value used by one diagnostics frame under one
@@ -736,5 +740,6 @@ func (st *State) DiagnosticView() DiagnosticSnapshot {
 		ZCOKAt:       st.zcOKAt,
 		OTA:          st.ota,
 		OTAPending:   st.otaWant || st.otaBusy,
+		OTAHeld:      st.otaWant && !st.otaBusy && st.lssdp == nil,
 	}
 }

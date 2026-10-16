@@ -291,6 +291,20 @@ func TestOTAWorker(t *testing.T) {
 			t.Errorf("build landed: verdict %+v pending=%v hits=%d, want one check", d.OTA, d.OTAPending, hits("AR241CE_7777"))
 		}
 	})
+
+	// The box answers LSSDP with a firmware string of the wrong shape: the
+	// request still ends in a verdict (it used to read "checking…" for the
+	// rest of the run), and nothing goes to the vendor.
+	t.Run("a bad build ends in a verdict", func(t *testing.T) {
+		t.Parallel()
+		st := protocol.NewState()
+		st.SetLSSDP(&protocol.LSSDPInfo{FW: "ar241cp-8747"})
+		st.RequestOTA()
+		d := runOTA(t, st, func(d protocol.DiagnosticSnapshot) bool { return d.OTA != nil })
+		if d.OTA == nil || d.OTA.Err != "unrecognised firmware string" || d.OTAPending || hits("ar241cp-8747") != 0 {
+			t.Errorf("bad build: verdict %+v pending=%v hits=%d", d.OTA, d.OTAPending, hits("ar241cp-8747"))
+		}
+	})
 }
 
 // The worker sleeps on the wake channel, so a stop must end it without a

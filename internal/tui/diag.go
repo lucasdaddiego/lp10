@@ -314,12 +314,16 @@ func sweepDeltaFact(fw, mcu, sdk string, base *sweep.Report) string {
 	return strings.Join(changes, " · ") + " · since " + when
 }
 
-// otaFact is the device card's vendor line: "" until u has asked, "checking…"
-// while the vendor is being asked, then the verdict with its age — "up to
-// date", "AR241CP_9xxx available", or why there is none.
+// otaFact is the device card's vendor line: "" until u has asked, "waiting
+// for the firmware build (LSSDP)" while the box has not named its build,
+// "checking…" while the vendor is being asked, then the verdict with its
+// age — "up to date", "AR241CP_9xxx available", or why there is none.
 func otaFact(d protocol.DiagnosticSnapshot, now time.Time) string {
 	if d.OTA == nil {
-		if d.OTAPending {
+		switch {
+		case d.OTAHeld:
+			return "waiting for the firmware build (LSSDP)"
+		case d.OTAPending:
 			return "checking…"
 		}
 		return ""

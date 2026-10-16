@@ -172,8 +172,8 @@ func TestDiagUpdateCheckShowsVerdict(t *testing.T) {
 	if m.view != viewDiag || !st.DiagnosticView().OTAPending {
 		t.Fatal("u did not request a vendor check (or closed the view)")
 	}
-	if out := clean(render(t, m)); !hasRow(out, "vendor", "checking…") {
-		t.Errorf("pending check not shown:\n%s", out)
+	if out := clean(render(t, m)); !hasRow(out, "vendor", "waiting for the firmware build (LSSDP)") {
+		t.Errorf("held check (no LSSDP answer yet) not shown:\n%s", out)
 	}
 	// u elsewhere is not the update key
 	m.key(ke(kEsc))

@@ -425,7 +425,8 @@ func TestSweepDeltaFact(t *testing.T) {
 	}
 }
 
-// otaFact: nothing until u, "checking…" while asked, then the verdict aged.
+// otaFact: nothing until u, the build wait, "checking…" while asked, then the
+// verdict aged.
 func TestOTAFact(t *testing.T) {
 	now := time.Now()
 	at := now.Add(-12 * time.Second)
@@ -435,6 +436,7 @@ func TestOTAFact(t *testing.T) {
 	}{
 		{protocol.DiagnosticSnapshot{}, ""},
 		{protocol.DiagnosticSnapshot{OTAPending: true}, "checking…"},
+		{protocol.DiagnosticSnapshot{OTAPending: true, OTAHeld: true}, "waiting for the firmware build (LSSDP)"},
 		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at, UpToDate: true}}, "up to date · checked 12s ago"},
 		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at, Offered: "AR241CP_9001"}}, "AR241CP_9001 available · checked 12s ago"},
 		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at}}, "update available · checked 12s ago"},

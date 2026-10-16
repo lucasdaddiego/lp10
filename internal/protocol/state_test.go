@@ -1086,53 +1086,60 @@ func TestTakeOTARequestWithoutARequest(t *testing.T) {
 	}
 }
 
-// The request is handed over only once an LSSDP answer names a build of the
-// shape the manifest is asked about; until then it stays pending (the view
-// keeps saying "checking…") instead of a failure nothing retries.
-func TestTakeOTARequestNeedsABuildShapedFirmware(t *testing.T) {
+// The request is handed over once an LSSDP answer has arrived; until then it
+// stays pending and reads as held for the build. A build of the wrong shape
+// is handed over too, so the worker's OTACheck can turn it into the
+// "unrecognised firmware string" verdict: held, it read "checking…" for the
+// rest of the run.
+func TestTakeOTARequestWaitsForLSSDP(t *testing.T) {
+	st := NewState()
+	st.RequestOTA()
+	if build, ok := st.TakeOTARequest(); ok || build != "" {
+		t.Errorf("no LSSDP answer: handed over (%q, %v), want held back", build, ok)
+	}
+	if d := st.DiagnosticView(); !d.OTAPending || !d.OTAHeld {
+		t.Errorf("held request: pending=%v held=%v, want both", d.OTAPending, d.OTAHeld)
+	}
+	st.SetLSSDP(&LSSDPInfo{FW: "AR241CP_8747.29.2"})
+	if build, ok := st.TakeOTARequest(); !ok || build != "AR241CP_8747" {
+		t.Errorf("after an answer: (%q, %v)", build, ok)
+	}
+	if d := st.DiagnosticView(); !d.OTAPending || d.OTAHeld {
+		t.Errorf("in flight: pending=%v held=%v, want pending only", d.OTAPending, d.OTAHeld)
+	}
+
 	cases := []struct {
 		name  string
-		lssdp *LSSDPInfo // nil: no answer
-		build string     // "" = held back
+		fw    string
+		build string // what goes to the worker
+		valid bool   // whether OTACheck may send it
 	}{
-		{"no LSSDP answer", nil, ""},
-		{"empty FW", &LSSDPInfo{}, ""},
-		{"garbage", &LSSDPInfo{FW: "garbage"}, ""},
-		{"lowercase", &LSSDPInfo{FW: "ar241cp_8747.29.2"}, ""},
-		{"no build number", &LSSDPInfo{FW: "AR241CP_.29.2"}, ""},
-		{"prefix too short", &LSSDPInfo{FW: "A_8747.29"}, ""},
-		{"prefix too long", &LSSDPInfo{FW: "ABCDEFGHIJKLM_8747.29"}, ""},
-		{"build too long", &LSSDPInfo{FW: "AR241CP_123456789.29"}, ""},
-		{"letters in the build", &LSSDPInfo{FW: "AR241CP_87a7.29"}, ""},
-		{"leading dot", &LSSDPInfo{FW: ".AR241CP_8747"}, ""},
-		{"space", &LSSDPInfo{FW: "AR241CP 8747.29"}, ""},
-		{"full FW", &LSSDPInfo{FW: "AR241CP_8747.29.2"}, "AR241CP_8747"},
-		{"build only", &LSSDPInfo{FW: "AR241CP_8747"}, "AR241CP_8747"},
-		{"older box", &LSSDPInfo{FW: "AR241CE_8530.23.2"}, "AR241CE_8530"},
-		{"stripped control", &LSSDPInfo{FW: "AR241CP_87\x1b47.29"}, "AR241CP_8747"},
+		{"empty FW", "", "", false},
+		{"garbage", "garbage", "garbage", false},
+		{"lowercase", "ar241cp_8747.29.2", "ar241cp_8747", false},
+		{"no build number", "AR241CP_.29.2", "AR241CP_", false},
+		{"prefix too short", "A_8747.29", "A_8747", false},
+		{"prefix too long", "ABCDEFGHIJKLM_8747.29", "ABCDEFGHIJKLM_8747", false},
+		{"build too long", "AR241CP_123456789.29", "AR241CP_123456789", false},
+		{"letters in the build", "AR241CP_87a7.29", "AR241CP_87a7", false},
+		{"leading dot", ".AR241CP_8747", "", false},
+		{"space", "AR241CP 8747.29", "AR241CP 8747", false},
+		{"full FW", "AR241CP_8747.29.2", "AR241CP_8747", true},
+		{"build only", "AR241CP_8747", "AR241CP_8747", true},
+		{"older box", "AR241CE_8530.23.2", "AR241CE_8530", true},
+		{"stripped control", "AR241CP_87\x1b47.29", "AR241CP_8747", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			st := NewState()
-			st.SetLSSDP(c.lssdp)
+			st.SetLSSDP(&LSSDPInfo{FW: c.fw})
 			st.RequestOTA()
 			build, ok := st.TakeOTARequest()
-			if c.build == "" {
-				if ok || build != "" {
-					t.Errorf("handed over (%q, %v), want held back", build, ok)
-				}
-				if !st.DiagnosticView().OTAPending {
-					t.Error("the held request is no longer pending")
-				}
-				// it stays pending, and goes out once a good answer lands
-				st.SetLSSDP(&LSSDPInfo{FW: "AR241CP_8747.29.2"})
-				if build, ok := st.TakeOTARequest(); !ok || build != "AR241CP_8747" {
-					t.Errorf("after a good answer: (%q, %v)", build, ok)
-				}
-				return
-			}
 			if !ok || build != c.build {
 				t.Errorf("TakeOTARequest = (%q, %v), want (%q, true)", build, ok, c.build)
+			}
+			if ValidBuild(build) != c.valid {
+				t.Errorf("ValidBuild(%q) = %v, want %v", build, !c.valid, c.valid)
 			}
 		})
 	}
