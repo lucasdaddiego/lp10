@@ -83,29 +83,7 @@ func zcWorker(ctx context.Context, control *runControl, st *protocol.State, cfg 
 		st.SetSpotifyZC(&protocol.SpotifyZC{StatusString: info.StatusString, ActiveUser: info.ActiveUser,
 			LibraryVersion: info.LibraryVersion}, port)
 	}
-	wait := zcFirstProbeLag
-	asked := false // a probe has run: the first one always does (see lssdpWorker)
-	for !control.stop.IsSet() && ctx.Err() == nil {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(wait):
-		}
-		if control.stop.IsSet() {
-			return
-		}
-		if asked && st.Snap().Connected && !st.ProbeWanted() {
-			wait = probeQuietPoll // see lssdpWorker: nobody is looking
-			continue
-		}
-		asked = true
-		fence(st, control, "zeroconf worker", probe) // it parses what the LAN answers
-		if st.Snap().Connected {
-			wait = zcConnected
-		} else {
-			wait = zcDisconnected
-		}
-	}
+	probeLoop(ctx, control, st, "zeroconf worker", probeCadence{first: zcFirstProbeLag, connected: zcConnected, disconnected: zcDisconnected}, probe)
 }
 
 // atoiOrZero parses a port string leniently: a test override with a bad port

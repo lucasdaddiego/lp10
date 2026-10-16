@@ -51,32 +51,42 @@ func lssdpWorker(ctx context.Context, control *runControl, st *protocol.State, c
 		}
 		st.SetLSSDP(&protocol.LSSDPInfo{FW: info.FW, State: info.State, NetMode: info.NetMode})
 	}
-	wait := lssdpFirstProbeLag
-	asked := false // a probe has run: the first one always does (see below)
+	probeLoop(ctx, control, st, "lssdp worker", probeCadence{first: lssdpFirstProbeLag, connected: lssdpConnected, disconnected: lssdpDisconnected}, probe)
+}
+
+// probeCadence is a probe worker's timing: the lag before the first probe,
+// then the wait between probes while the tunnel is up and while it is down.
+type probeCadence struct{ first, connected, disconnected time.Duration }
+
+// probeLoop runs probe on cad until stop or ctx: fast while disconnected
+// (that's when "is the device even there?" matters), slowly while connected.
+// Connected with nobody looking at the answer (State.ProbeWanted false), it
+// asks nothing and looks again every probeQuietPoll, so an opened view gets
+// a fresh probe within seconds. The first probe runs regardless: the LSSDP
+// firmware build is the connect summary's and the update check's, and the
+// tunnel connects before it is due. Each probe is fenced: it parses what the
+// LAN answers.
+func probeLoop(ctx context.Context, control *runControl, st *protocol.State, name string, cad probeCadence, probe func()) {
+	wait := cad.first
+	asked := false // a probe has run
 	for !control.stop.IsSet() && ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
 			return
+		case <-control.stop.Done():
+			return
 		case <-time.After(wait):
 		}
-		if control.stop.IsSet() {
-			return
-		}
 		if asked && st.Snap().Connected && !st.ProbeWanted() {
-			// connected and nobody is looking at the answer: ask nothing, and
-			// look again soon so an opened view gets a fresh probe within
-			// seconds. The first probe runs regardless: its firmware build is
-			// the connect summary's and the update check's, and the tunnel
-			// connects before it is due.
 			wait = probeQuietPoll
 			continue
 		}
 		asked = true
-		fence(st, control, "lssdp worker", probe) // it parses what the LAN answers
+		fence(st, control, name, probe)
 		if st.Snap().Connected {
-			wait = lssdpConnected
+			wait = cad.connected
 		} else {
-			wait = lssdpDisconnected
+			wait = cad.disconnected
 		}
 	}
 }
