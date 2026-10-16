@@ -135,6 +135,13 @@ func TestEQMaxVolumeFloor(t *testing.T) {
 	if got := wire(collect()); !slices.Equal(got, []string{"MXV:35"}) {
 		t.Errorf("→ at the floor queued %v, want [MXV:35]", got)
 	}
+	// A cap of 31–34 (set from the vendor app) steps down to the floor: ←
+	// used to send nothing because the 5-step lands under it.
+	st.ApplyTunnel("MXV", 32)
+	m.key(ke(kLeft))
+	if got := wire(collect()); !slices.Equal(got, []string{"MXV:30"}) {
+		t.Errorf("← on a cap of 32 queued %v, want [MXV:30]", got)
+	}
 }
 
 // Inbound tunnel values are raw (deliberately unclamped), so the nudge math

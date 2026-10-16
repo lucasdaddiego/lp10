@@ -97,12 +97,13 @@ func (m *model) eqAdjust(dir int) {
 		target = sp.Min
 	}
 	// The write range, so the value painted is the value sent: MXV has a
-	// floor of 30 on the wire. A ← the floor would turn into a raise — the
-	// cap at the floor, or held below it by another client — sends nothing;
-	// → lifts such a cap to the floor.
+	// floor of 30 on the wire. A ← stops at the floor (32 → 30, not 27); a
+	// ← the floor would turn into a raise or a no-op — the cap at the floor,
+	// or held below it by another client — sends nothing; → lifts such a cap
+	// to the floor.
 	write := tunnel.ClampWrite(sp.Code, target)
-	if step < 0 && write > tunnel.Clamp(sp.Code, target) {
-		return
+	if step < 0 && write > tunnel.Clamp(sp.Code, target) && write >= cur {
+		return // the floor lifted the step, and the lifted value lowers nothing
 	}
 	target = write
 	if sp.Kind == tunnel.Choice {
