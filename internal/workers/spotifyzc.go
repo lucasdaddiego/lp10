@@ -43,21 +43,9 @@ func zcTarget(cfg config.Config) (host, fixed string, enabled bool) {
 // matched against (nil when it is unresolvable — matching then falls back to
 // the SRV host name).
 func zcResolve(ctx context.Context, host string) net.IP {
-	if ip := net.ParseIP(host); ip != nil {
-		return ip.To4()
-	}
 	rctx, cancel := context.WithTimeout(ctx, zcResolveTimeout)
 	defer cancel()
-	addrs, err := net.DefaultResolver.LookupIPAddr(rctx, host)
-	if err != nil {
-		return nil
-	}
-	for _, a := range addrs {
-		if ip4 := a.IP.To4(); ip4 != nil {
-			return ip4
-		}
-	}
-	return nil
+	return discovery.ResolveIPv4(rctx, host)
 }
 
 // zcFind is the mDNS lookup, a var so tests can stand in a fake advertiser

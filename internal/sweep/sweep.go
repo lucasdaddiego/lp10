@@ -40,6 +40,7 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/config"
 	"github.com/lucasdaddiego/lp10/internal/discovery"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
 	"github.com/lucasdaddiego/lp10/internal/workers"
 )
 
@@ -186,8 +187,7 @@ type BundleFacts struct {
 const (
 	probeTimeout = 6 * time.Second
 
-	tunnelPort = 2018
-	upnpPort   = 49494 // dmr: the DLNA renderer's description and control
+	upnpPort = 49494 // dmr: the DLNA renderer's description and control
 
 	// appIndexURL is the vendor-app index the box's loader fetches (§10.2).
 	appIndexURL = "https://cdn.rakoit-ota.com/download/LP10/app-0.json"
@@ -280,7 +280,7 @@ func upnpURL(host string) string {
 func Run(ctx context.Context, cfg config.Config, pr Probes) Report {
 	r := Report{At: time.Now(), Host: cfg.Host}
 
-	ans, err := pr.Tunnel(ctx, net.JoinHostPort(cfg.Host, strconv.Itoa(tunnelPort)))
+	ans, err := pr.Tunnel(ctx, net.JoinHostPort(cfg.Host, strconv.Itoa(tunnel.Port)))
 	r.Tunnel = tunnelFacts(ans, err)
 	if b, err := pr.UPnP(ctx, cfg.Host); err != nil {
 		r.UPnP.Err = clip(err.Error(), maxField)
@@ -291,7 +291,13 @@ func Run(ctx context.Context, cfg config.Config, pr Probes) Report {
 		r.LSSDP = LSSDPFacts{OK: true, FW: protocol.Printable(info.FW), State: protocol.Printable(info.State),
 			NetMode: protocol.Printable(info.NetMode), Name: protocol.Printable(info.Name)}
 	}
-	if ep, ok := pr.FindZC(ctx, cfg.Host, net.ParseIP(cfg.Host), probeTimeout); ok {
+	// matched by the address the host resolves to, as the TUI matches it: a
+	// router DNS name (lp10.lan) otherwise matched no A record, and the sole
+	// advertiser fallback refused an endpoint it could place by address
+	rctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	zcIP := discovery.ResolveIPv4(rctx, cfg.Host)
+	cancel()
+	if ep, ok := pr.FindZC(ctx, cfg.Host, zcIP, probeTimeout); ok {
 		r.ZeroConf.Port = ep.Port
 		if zc, ok := pr.ProbeZC(ctx, ep.Addr(), probeTimeout); ok {
 			r.ZeroConf.OK = true

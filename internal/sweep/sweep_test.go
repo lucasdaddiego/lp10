@@ -1758,3 +1758,21 @@ func TestTargetNote(t *testing.T) {
 		t.Errorf("pinned: %q", got)
 	}
 }
+
+// The ZeroConf lookup gets the address the host resolves to, as the TUI's
+// does: a host name (a router's DNS name) used to reach FindZC as a nil IP,
+// so the endpoint's A record matched nothing and the sole-advertiser
+// fallback refused it.
+func TestRunMatchesZeroConfByTheResolvedHost(t *testing.T) {
+	pr := quietLAN()
+	var got []net.IP
+	pr.FindZC = func(_ context.Context, _ string, ip net.IP, _ time.Duration) (discovery.SpotifyEndpoint, bool) {
+		got = append(got, ip)
+		return discovery.SpotifyEndpoint{}, false
+	}
+	Run(context.Background(), config.Config{Host: "localhost"}, pr)
+	Run(context.Background(), config.Config{Host: "192.0.2.13"}, pr)
+	if len(got) != 2 || !got[0].Equal(net.IPv4(127, 0, 0, 1)) || !got[1].Equal(net.IPv4(192, 0, 2, 13)) {
+		t.Errorf("FindZC got %v, want [127.0.0.1 192.0.2.13]", got)
+	}
+}

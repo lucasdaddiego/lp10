@@ -127,22 +127,31 @@ func resolveUDP4(ctx context.Context, host, port string) (*net.UDPAddr, bool) {
 	if err != nil || p < 1 || p > 65535 {
 		return nil, false
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip4 := ip.To4(); ip4 != nil {
-			return &net.UDPAddr{IP: ip4, Port: p}, true
-		}
+	ip := ResolveIPv4(ctx, host)
+	if ip == nil {
 		return nil, false
+	}
+	return &net.UDPAddr{IP: ip, Port: p}, true
+}
+
+// ResolveIPv4 is host's IPv4 address: an IP literal as is (nil for an IPv6
+// one), a name through the resolver bounded by ctx (a .local name goes
+// through mDNS), its first IPv4 answer. nil when there is none. The one rule
+// for the LSSDP probe, the ZeroConf match and the sweep.
+func ResolveIPv4(ctx context.Context, host string) net.IP {
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.To4()
 	}
 	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, false
+		return nil
 	}
 	for _, a := range addrs {
 		if ip4 := a.IP.To4(); ip4 != nil {
-			return &net.UDPAddr{IP: ip4, Port: p, Zone: a.Zone}, true
+			return ip4
 		}
 	}
-	return nil, false
+	return nil
 }
 
 // FindLP10LSSDP is the mDNS fallback: a multicast M-SEARCH out every
