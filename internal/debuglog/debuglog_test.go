@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Unset, Open is nil and Wrap hands the connection back untouched; a nil Log
@@ -108,5 +110,78 @@ func TestExistingFileAndBadPaths(t *testing.T) {
 	t.Setenv(Env, t.TempDir())
 	if l := Open(); l != nil {
 		t.Error("a directory returned a log")
+	}
+}
+
+// At MaxBytes the file moves to "<path>.1" and a new one starts, so a long
+// session holds two files of about MaxBytes at most; a second rotation
+// replaces the old ".1". An existing file already over the cap rotates at
+// Open, so the cap holds across reconnects too.
+func TestRotatesAtTheCap(t *testing.T) {
+	old := MaxBytes
+	MaxBytes = 200
+	t.Cleanup(func() { MaxBytes = old })
+	p := filepath.Join(t.TempDir(), "frames.log")
+	t.Setenv(Env, p)
+	l := Open()
+	if l == nil {
+		t.Fatal("Open returned nil")
+	}
+	chunk := []byte(strings.Repeat("x", 40)) // one line is ~80 bytes with the stamp
+	for range 20 {
+		l.Frame("<", chunk)
+	}
+	l.Close()
+	for _, f := range []string{p, p + ".1"} {
+		fi, err := os.Stat(f)
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		if fi.Size() > MaxBytes {
+			t.Errorf("%s is %d bytes, want at most the %d cap", f, fi.Size(), MaxBytes)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode %o, want 0600", f, fi.Mode().Perm())
+		}
+	}
+	if _, err := os.Stat(p + ".2"); err == nil {
+		t.Error("a third generation was kept")
+	}
+
+	if err := os.WriteFile(p, []byte(strings.Repeat("y", 300)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l = Open()
+	if l == nil {
+		t.Fatal("Open refused a file over the cap instead of rotating it")
+	}
+	l.Frame(">", []byte("STA;"))
+	l.Close()
+	if raw, _ := os.ReadFile(p); strings.Contains(string(raw), "y") || !strings.Contains(string(raw), "STA;") {
+		t.Errorf("after Open over the cap the file = %q, want only the new frame", raw)
+	}
+	if raw, _ := os.ReadFile(p + ".1"); len(raw) != 300 {
+		t.Errorf(".1 holds %d bytes, want the 300 rotated out", len(raw))
+	}
+}
+
+// A FIFO with no reader is refused at once: a blocking open would hang the
+// tunnel worker, and quit would then wait on it for ever.
+func TestFIFOIsRefusedWithoutBlocking(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Skip("mkfifo:", err)
+	}
+	t.Setenv(Env, p)
+	got := make(chan *Log, 1)
+	go func() { got <- Open() }()
+	select {
+	case l := <-got:
+		if l != nil {
+			l.Close()
+			t.Error("a FIFO returned a log")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Open blocked on a FIFO with no reader")
 	}
 }

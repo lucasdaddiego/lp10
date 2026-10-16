@@ -474,7 +474,7 @@ switches off the probe it names for `LP10_LSSDP_HOST`, `LP10_ZC_ADDR` and
 | `LP10_LSSDP_HOST` | the UDP:1800 liveness probe's target (`host` or `host:port`) |
 | `LP10_ZC_ADDR` | a fixed Spotify ZeroConf `host:port`, skipping mDNS |
 | `LP10_OTA_URL` | the vendor's firmware manifest URL — set it empty to switch the on-demand check off (`u` then says the check is off) |
-| `LP10_DEBUG` | append every `:2018` chunk, both directions, to this file (created `0600`, one quoted line per chunk) for a bug report — tunnel traffic only, never a path, an address or a config value |
+| `LP10_DEBUG` | append every `:2018` chunk, both directions, to this file (created `0600`, one quoted line per chunk; at 8 MiB it moves to `<path>.1` and a new file starts, so two files at most) for a bug report — tunnel traffic only, never a path, an address or a config value |
 | `LP10_COVERDIR` · `LP10_DUMP_DIR` | `make cover` instrumentation · dump every layout the invariants test renders |
 
 `LC_ALL` / `LC_CTYPE` / `LANG` pick the ASCII glyph set under a CJK locale.
