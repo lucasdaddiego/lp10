@@ -12,6 +12,9 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
+	"github.com/lucasdaddiego/lp10/internal/tunnel"
 )
 
 // tunnelQueries are the only codes the sweep sends, each as a bare "CODE;"
@@ -259,7 +262,7 @@ func tunnelFacts(ans map[string]string, err error) TunnelFacts {
 		switch code {
 		case "VER":
 			t.Ver = v
-			t.MCU, _, _ = strings.Cut(v, "-")
+			t.MCU = protocol.Before(v, "-")
 		case "PEQ":
 			t.Presets = v
 		case "LST":
@@ -293,8 +296,15 @@ func statusFact(sta string) string {
 	return strings.Join(parts, " ")
 }
 
-// settingCodes are the settings Write prints on one line, in this order.
-var settingCodes = []string{"MXV", "EQE", "EQS", "BAS", "MID", "TRE", "VBS", "VBI", "BAL"}
+// settingCodes are the settings Write prints on one line: the controls, in
+// tunnel.Specs order.
+var settingCodes = func() []string {
+	out := make([]string, len(tunnel.Specs))
+	for i, sp := range tunnel.Specs {
+		out[i] = sp.Code
+	}
+	return out
+}()
 
 // settingsFact is the user's settings as "MXV:100 EQE:0 …", the answered ones only.
 func settingsFact(s map[string]string) string {

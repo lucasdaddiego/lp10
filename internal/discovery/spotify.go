@@ -22,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 const spotifyService = "_spotify-connect._tcp.local"
@@ -192,20 +194,10 @@ const (
 	maxZCBody  = 64 << 10
 )
 
-// zcField control-strips and caps one string field.
+// zcField control-strips and caps one string field (maxZCField runes).
 func zcField(v any) string {
 	s, _ := v.(string)
-	var b strings.Builder
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			continue
-		}
-		if b.Len() >= maxZCField {
-			break
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
+	return protocol.Bounded(s, maxZCField)
 }
 
 // parseSpotifyZC decodes a getInfo body. false for anything that is not a JSON

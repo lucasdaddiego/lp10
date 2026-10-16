@@ -225,14 +225,13 @@ func Wire(code string, val int, query bool) (string, bool) {
 		}
 		return Query(code), true
 	}
-	sp, ok := anySpec(code)
-	if !ok {
+	if _, ok := anySpec(code); !ok {
 		return "", false
 	}
 	if query {
 		return Query(code), true
 	}
-	return code + ":" + strconv.Itoa(max(sp.writeMin(), min(sp.Max, val))) + ";", true
+	return Set(code, val), true
 }
 
 // IsAction reports whether code is one of the bare actions (POP, NXT, PRE).
@@ -345,21 +344,8 @@ func parseStatus(v string) (Status, bool) {
 }
 
 // cleanText reduces a device text value to printable runes, clipped to n
-// runes: every one of them reaches the frame. The clipped, trimmed result is
-// stripped once more: the clip or the trim can leave a zero-width joiner at
-// an edge, which Printable keeps only between two runes.
-func cleanText(s string, n int) string {
-	var b strings.Builder
-	i := 0
-	for _, r := range protocol.Printable(s) {
-		if i >= n {
-			break
-		}
-		b.WriteRune(r)
-		i++
-	}
-	return protocol.Printable(strings.TrimSpace(b.String()))
-}
+// runes: every one of them reaches the frame.
+func cleanText(s string, n int) string { return protocol.Bounded(s, n) }
 
 // maxPresetName bounds one preset label so a hostile reply can't widen the
 // equalizer row past the frame; the device's own names are single words.
@@ -393,24 +379,15 @@ func parsePresets(list string) []string {
 }
 
 // cleanName reduces a preset label to printable runes, clipped to
-// maxPresetName runes. The strip is protocol.Printable, the rule every other
-// device string gets: a C0/C1-only filter let a bidi override, a line
-// separator or a zero-width space through to the equalizer row.
-//
-// The result is stripped once more for the zero-width joiner a clip or the
-// trim can leave at an edge.
+// maxPresetName runes, with the list's own separators (; , @) dropped. The
+// strip is protocol.Printable, the rule every other device string gets: a
+// C0/C1-only filter let a bidi override, a line separator or a zero-width
+// space through to the equalizer row.
 func cleanName(s string) string {
-	var b strings.Builder
-	n := 0
-	for _, r := range protocol.Printable(s) {
-		if n >= maxPresetName {
-			break
-		}
+	return protocol.Bounded(strings.Map(func(r rune) rune {
 		if r == ';' || r == ',' || r == '@' {
-			continue
+			return -1
 		}
-		b.WriteRune(r)
-		n++
-	}
-	return protocol.Printable(strings.TrimSpace(b.String()))
+		return r
+	}, s), maxPresetName)
 }

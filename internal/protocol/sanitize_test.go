@@ -171,3 +171,27 @@ func TestPrintableIsIdempotentAcrossAStrippedControl(t *testing.T) {
 		}
 	}
 }
+
+// Bounded strips, cuts to n runes (not bytes), trims, and strips once more:
+// a zero-width joiner the cut leaves at the edge goes.
+func TestBounded(t *testing.T) {
+	cases := []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"Flat", 16, "Flat"},
+		{"  Rock\x1b[31m  ", 16, "Rock[31m"},
+		{"Señalemelo", 4, "Seña"},
+		{"ab \u200dcd", 3, "ab"},
+		{"a\u200db", 1, "a"},
+		{"anything", 0, ""},
+		{"x", -1, ""},
+		{"", 5, ""},
+	}
+	for _, c := range cases {
+		if got := Bounded(c.in, c.n); got != c.want {
+			t.Errorf("Bounded(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}

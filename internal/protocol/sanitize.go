@@ -34,6 +34,27 @@ func (t *Track) Empty() bool {
 // tunnel's frames, the vendor's replies).
 func Printable(s string) string { return printable(s) }
 
+// Bounded is Printable(s) cut to n runes and trimmed: the bound for a device
+// string that lands in a fixed-width spot (a source name, a preset label, a
+// ZeroConf field). The cut and the trim can leave a zero-width joiner at an
+// edge, which printable keeps only between two runes, so the result is
+// stripped once more.
+func Bounded(s string, n int) string {
+	s = printable(s)
+	if n < 0 {
+		n = 0
+	}
+	i := 0
+	for j := range s {
+		if i == n {
+			s = s[:j]
+			break
+		}
+		i++
+	}
+	return printable(strings.TrimSpace(s))
+}
+
 // maxMarkRun caps consecutive combining marks (category M) kept by printable.
 // Marks are neither C nor Z, so a "zalgo" flood (one base rune + tens of
 // thousands of U+0301) would otherwise pass the strip whole — and because a
