@@ -38,22 +38,23 @@ ci: ## Everything CI runs, in CI's order and toolchain: gofmt, vet, go fix -diff
 # cover prints go test's log only on a failure, and then without the passing
 # packages' summary lines (the whole log if nothing else is left): the failing
 # tests, panics and build errors show instead of a bare "make: *** [cover] Error 1".
+# Both runs write the toolchain's binary coverage format (the unit test binaries
+# through -test.gocoverdir, the e2e-built lp10 binary through GOCOVERDIR via
+# LP10_COVERDIR), so `go tool covdata` merges them with no extra module.
 cover: ## Merged unit + integration coverage of the shipped packages -> coverage.out
 	@set -eu; \
 	covdir=$$(mktemp -d); \
-	unit=$$(mktemp); \
-	intg=$$(mktemp); \
-	merged=$$(mktemp); \
 	log=$$(mktemp); \
+	merged=$$(mktemp); \
 	out=$$(mktemp ./.coverage.out.XXXXXX); \
-	cleanup() { rm -rf "$$covdir" "$$unit" "$$intg" "$$merged" "$$log" "$$out"; }; \
+	cleanup() { rm -rf "$$covdir" "$$log" "$$merged" "$$out"; }; \
 	trap cleanup EXIT HUP INT TERM; \
-	if ! LP10_COVERDIR="$$covdir" go test ./... -coverpkg=./... -coverprofile="$$unit" >"$$log" 2>&1; then \
+	mkdir "$$covdir/unit" "$$covdir/e2e"; \
+	if ! LP10_COVERDIR="$$covdir/e2e" go test ./... -cover -coverpkg=./... -args -test.gocoverdir="$$covdir/unit" >"$$log" 2>&1; then \
 		grep -vE '^ok[[:space:]]+[^[:space:]]+[[:space:]]+([0-9.]+s|\(cached\))|^[[:space:]]+[^[:space:]:]+[[:space:]]+coverage: [0-9.]+% of statements' "$$log" >&2 || cat "$$log" >&2; \
 		exit 1; \
 	fi; \
-	go tool covdata textfmt -i="$$covdir" -o="$$intg"; \
-	go run github.com/wadey/gocovmerge@v0.0.0-20160331181800-b5bfa59ec0ad "$$unit" "$$intg" > "$$merged"; \
+	go tool covdata textfmt -i="$$covdir/unit,$$covdir/e2e" -o="$$merged"; \
 	grep -vE '/internal/(e2e|testutil)/' "$$merged" > "$$out"; \
 	report=$$(go tool cover -func="$$out"); \
 	printf '%s\n' "$$report" | tail -1; \
