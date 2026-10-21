@@ -224,7 +224,7 @@ func parseTunnelFrame(frame string) (code, val string, ok bool) {
 			return "", "", false
 		}
 	}
-	return code, clip(val, maxField), true
+	return code, clip(val), true
 }
 
 // pause waits d (nothing for d ≤ 0); false when ctx ended first.
@@ -248,7 +248,7 @@ func pause(ctx context.Context, d time.Duration) bool {
 func tunnelFacts(ans map[string]string, err error) TunnelFacts {
 	t := TunnelFacts{OK: len(ans) > 0}
 	if err != nil {
-		t.Err = clip(err.Error(), maxField)
+		t.Err = clip(err.Error())
 	} else if !t.OK {
 		t.Err = "no answer to any query"
 	}
@@ -258,7 +258,7 @@ func tunnelFacts(ans map[string]string, err error) TunnelFacts {
 			t.Unanswered = append(t.Unanswered, code)
 			continue
 		}
-		v = clip(v, maxField)
+		v = clip(v)
 		switch code {
 		case "VER":
 			t.Ver = v

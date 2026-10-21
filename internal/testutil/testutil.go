@@ -1,6 +1,6 @@
-// Package testutil provides shared helpers for the test suite: an env-isolation
-// fixture, a builder for the lp10 command binary, and an in-process fake of
-// the device's :2018 control tunnel. Imported only from _test.go files.
+// Package testutil provides shared helpers for the test suite: a builder for
+// the lp10 command binary and an in-process fake of the device's :2018 control
+// tunnel. Imported only from _test.go files.
 package testutil
 
 import (
@@ -15,27 +15,6 @@ import (
 	"testing"
 	"time"
 )
-
-// envVars are the ambient LP10_* overrides a test must not inherit.
-var envVars = []string{
-	"LP10_HOST", "LP10_STATE_DIR", "LP10_TUNNEL_ADDR",
-	"LP10_LSSDP_HOST", "LP10_ZC_ADDR", "LP10_OTA_URL", "LP10_DEBUG",
-}
-
-// Isolate clears ambient LP10_* env and points state + config at temp dirs, so
-// no test touches the real state dir or config. Set-but-empty is what each
-// variable reads as here: config.Load and the tunnel address treat an empty
-// LP10_HOST / LP10_TUNNEL_ADDR as unset, and an empty LP10_LSSDP_HOST,
-// LP10_ZC_ADDR or LP10_OTA_URL switches that probe off — so nothing leaves the
-// laptop from an isolated test.
-func Isolate(t *testing.T) {
-	t.Helper()
-	for _, v := range envVars {
-		t.Setenv(v, "")
-	}
-	t.Setenv("LP10_STATE_DIR", filepath.Join(t.TempDir(), "state"))
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
-}
 
 // Cleanup removes the lp10 binary's temp dir. Call it from the importing
 // package's TestMain after m.Run: the binary is built once per test binary

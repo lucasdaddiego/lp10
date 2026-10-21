@@ -203,7 +203,7 @@ func (m *model) renderDashboard(s protocol.Snapshot, now time.Time, W int, full 
 		}
 		if idle(s) {
 			// connected, nothing playing: the idle screen instead of an empty sleeve
-			return append(m.renderIdle(s, now, W, inner-len(tail)), tail...)
+			return append(m.renderIdle(now, W, inner-len(tail)), tail...)
 		}
 		// The framed art fills the region between the header and that tail. Its
 		// height comes from the real region; its width makes the box *square in

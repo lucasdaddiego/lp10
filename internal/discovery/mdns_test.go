@@ -322,7 +322,7 @@ func TestFindLP10HintedWaitsForNamedDevice(t *testing.T) {
 }
 
 func TestBuildQueryShape(t *testing.T) {
-	q := buildQuery(service, typePTR)
+	q := buildQuery(service)
 	if be16(q, 4) != 1 { // QDCOUNT
 		t.Errorf("QDCOUNT = %d, want 1", be16(q, 4))
 	}

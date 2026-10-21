@@ -112,7 +112,7 @@ func TestCov_ParsePacketTooShort(t *testing.T) {
 func TestCov_ParsePacketWalksQuestionSection(t *testing.T) {
 	// buildQuery emits a question and no answers; round-tripping it through
 	// parsePacket exercises the question-skip loop the answer-only fixtures miss.
-	recs, ok := parsePacket(buildQuery(service, typePTR))
+	recs, ok := parsePacket(buildQuery(service))
 	if !ok || len(recs) != 0 {
 		t.Fatalf("parsePacket(query) = %v ok=%v; want ok with zero records", recs, ok)
 	}

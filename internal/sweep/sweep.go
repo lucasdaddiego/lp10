@@ -243,13 +243,13 @@ func DefaultProbes() Probes {
 			return readTunnel(ctx, addr, liveTunnel)
 		},
 		UPnP: func(ctx context.Context, host string) ([]byte, error) {
-			return getBounded(ctx, lanClient, upnpURL(host), maxBody)
+			return getBounded(ctx, lanClient, upnpURL(host))
 		},
 		LSSDP:   discovery.ProbeLSSDP,
 		FindZC:  discovery.FindSpotifyZC,
 		ProbeZC: discovery.ProbeSpotifyZC,
 		AppIndex: func(ctx context.Context) ([]byte, error) {
-			return getBounded(ctx, http.DefaultClient, appIndexURL, maxBody)
+			return getBounded(ctx, http.DefaultClient, appIndexURL)
 		},
 		Manifest: workers.OTACheck,
 		Head: func(ctx context.Context, url string) (*http.Response, error) {
@@ -283,7 +283,7 @@ func Run(ctx context.Context, cfg config.Config, pr Probes) Report {
 	ans, err := pr.Tunnel(ctx, net.JoinHostPort(cfg.Host, strconv.Itoa(tunnel.Port)))
 	r.Tunnel = tunnelFacts(ans, err)
 	if b, err := pr.UPnP(ctx, cfg.Host); err != nil {
-		r.UPnP.Err = clip(err.Error(), maxField)
+		r.UPnP.Err = clip(err.Error())
 	} else {
 		r.UPnP = parseUPnP(b)
 	}
@@ -307,7 +307,7 @@ func Run(ctx context.Context, cfg config.Config, pr Probes) Report {
 	open, debugChecked, err := pr.Ports(ctx, cfg.Host)
 	r.Ports = PortFacts{OK: err == nil, Open: open, DebugChecked: debugChecked}
 	if err != nil {
-		r.Ports.Err = clip(err.Error(), maxField)
+		r.Ports.Err = clip(err.Error())
 	}
 
 	if pr.Manifest0 == "" {
@@ -317,7 +317,7 @@ func Run(ctx context.Context, cfg config.Config, pr Probes) Report {
 	// build the box reports, then the newest bundle it serves (asked for an
 	// old build, so it names the package)
 	if b, err := pr.AppIndex(ctx); err != nil {
-		r.VendorApp.Err = clip(err.Error(), maxField)
+		r.VendorApp.Err = clip(err.Error())
 	} else {
 		r.VendorApp = parseAppIndex(b)
 	}
@@ -365,19 +365,19 @@ func headBundle(ctx context.Context, pr Probes, url string, b *BundleFacts) {
 	b.ETag = strings.Trim(protocol.Printable(resp.Header.Get("ETag")), `"`)
 }
 
-// clip control-strips s and cuts it to n runes, marking the cut: the bound
-// every device or vendor string gets before it lands in the report.
-func clip(s string, n int) string {
+// clip control-strips s and cuts it to maxField runes, marking the cut: the
+// bound every device or vendor string gets before it lands in the report.
+func clip(s string) string {
 	s = strings.TrimSpace(protocol.Printable(s))
-	if utf8.RuneCountInString(s) <= n {
+	if utf8.RuneCountInString(s) <= maxField {
 		return s
 	}
-	return string([]rune(s)[:n]) + "…"
+	return string([]rune(s)[:maxField]) + "…"
 }
 
 // getBounded GETs url and returns its body: an error for any status but 200,
-// and for a body over limit — cut, it would parse as a different answer.
-func getBounded(ctx context.Context, client *http.Client, url string, limit int64) ([]byte, error) {
+// and for a body over maxBody — cut, it would parse as a different answer.
+func getBounded(ctx context.Context, client *http.Client, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -392,12 +392,12 @@ func getBounded(ctx context.Context, client *http.Client, url string, limit int6
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("answered %s", protocol.Printable(resp.Status))
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("reply over %d KiB", limit>>10)
+	if len(b) > maxBody {
+		return nil, fmt.Errorf("reply over %d KiB", maxBody>>10)
 	}
 	return b, nil
 }
@@ -434,14 +434,14 @@ func parseUPnP(b []byte) UPnPFacts {
 		return UPnPFacts{Err: "unreadable description"}
 	}
 	d := root.Device
-	u := UPnPFacts{FriendlyName: clip(d.FriendlyName, maxField), Manufacturer: clip(d.Manufacturer, maxField),
-		ModelName: clip(d.ModelName, maxField), ModelNumber: clip(d.ModelNumber, maxField),
-		ModelDescription: clip(d.ModelDescription, maxField)}
+	u := UPnPFacts{FriendlyName: clip(d.FriendlyName), Manufacturer: clip(d.Manufacturer),
+		ModelName: clip(d.ModelName), ModelNumber: clip(d.ModelNumber),
+		ModelDescription: clip(d.ModelDescription)}
 	seen := map[string]bool{}
 	var walk func(d upnpDevice)
 	walk = func(d upnpDevice) {
 		for _, s := range d.Services {
-			if t := clip(s.Type, maxField); t != "" && len(seen) < maxServices {
+			if t := clip(s.Type); t != "" && len(seen) < maxServices {
 				seen[t] = true
 			}
 		}
@@ -477,7 +477,7 @@ func parseAppIndex(b []byte) VendorAppFacts {
 	}
 	for _, e := range entries {
 		if e.Name == "rakoit_app" {
-			return VendorAppFacts{OK: true, Name: e.Name, Version: clip(e.Version, maxField), MD5: clip(e.MD5, maxField)}
+			return VendorAppFacts{OK: true, Name: e.Name, Version: clip(e.Version), MD5: clip(e.MD5)}
 		}
 	}
 	return VendorAppFacts{Err: "no rakoit_app entry"}

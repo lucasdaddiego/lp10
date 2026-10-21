@@ -6,8 +6,6 @@ package tui
 
 import (
 	"time"
-
-	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
 // blockDigits is a 5-row block font for the clock: the ten digits and the
@@ -53,7 +51,7 @@ const wakeHint = "start something on Spotify · AirPlay · Bluetooth"
 // renderIdle is the full player's body when the box is connected and nothing
 // plays: the clock, then what would wake it. Returned already sized to h rows
 // (the footer stays pinned below by the caller).
-func (m *model) renderIdle(s protocol.Snapshot, now time.Time, W, h int) []string {
+func (m *model) renderIdle(now time.Time, W, h int) []string {
 	ps := m.sty.pens()
 	var mid []string
 	for _, row := range bigClock(now) {

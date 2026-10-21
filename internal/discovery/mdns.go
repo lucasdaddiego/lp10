@@ -77,7 +77,7 @@ func (d Device) Addr() string {
 func FindLP10(ctx context.Context, nameHint string, timeout time.Duration) (Device, bool) {
 	col := newCollector()
 	var early Device
-	out := query(ctx, mdnsAddr, buildQuery(service, typePTR), timeout, true, func(r reply) bool {
+	out := query(ctx, mdnsAddr, buildQuery(service), timeout, true, func(r reply) bool {
 		recs, ok := parsePacket(r.data)
 		if !ok {
 			return false
@@ -306,11 +306,13 @@ func encodeName(name string) []byte {
 	return append(b, 0)
 }
 
-func buildQuery(name string, qtype uint16) []byte {
+// buildQuery is a one-question PTR query for name: the only record type the
+// two browsers ask for.
+func buildQuery(name string) []byte {
 	msg := make([]byte, 12) // header: id=0, flags=0, counts=0…
 	msg[5] = 1              // QDCOUNT = 1
 	msg = append(msg, encodeName(name)...)
-	msg = binary.BigEndian.AppendUint16(msg, qtype)
+	msg = binary.BigEndian.AppendUint16(msg, typePTR)
 	return binary.BigEndian.AppendUint16(msg, classQU|1) // QCLASS: QU | IN
 }
 

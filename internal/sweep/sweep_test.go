@@ -681,22 +681,22 @@ func TestGetBounded(t *testing.T) {
 	}))
 	defer srv.Close()
 	ctx := context.Background()
-	if b, err := getBounded(ctx, http.DefaultClient, srv.URL+"/ok", maxBody); err != nil || string(b) != appIndexJSON {
+	if b, err := getBounded(ctx, http.DefaultClient, srv.URL+"/ok"); err != nil || string(b) != appIndexJSON {
 		t.Errorf("ok = %q, %v", b, err)
 	}
-	if b, err := getBounded(ctx, http.DefaultClient, srv.URL+"/full", maxBody); err != nil || len(b) != maxBody {
+	if b, err := getBounded(ctx, http.DefaultClient, srv.URL+"/full"); err != nil || len(b) != maxBody {
 		t.Errorf("a body at the limit = %d bytes, %v", len(b), err)
 	}
-	if _, err := getBounded(ctx, http.DefaultClient, srv.URL+"/over", maxBody); err == nil || err.Error() != "reply over 64 KiB" {
+	if _, err := getBounded(ctx, http.DefaultClient, srv.URL+"/over"); err == nil || err.Error() != "reply over 64 KiB" {
 		t.Errorf("a body over the limit = %v", err)
 	}
-	if _, err := getBounded(ctx, http.DefaultClient, srv.URL+"/gone", maxBody); err == nil || err.Error() != "answered 404 Not Found" {
+	if _, err := getBounded(ctx, http.DefaultClient, srv.URL+"/gone"); err == nil || err.Error() != "answered 404 Not Found" {
 		t.Errorf("a 404 = %v", err)
 	}
-	if _, err := getBounded(ctx, lanClient, srv.URL+"/away", maxBody); err == nil || err.Error() != "answered 302 Found" {
+	if _, err := getBounded(ctx, lanClient, srv.URL+"/away"); err == nil || err.Error() != "answered 302 Found" {
 		t.Errorf("the box's redirect = %v", err)
 	}
-	if _, err := getBounded(ctx, http.DefaultClient, "http://\x7f", maxBody); err == nil {
+	if _, err := getBounded(ctx, http.DefaultClient, "http://\x7f"); err == nil {
 		t.Error("a bad url fetched")
 	}
 	if got := upnpURL("192.168.0.13"); got != "http://192.168.0.13:49494/description.xml" {

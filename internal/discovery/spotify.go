@@ -155,7 +155,7 @@ func placeable(e SpotifyEndpoint, host string, ip net.IP) bool {
 func FindSpotifyZC(ctx context.Context, host string, ip net.IP, timeout time.Duration) (SpotifyEndpoint, bool) {
 	var recs []rr
 	var early SpotifyEndpoint
-	out := query(ctx, mdnsAddr, buildQuery(spotifyService, typePTR), timeout, true, func(r reply) bool {
+	out := query(ctx, mdnsAddr, buildQuery(spotifyService), timeout, true, func(r reply) bool {
 		rs, ok := parsePacket(r.data)
 		if !ok {
 			return false

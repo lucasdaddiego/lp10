@@ -28,7 +28,7 @@ func FuzzParsePacket(f *testing.F) {
 	// an instance label that lower-casing grows (each invalid byte becomes a
 	// 3-byte U+FFFD): the name cut once indexed past the end of the original
 	f.Add(spotifyPkt(strings.Repeat("\xff", 15), "x.local", "192.168.0.13", 9095))
-	f.Add(buildQuery(service, typePTR))
+	f.Add(buildQuery(service))
 	// self-referential compression pointer at the first answer name
 	f.Add(append(append([]byte(nil), 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0), 0xC0, 12, 0, 12, 0, 1, 0, 0, 0, 0, 0, 0))
 	f.Add([]byte{0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}) // huge counts, no data
