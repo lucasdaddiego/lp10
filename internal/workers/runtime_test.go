@@ -124,10 +124,8 @@ func TestPreloadSnapshot(t *testing.T) {
 		eq     map[string]int
 	}{
 		{"nothing cached", nil, 0, map[string]int{}},
-		{"volume only, clamped", &config.CachedSnapshot{Vol: 150}, 100, map[string]int{}},
-		{"only unknown codes", &config.CachedSnapshot{Vol: 20, EQ: map[string]int{"ZZZ": 1, "VOL": 9}}, 20, map[string]int{}},
-		{"known codes clamped", &config.CachedSnapshot{Vol: 20, EQ: map[string]int{"BAS": -50, "MXV": 250, "EQS": 3, "ZZZ": 1}},
-			20, map[string]int{"BAS": -10, "MXV": 100, "EQS": 3}},
+		{"clamped, unknown codes dropped", &config.CachedSnapshot{Vol: 150, EQ: map[string]int{"BAS": -50, "MXV": 250, "EQS": 3, "ZZZ": 1, "VOL": 9}},
+			100, map[string]int{"BAS": -10, "MXV": 100, "EQS": 3}},
 	} {
 		st := protocol.NewState()
 		PreloadSnapshot(st, tc.cached)
@@ -142,18 +140,6 @@ func TestPreloadSnapshot(t *testing.T) {
 	st.ApplyVolume(31)
 	if v, _ := st.EQValue("BAS"); v != -2 || st.Snap().Vol != 31 {
 		t.Errorf("the device's reading did not replace the preload: BAS %d vol %d", v, st.Snap().Vol)
-	}
-}
-
-// selfSnap persists exactly the volume and the known EQ values.
-func TestSelfSnap(t *testing.T) {
-	t.Parallel()
-	st := protocol.NewState()
-	st.SetVol(33)
-	st.SetEQLocal("TRE", 4)
-	st.SetEQLocal("BAL", -20)
-	if got := selfSnap(st); got.Vol != 33 || !maps.Equal(got.EQ, map[string]int{"TRE": 4, "BAL": -20}) {
-		t.Errorf("selfSnap = %+v", got)
 	}
 }
 

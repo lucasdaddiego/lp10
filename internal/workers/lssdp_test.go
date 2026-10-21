@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"net"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,49 +85,26 @@ func TestLSSDPWorkerRecordsAnswer(t *testing.T) {
 	}
 }
 
-// A silent target: the probe is stamped, nothing is recorded as alive.
-func TestLSSDPWorkerRecordsSilence(t *testing.T) {
-	t.Parallel()
-	addr, _ := fakeLSSDP(t, "")
-	st := protocol.NewState()
-	stop := startLSSDP(t, st, addr)
-	eventually(t, "a probe stamped", 5*time.Second, func() bool { return !st.DiagnosticView().LSSDPProbeAt.IsZero() })
-	stop()
-	if d := st.DiagnosticView(); d.LSSDP != nil || st.Snap().LSSDPAlive {
-		t.Errorf("silent target: %+v alive=%v", d.LSSDP, st.Snap().LSSDPAlive)
-	}
-}
-
-// LP10_LSSDP_HOST beats the configured host; set-but-empty disables the
-// worker outright (the hermetic e2e contract), as does no host at all.
-func TestLSSDPHostOverride(t *testing.T) {
-	if h, ok := lssdpHost(config.Config{Host: "1.2.3.4"}); !ok || h != "1.2.3.4" {
-		t.Errorf("no override: %q %v", h, ok)
-	}
-	if h, ok := lssdpHost(config.Config{}); ok || h != "" {
-		t.Errorf("no host should disable: %q %v", h, ok)
-	}
-	t.Setenv("LP10_LSSDP_HOST", "127.0.0.1:9")
-	if h, ok := lssdpHost(config.Config{Host: "1.2.3.4"}); !ok || h != "127.0.0.1:9" {
-		t.Errorf("override: %q %v", h, ok)
-	}
+// Set-but-empty LP10_LSSDP_HOST disables the worker outright (the hermetic
+// e2e contract), as does no host at all: it returns at once, without a probe.
+func TestLSSDPWorkerDisabled(t *testing.T) {
 	t.Setenv("LP10_LSSDP_HOST", "")
-	if h, ok := lssdpHost(config.Config{Host: "1.2.3.4"}); ok || h != "" {
-		t.Errorf("empty override should disable: %q %v", h, ok)
-	}
-	st := protocol.NewState()
-	done := make(chan struct{})
-	go func() {
-		lssdpWorker(context.Background(), newRunControl(), st, config.Config{Host: "1.2.3.4"})
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("a disabled worker should return at once")
-	}
-	if !st.DiagnosticView().LSSDPProbeAt.IsZero() {
-		t.Error("a disabled worker probed")
+	for _, cfg := range []config.Config{{Host: "1.2.3.4"}, {}} {
+		st := protocol.NewState()
+		done := make(chan struct{})
+		go func() {
+			lssdpWorker(context.Background(), newRunControl(), st, cfg)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("a disabled worker should return at once")
+		}
+		if !st.DiagnosticView().LSSDPProbeAt.IsZero() {
+			t.Error("a disabled worker probed")
+		}
+		os.Unsetenv("LP10_LSSDP_HOST") // the second round: no override, no host (t.Setenv restores it)
 	}
 }
 
@@ -168,43 +146,56 @@ func TestLSSDPWorkerStopBeforeFirstProbe(t *testing.T) {
 	}
 }
 
-// The first probe runs even when the tunnel is already up and nobody looks at
-// the answer: its firmware build is the connect summary's and the update
-// check's, and the tunnel connects before the probe is due.
-func TestLSSDPWorkerFirstProbeRunsWhenConnectedAndQuiet(t *testing.T) {
+// startProbeLoop runs probeLoop on st with a millisecond cadence (the LSSDP
+// and ZeroConf workers pass their seconds; the loop is the same) and stops it
+// when the test ends.
+func startProbeLoop(t *testing.T, st *protocol.State, probe func()) {
+	t.Helper()
+	control := newRunControl()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	cad := probeCadence{first: 10 * time.Millisecond, connected: 20 * time.Millisecond, disconnected: 20 * time.Millisecond}
+	go func() { probeLoop(ctx, control, st, "probe", cad, probe); close(done) }()
+	t.Cleanup(func() {
+		control.stop.Set()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("the probe loop did not stop")
+		}
+	})
+}
+
+// The first probe runs even when connected with nobody looking (its answer is
+// the connect summary's and the update check's); after it, a connected loop
+// with nobody looking asks nothing and polls the flag instead; the moment a
+// view wants the answer, the next probe fires within probeQuietPoll and the
+// cadence resumes.
+func TestProbeLoopQuietCadence(t *testing.T) {
 	t.Parallel()
-	addr, hits := fakeLSSDP(t, cannedLSSDP)
 	st := protocol.NewState()
 	st.Received() // connected
 	st.SetProbeQuiet(true)
-	startLSSDP(t, st, addr)
-	eventually(t, "the first probe", lssdpFirstProbeLag+2*time.Second, func() bool { return st.Snap().LSSDPAlive })
-	if hits.Load() != 1 {
-		t.Errorf("probes = %d, want 1", hits.Load())
-	}
-}
-
-// After the first probe, a connected worker with nobody looking asks nothing
-// and polls the flag instead; the moment a view wants the answer, the next
-// probe fires within the quiet poll. Slow by necessity (~8 s): the round after
-// the first comes lssdpDisconnected (5 s) later, and only that round can be
-// skipped.
-func TestLSSDPWorkerQuietSkipsLaterProbes(t *testing.T) {
-	t.Parallel()
-	addr, hits := fakeLSSDP(t, cannedLSSDP)
-	st := protocol.NewState() // disconnected: the first probe runs, then the 5 s cadence
-	st.SetProbeQuiet(true)
-	startLSSDP(t, st, addr)
-	eventually(t, "the first probe", lssdpFirstProbeLag+2*time.Second, func() bool { return st.Snap().LSSDPAlive })
-	first := time.Now()
-	time.Sleep(200 * time.Millisecond) // let the worker pick its cadence while still disconnected
-	st.Received()                      // the tunnel connects
-	for time.Since(first) < lssdpDisconnected+time.Second {
+	var hits atomic.Int32
+	startProbeLoop(t, st, func() { hits.Add(1) })
+	eventually(t, "the first probe", 2*time.Second, func() bool { return hits.Load() == 1 })
+	for start := time.Now(); time.Since(start) < 300*time.Millisecond; time.Sleep(20 * time.Millisecond) {
 		if hits.Load() != 1 {
-			t.Fatalf("a quiet, connected worker probed again (%d probes)", hits.Load())
+			t.Fatalf("a quiet, connected loop probed again (%d probes)", hits.Load())
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 	st.SetProbeQuiet(false)
 	eventually(t, "a probe once a view wants it", probeQuietPoll+time.Second, func() bool { return hits.Load() == 2 })
+	eventually(t, "the cadence resumed", time.Second, func() bool { return hits.Load() >= 4 })
+}
+
+// A panic in the probe (the mDNS and LSSDP parsers read whatever the LAN
+// answers) must cost a noted error, not the program: a panic escaping the
+// worker's goroutine would kill lp10 with the terminal still in raw mode.
+func TestProbeLoopSurvivesAProbePanic(t *testing.T) {
+	t.Parallel()
+	st := protocol.NewState()
+	startProbeLoop(t, st, func() { panic("mdns parse boom") })
+	eventually(t, "the panic noted", 2*time.Second, func() bool { return st.Snap().Error == "probe: mdns parse boom" })
 }

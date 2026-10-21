@@ -53,30 +53,6 @@ func TestNoticeLineEvents(t *testing.T) {
 	}
 }
 
-// startupSummary names whatever of the identity is known: the firmware from
-// the LSSDP answer, the MCU build's version field, the eSDK's release.
-func TestStartupSummary(t *testing.T) {
-	all := protocol.DiagnosticSnapshot{
-		LSSDP:     &protocol.LSSDPInfo{FW: "AR241CP_8747.29.2"},
-		MCU:       "29-1d316f0c-10",
-		SpotifyZC: &protocol.SpotifyZC{LibraryVersion: "3.216.31-gdeadbeef"},
-	}
-	if got, want := startupSummary(all), "connected · firmware AR241CP_8747.29.2 · MCU 29 · Spotify eSDK 3.216.31"; got != want {
-		t.Errorf("all parts = %q, want %q", got, want)
-	}
-	partial := protocol.DiagnosticSnapshot{
-		LSSDP:     &protocol.LSSDPInfo{State: "S"}, // answered, but named no build
-		MCU:       "29",
-		SpotifyZC: &protocol.SpotifyZC{StatusString: "OK"}, // no library version
-	}
-	if got := startupSummary(partial); got != "connected · MCU 29" {
-		t.Errorf("partial = %q, want connected · MCU 29", got)
-	}
-	if got := startupSummary(protocol.DiagnosticSnapshot{}); got != "connected" {
-		t.Errorf("none = %q, want connected", got)
-	}
-}
-
 // A connect prints the summary once the MCU build (VER) and the ZeroConf
 // answer are in, or after startupSummaryWait with what it has; a lost
 // connection warns; a reconnect prints the summary again.

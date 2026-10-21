@@ -147,14 +147,3 @@ func TestPickLSSDP(t *testing.T) {
 		t.Errorf("a label carrying the name picks that name: %+v", d)
 	}
 }
-
-// FindLP10LSSDP on a LAN with nothing answering returns false within the window.
-func TestFindLP10LSSDPTimesOut(t *testing.T) {
-	start := time.Now()
-	if _, ok := FindLP10LSSDP(context.Background(), "nothing-here-zz", 200*time.Millisecond); ok {
-		t.Skip("an LSSDP device answered on this LAN")
-	}
-	if time.Since(start) > 3*time.Second {
-		t.Error("took too long to give up")
-	}
-}

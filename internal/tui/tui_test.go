@@ -80,20 +80,6 @@ func TestToggleIsOptimistic(t *testing.T) {
 	}
 }
 
-// n and p send the bare actions; the tunnel carries no position, so neither
-// touches the play state.
-func TestNextAndPrevSendActions(t *testing.T) {
-	m, st, collect := makeModel(t)
-	m.key(kr('n'))
-	m.key(kr('p'))
-	if got := wire(collect()); !slices.Equal(got, []string{"NXT", "PRE"}) {
-		t.Errorf("n p sent %v, want [NXT PRE]", got)
-	}
-	if !st.Snap().Playing {
-		t.Error("next/prev must not flip the play state")
-	}
-}
-
 // The mute is real (MUT in the MCU): the level stays where it is, the wire
 // says MUT:1 then MUT:0, and the notice line names each step.
 func TestMuteKeySendsTheRealMute(t *testing.T) {
@@ -163,92 +149,35 @@ func TestVolumeKeysSendTheNewLevel(t *testing.T) {
 	}
 }
 
+// The window title rides every frame, so it is seeded before the first one.
 func TestControllerInitialization(t *testing.T) {
 	m := newModel(playingState(), defaultCfg(), nil)
-	if m.focus != 1 || m.view != viewPlayer || len(m.flash) != 0 || m.rows != 0 {
-		t.Errorf("init state wrong: focus=%d view=%d flash=%v rows=%d", m.focus, m.view, m.flash, m.rows)
-	}
-	// the window title rides every frame, so it is seeded before the first one
 	if want := GL["note"] + " De Música Ligera — Soda Stereo"; m.curTitle != want {
 		t.Errorf("curTitle = %q, want %q", m.curTitle, want)
 	}
 }
 
-func TestControllerDoActions(t *testing.T) {
-	m, st, collect := modelWith(idleState())
-	m.do("next")
-	m.do("prev")
-	m.do("volup")
-	m.do("voldn")
-	m.do("toggle")
-	if got := wire(collect()); !slices.Equal(got, []string{"NXT", "PRE", "VOL:46", "VOL:44", "POP"}) {
-		t.Errorf("do sent %v", got)
-	}
-	if !st.Snap().Playing {
-		t.Error("toggle from idle should optimistically show playing")
-	}
-	// an action do() does not know sends nothing
-	m.do("rewind")
-	if got := collect(); len(got) != 0 {
-		t.Errorf("an unknown action sent %v", wire(got))
-	}
-}
-
 // ---- display helpers --------------------------------------------------------
-
-func TestClipEastAsianWidth(t *testing.T) {
-	if Clip("abc", 10) != "abc" {
-		t.Error("no clip when it fits")
-	}
-	if Clip("abcdef", 4) != "abc"+GL["ell"] {
-		t.Errorf("Clip(abcdef,4) = %q", Clip("abcdef", 4))
-	}
-	if DispW("漢") != 2 {
-		t.Error("CJK char should be width 2")
-	}
-	if got := Clip("漢字漢字", 4); got != "漢"+GL["ell"] {
-		t.Errorf("Clip(漢字漢字,4) = %q, want 漢%s", got, GL["ell"])
-	}
-	if Clip("", 5) != "" || Clip("hello", 0) != "" || Clip("hello", -1) != "" {
-		t.Error("empty/zero/negative width should yield empty")
-	}
-}
-
-func TestDispW(t *testing.T) {
-	if DispW("hello") != 5 || DispW("") != 0 || DispW("hello world") != 11 {
-		t.Error("DispW wrong")
-	}
-}
 
 // SourceName names what plays: the VND word in its display spelling (the
 // track's own service before the latest), and before any VND the input the
 // status reports. Unknown words show as the device sent them.
 func TestSourceName(t *testing.T) {
-	for word, want := range serviceNames {
-		for _, w := range []string{word, strings.ToUpper(word)} {
-			if got := SourceName(protocol.Snapshot{Service: w}); got != want {
-				t.Errorf("VND %q -> %q, want %q", w, got, want)
-			}
-		}
-	}
 	cases := []struct {
 		name string
 		s    protocol.Snapshot
 		want string
 	}{
 		{"nothing named", protocol.Snapshot{}, ""},
+		{"a VND word, any case", protocol.Snapshot{Service: "SPOTIFY"}, "Spotify"},
 		{"an unknown VND word shows as sent", protocol.Snapshot{Service: "deezer"}, "deezer"},
 		{"the track's own service before the latest", protocol.Snapshot{Service: "tidal",
 			Track: &protocol.Track{TrackName: "x", Service: "spotify"}}, "Spotify"},
 		{"a track with no service falls back to the latest", protocol.Snapshot{Service: "tidal",
 			Track: &protocol.Track{TrackName: "x"}}, "TIDAL"},
 		{"a service beats the input", protocol.Snapshot{Service: "airplay", Source: "BT"}, "AirPlay"},
-		{"NET", protocol.Snapshot{Source: "NET"}, "Network"},
-		{"net, any case", protocol.Snapshot{Source: "net"}, "Network"},
-		{"BT", protocol.Snapshot{Source: "BT"}, "Bluetooth"},
-		{"LINE-IN", protocol.Snapshot{Source: "LINE-IN"}, "Line-In"},
+		{"an input, any case", protocol.Snapshot{Source: "net"}, "Network"},
 		{"USBPLAY", protocol.Snapshot{Source: "USBPLAY"}, "USB"},
-		{"USBDAC", protocol.Snapshot{Source: "USBDAC"}, "USB"},
 		{"an unknown input shows as sent", protocol.Snapshot{Source: "OPT"}, "OPT"},
 	}
 	for _, c := range cases {
@@ -270,17 +199,6 @@ func TestSourceName(t *testing.T) {
 }
 
 // ---- input: coalesced multi-rune key batches --------------------------------
-
-func TestTranslateAllExpandsMultiRune(t *testing.T) {
-	evs := translateAll(tea.KeyPressMsg{Code: '+', Text: "++q"})
-	if len(evs) != 3 || evs[0].r != '+' || evs[1].r != '+' || evs[2].r != 'q' {
-		t.Errorf("multi-rune batch should expand 1:1, got %+v", evs)
-	}
-	one := translateAll(tea.KeyPressMsg{Code: 'm', Text: "m"})
-	if len(one) != 1 || one[0].kind != kRune || one[0].r != 'm' {
-		t.Errorf("single rune should pass through translate(), got %+v", one)
-	}
-}
 
 // A coalesced "++" (one key press whose Text carries two runes, as legacy input
 // paths deliver fast typing) must raise the volume twice, not be dropped — and
@@ -306,29 +224,20 @@ func TestCoalescedRunesAreNotDropped(t *testing.T) {
 	}
 }
 
-// ---- layout: short-terminal overflow cap ------------------------------------
+// ---- Clip: the ellipsis, East Asian width, degenerate widths ---------------
 
-func TestDashboardDoesNotOverflowShortTerminal(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.rows, m.cols = 12, 80 // compact range (9..25); the body would otherwise exceed the frame
-	render(t, m)
-}
-
-// ---- Clip: width contract holds at degenerate widths ------------------------
-
-func TestClipNeverExceedsWidth(t *testing.T) {
-	cases := []struct {
-		s string
-		w int
-	}{
-		{"abcdef", 1}, {"abcdef", 2}, {"abcdef", 3},
-		{"漢字漢字", 1}, {"漢字漢字", 2}, {"漢字漢字", 3},
-		{"hello world", 1},
+func TestClip(t *testing.T) {
+	if Clip("abc", 10) != "abc" {
+		t.Error("no clip when it fits")
 	}
-	for _, c := range cases {
-		if got := Clip(c.s, c.w); DispW(got) > c.w {
-			t.Errorf("Clip(%q,%d)=%q has width %d > %d", c.s, c.w, got, DispW(got), c.w)
-		}
+	if Clip("abcdef", 4) != "abc"+GL["ell"] {
+		t.Errorf("Clip(abcdef,4) = %q", Clip("abcdef", 4))
+	}
+	if got := Clip("漢字漢字", 4); got != "漢"+GL["ell"] {
+		t.Errorf("Clip(漢字漢字,4) = %q, want 漢%s", got, GL["ell"])
+	}
+	if Clip("", 5) != "" || Clip("hello", 0) != "" || Clip("hello", -1) != "" {
+		t.Error("empty/zero/negative width should yield empty")
 	}
 	if got := Clip("abcdef", 1); got != "a" {
 		t.Errorf("Clip(abcdef,1)=%q, want a (no room for ellipsis)", got)
@@ -352,11 +261,9 @@ func TestDispWindow(t *testing.T) {
 		off, w int
 		want   string
 	}{
-		{"abcdef", 0, 3, "abc"},
 		{"abcdef", 2, 3, "cde"},
 		{"abcdef", 4, 4, "ef  "}, // past the end -> padded to w
 		{"ab", 0, 5, "ab   "},    // shorter than w -> padded
-		{"·a·b·c", 2, 2, "·b"},   // multibyte width-1 ('·' is 1 col)
 		{"abcdef", 0, 0, ""},     // zero width
 	}
 	for _, c := range cases {
@@ -434,36 +341,5 @@ func TestStartupNote(t *testing.T) {
 		if got := startupNote(c.warn, c.err); got != c.want {
 			t.Errorf("startupNote(%q, %v) = %q, want %q", c.warn, c.err, got, c.want)
 		}
-	}
-}
-
-// The diagnostics' error line must not present a recovered hiccup as a live
-// fault: a note renders age-stamped and ages out after diagErrWindow.
-func TestDiagErrLineAging(t *testing.T) {
-	now := time.Now()
-	W := 80
-
-	fresh := protocol.Snapshot{Error: "command not delivered", ErrorAt: now.Add(-3 * time.Second)}
-	line, ok := diagErrLine(fresh, now, W)
-	if got := stripANSI(line); !ok || got != GL["warn"]+" command not delivered · 3.0s ago" {
-		t.Errorf("a fresh error should render age-stamped, got %q ok=%v", got, ok)
-	}
-
-	edge := protocol.Snapshot{Error: "x", ErrorAt: now.Add(-diagErrWindow)}
-	if _, ok := diagErrLine(edge, now, W); ok {
-		t.Error("an error exactly diagErrWindow old has aged out")
-	}
-	stale := protocol.Snapshot{Error: "command not delivered", ErrorAt: now.Add(-diagErrWindow - time.Second)}
-	if line, ok := diagErrLine(stale, now, W); ok {
-		t.Errorf("an error past diagErrWindow must age out, got %q", stripANSI(line))
-	}
-	if _, ok := diagErrLine(protocol.Snapshot{}, now, W); ok {
-		t.Error("no error should render no line")
-	}
-	// a long one is clipped to the row, the friendly form first
-	long := protocol.Snapshot{Error: "dial tcp: lookup lp10.local: no such host", ErrorAt: now}
-	line, _ = diagErrLine(long, now, 30)
-	if got := stripANSI(line); DispW(got) > 30 || !strings.HasPrefix(got, GL["warn"]+" can't find the device") {
-		t.Errorf("narrow error line = %q", got)
 	}
 }

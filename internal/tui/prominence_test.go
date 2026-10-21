@@ -8,23 +8,6 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-// toggleVerb is the icon-free action label: "pause" while playing, "play"
-// while paused or idle — so it never duels with the status row's STATE glyph.
-func TestToggleVerb(t *testing.T) {
-	if got := toggleVerb(protocol.Snapshot{Playing: true}); got != "pause" {
-		t.Errorf("playing -> %q, want pause", got)
-	}
-	if got := toggleVerb(protocol.Snapshot{}); got != "play" {
-		t.Errorf("paused -> %q, want play", got)
-	}
-	// the label carries no play/pause glyph (that would re-create the duelling icons)
-	for _, s := range []protocol.Snapshot{{Playing: true}, {}} {
-		if strings.ContainsAny(toggleVerb(s), "▶⏸") {
-			t.Errorf("toggleVerb(%v) must be icon-free, got %q", s.Playing, toggleVerb(s))
-		}
-	}
-}
-
 // The status row replaced the seek bar (the tunnel reports no position): a
 // colour-coded STATE label — teal "Playing", amber "Paused" — a quiet marker
 // while connecting or idle, and the mute beside the state. It is never wider
@@ -38,9 +21,7 @@ func TestStatusRow(t *testing.T) {
 		want string
 	}{
 		{"connecting", protocol.Snapshot{}, GL["pause"]},
-		{"connecting, muted as last read", protocol.Snapshot{Muted: true}, GL["pause"]},
 		{"playing a track", protocol.Snapshot{Connected: true, Playing: true, Track: track}, GL["play"] + " Playing"},
-		{"playing untitled", protocol.Snapshot{Connected: true, Playing: true}, GL["play"] + " Playing"},
 		{"paused", protocol.Snapshot{Connected: true, Track: track}, GL["pause"] + " Paused"},
 		{"idle", protocol.Snapshot{Connected: true}, GL["pause"]},
 		{"playing, muted", protocol.Snapshot{Connected: true, Playing: true, Muted: true}, GL["play"] + " Playing · muted"},

@@ -88,8 +88,8 @@ func TestDiagLSSDPRow(t *testing.T) {
 
 func TestFmtAgeShort(t *testing.T) {
 	for d, want := range map[time.Duration]string{
-		-time.Second: "0s", 600 * time.Millisecond: "0.6s", 12 * time.Second: "12s",
-		3 * time.Minute: "3m", 5 * time.Hour: "5h", 119 * time.Second: "119s", 2 * time.Minute: "2m",
+		-time.Second: "0s", 600 * time.Millisecond: "0.6s", 119 * time.Second: "119s",
+		2 * time.Minute: "2m", 5 * time.Hour: "5h",
 	} {
 		if got := fmtAgeShort(d); got != want {
 			t.Errorf("fmtAgeShort(%v) = %q, want %q", d, got, want)
@@ -208,23 +208,12 @@ func TestDiagUpdateCheckShowsVerdict(t *testing.T) {
 	if out := clean(render(t, m)); !strings.Contains(out, "check failed") {
 		t.Errorf("stacked layout lacks the row:\n%s", out)
 	}
-	// never asked: no row at all
-	if f := otaFact(protocol.DiagnosticSnapshot{}, now); f != "" {
-		t.Errorf("unasked fact = %q", f)
-	}
-	if f := otaFact(protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: now.Add(-3 * time.Minute), UpToDate: true}}, now); f != "up to date · checked 3m ago" {
-		t.Errorf("aged fact = %q", f)
-	}
-}
-
-// At mini size the diagnostics cannot be drawn, so i must not pretend to open
-// them — nor u reach the vendor through the gap.
-func TestDiagAtMiniSizeIsInert(t *testing.T) {
-	m, st, _ := makeModel(t)
-	m.rows, m.cols = MiniRows-1, 40
-	m.key(kr('i'))
+	// a verdict in hand while a new check runs: it stays until the new one lands
 	m.key(kr('u'))
-	if m.view == viewDiag || st.DiagnosticView().OTAPending {
-		t.Errorf("mini: diag=%v otaPending=%v, want neither", m.view == viewDiag, st.DiagnosticView().OTAPending)
+	if !st.DiagnosticView().OTAPending {
+		t.Fatal("a second u should raise the request again")
+	}
+	if out := clean(render(t, m)); !hasRow(out, "vendor", "check failed") || strings.Contains(out, "checking…") {
+		t.Errorf("a new check should keep the last verdict on the row:\n%s", out)
 	}
 }

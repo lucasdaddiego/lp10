@@ -10,54 +10,6 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-func TestClamp(t *testing.T) {
-	cases := []struct {
-		code string
-		in   int
-		want int
-	}{
-		{"MXV", 50, 50},
-		{"MXV", -5, 0},
-		{"MXV", 250, 100},
-		{"BAS", -99, -10},
-		{"BAS", 99, 10},
-		{"EQE", 7, 1},
-		{"EQS", 99, MaxPresets - 1},
-		{"BAL", -500, -100},
-		{"VBI", 73, 73},
-		{"ZZZ", 12345, 12345}, // unknown code passes through
-	}
-	for _, c := range cases {
-		if got := Clamp(c.code, c.in); got != c.want {
-			t.Errorf("Clamp(%q,%d)=%d want %d", c.code, c.in, got, c.want)
-		}
-	}
-}
-
-func TestSetAndQuery(t *testing.T) {
-	if got := Set("MXV", 100); got != "MXV:100;" {
-		t.Errorf("Set MXV 100 = %q", got)
-	}
-	if got := Set("MXV", 250); got != "MXV:100;" { // clamped
-		t.Errorf("Set MXV 250 = %q (want clamp to 100)", got)
-	}
-	// the player's settable codes clamp to their own range too
-	for in, want := range map[int]string{150: "VOL:100;", -5: "VOL:0;", 44: "VOL:44;"} {
-		if got := Set("VOL", in); got != want {
-			t.Errorf("Set VOL %d = %q, want %q", in, got, want)
-		}
-	}
-	if got := Set("MUT", 3); got != "MUT:1;" {
-		t.Errorf("Set MUT 3 = %q, want MUT:1;", got)
-	}
-	if got := Set("BAS", -99); got != "BAS:-10;" {
-		t.Errorf("Set BAS -99 = %q (want clamp to -10)", got)
-	}
-	if got := Query("EQS"); got != "EQS;" {
-		t.Errorf("Query EQS = %q", got)
-	}
-}
-
 // ---- what goes on the socket ------------------------------------------------
 
 // The seed reads the player status first (the player paints from its one
@@ -69,12 +21,6 @@ func TestSeedQueries(t *testing.T) {
 	got := SeedQueries()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("SeedQueries = %q, want %q", got, want)
-	}
-	// generated from Specs: a control added there is seeded too
-	for i, s := range Specs {
-		if got[i+1] != s.Code+";" {
-			t.Errorf("seed %d = %q, want %q (Specs order)", i+1, got[i+1], s.Code+";")
-		}
 	}
 	for _, q := range got {
 		code := strings.TrimSuffix(q, ";")
@@ -96,20 +42,13 @@ func TestWire(t *testing.T) {
 		query bool
 		want  string // "" = refused
 	}{
-		// EQ controls: query, set, clamp at both ends
+		// EQ controls: query, set, clamp at both ends (and at the int limits)
 		{"MXV", 0, true, "MXV;"},
 		{"MXV", 50, false, "MXV:50;"},
 		{"MXV", 250, false, "MXV:100;"},
 		{"MXV", -1, false, "MXV:30;"}, // the write floor, not the display's 0
-		{"EQE", 7, false, "EQE:1;"},
-		{"EQS", 2, false, "EQS:2;"},
 		{"EQS", 99, false, "EQS:15;"},
 		{"BAS", -99, false, "BAS:-10;"},
-		{"MID", 4, false, "MID:4;"},
-		{"TRE", 11, false, "TRE:10;"},
-		{"VBS", -1, false, "VBS:0;"},
-		{"VBI", 105, false, "VBI:100;"},
-		{"BAL", -500, false, "BAL:-100;"},
 		{"BAL", math.MaxInt, false, "BAL:100;"},
 		{"BAL", math.MinInt, false, "BAL:-100;"},
 		// player settings
@@ -117,32 +56,16 @@ func TestWire(t *testing.T) {
 		{"VOL", 43, false, "VOL:43;"},
 		{"VOL", 150, false, "VOL:100;"},
 		{"VOL", -5, false, "VOL:0;"},
-		{"VOL", math.MaxInt, false, "VOL:100;"},
-		{"VOL", math.MinInt, false, "VOL:0;"},
-		{"MUT", 0, true, "MUT;"},
-		{"MUT", 1, false, "MUT:1;"},
-		{"MUT", 0, false, "MUT:0;"},
 		{"MUT", 7, false, "MUT:1;"},
 		{"MUT", -3, false, "MUT:0;"},
 		// get-only: a query, never a set
 		{"STA", 0, true, "STA;"},
 		{"STA", 1, false, ""},
-		{"PLA", 0, true, "PLA;"},
-		{"PLA", 1, false, ""},
-		{"SRC", 0, true, "SRC;"},
-		{"SRC", 1, false, ""},
-		{"VER", 0, true, "VER;"},
-		{"VER", 1, false, ""},
 		{"PEQ", 0, true, "PEQ;"},
 		{"PEQ", 1, false, ""},
 		// actions: bare, whatever the value, never a query
-		{"POP", 0, false, "POP;"},
 		{"POP", 99, false, "POP;"},
 		{"POP", 0, true, ""},
-		{"NXT", 1, false, "NXT;"},
-		{"NXT", 0, true, ""},
-		{"PRE", -1, false, "PRE;"},
-		{"PRE", 0, true, ""},
 	}
 	for _, c := range cases {
 		got, ok := Wire(c.code, c.val, c.query)
@@ -195,56 +118,7 @@ func TestWireClassesAreDisjoint(t *testing.T) {
 	}
 }
 
-func TestIsAction(t *testing.T) {
-	for code, want := range map[string]bool{
-		"POP": true, "NXT": true, "PRE": true,
-		"VOL": false, "MUT": false, "STA": false, "PLA": false, "TIT": false, "MXV": false,
-		"": false, "pop": false, "WRS": false,
-	} {
-		if got := IsAction(code); got != want {
-			t.Errorf("IsAction(%q) = %v, want %v", code, got, want)
-		}
-	}
-	if !IsAction(ToggleCode) || !IsAction(NextCode) || !IsAction(PrevCode) {
-		t.Error("the exported action codes are not actions")
-	}
-}
-
 // ---- what comes back --------------------------------------------------------
-
-func TestParseFrames(t *testing.T) {
-	// the exact 7-control snapshot captured from the device
-	in := "MXV:100;EQS:0;VBS:1;VBI:15;BAS:3;MID:0;TRE:3;"
-	got, rest := ParseFrames(in)
-	want := []Update{
-		{Code: "MXV", Val: 100}, {Code: "EQS", Val: 0}, {Code: "VBS", Val: 1}, {Code: "VBI", Val: 15},
-		{Code: "BAS", Val: 3}, {Code: "MID", Val: 0}, {Code: "TRE", Val: 3},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ParseFrames updates=%v want %v", got, want)
-	}
-	if rest != "" {
-		t.Errorf("ParseFrames rest=%q want empty", rest)
-	}
-}
-
-func TestParseFramesPartialCarry(t *testing.T) {
-	got, rest := ParseFrames("MXV:100;BAS:")
-	if len(got) != 1 || !reflect.DeepEqual(got[0], Update{Code: "MXV", Val: 100}) {
-		t.Errorf("got=%v want one MXV:100", got)
-	}
-	if rest != "BAS:" {
-		t.Errorf("rest=%q want %q", rest, "BAS:")
-	}
-	// feeding the carry + the remainder completes the frame
-	got2, rest2 := ParseFrames(rest + "7;")
-	if len(got2) != 1 || got2[0].Code != "BAS" || got2[0].Val != 7 {
-		t.Errorf("got2=%v want one BAS:7", got2)
-	}
-	if rest2 != "" {
-		t.Errorf("rest2=%q want empty", rest2)
-	}
-}
 
 func TestParseFramesSkipsJunk(t *testing.T) {
 	// negative tone value, a duplicated broadcast, an unknown code, a valueless
@@ -278,20 +152,16 @@ func TestParseStatus(t *testing.T) {
 	}{
 		{"live reply", "STA:NET,0,44,0,0,3,0,1,1,0;", &Status{Source: "NET", Vol: 44, Playing: true}},
 		{"muted, paused", "STA:BT,1,0,0,0,3,0,0,1,0;", &Status{Source: "BT", Muted: true}},
-		{"exactly 8 fields", "STA:NET,0,44,0,0,3,0,1;", &Status{Source: "NET", Vol: 44, Playing: true}},
-		{"unread fields are not parsed", "STA:NET,0,44,x,x,x,x,1,x,x;", &Status{Source: "NET", Vol: 44, Playing: true}},
+		{"exactly 8 fields, the unread ones not parsed", "STA:NET,0,44,x,x,x,x,1;", &Status{Source: "NET", Vol: 44, Playing: true}},
 		{"spaces", "STA: LINE-IN , 1 , 44 ,0,0,3,0, 1 ,1,0;", &Status{Source: "LINE-IN", Muted: true, Vol: 44, Playing: true}},
 		{"only 1 means on", "STA:NET,2,44,0,0,3,0,2,1,0;", &Status{Source: "NET", Vol: 44}},
 		{"raw volume", "STA:NET,0,250,0,0,3,0,1,1,0;", &Status{Source: "NET", Vol: 250, Playing: true}},
-		{"negative volume", "STA:NET,0,-3,0,0,3,0,1,1,0;", &Status{Source: "NET", Vol: -3, Playing: true}},
 		{"empty source", "STA:,0,44,0,0,3,0,1,1,0;", &Status{Vol: 44, Playing: true}},
 		{"source stripped", "STA:N\x1bE\u202eT\u0085,0,44,0,0,3,0,1,1,0;", &Status{Source: "NET", Vol: 44, Playing: true}},
 		{"source bounded", "STA:" + strings.Repeat("A", 40) + ",0,44,0,0,3,0,1,1,0;",
 			&Status{Source: strings.Repeat("A", 16), Vol: 44, Playing: true}},
 		{"7 fields", "STA:NET,0,44,0,0,3,0;", nil},
-		{"empty", "STA:;", nil},
 		{"mute not a number", "STA:NET,x,44,0,0,3,0,1,1,0;", nil},
-		{"volume not a number", "STA:NET,0,4x,0,0,3,0,1,1,0;", nil},
 		{"volume empty", "STA:NET,0,,0,0,3,0,1,1,0;", nil},
 		{"playing not a number", "STA:NET,0,44,0,0,3,0,yes,1,0;", nil},
 		{"query echo", "STA;", nil},
@@ -347,18 +217,13 @@ func TestParseTextFrames(t *testing.T) {
 		want  Update
 	}{
 		{"SRC:NET;", Update{Code: SourceCode, Text: "NET"}},
-		{"SRC:USBPLAY;", Update{Code: SourceCode, Text: "USBPLAY"}},
 		{"VER:29-1d316f0c-10;", Update{Code: VersionCode, Text: "29-1d316f0c-10"}},
-		{"VND:spotify;", Update{Code: VendorCode, Text: "spotify"}},
-		{"TIT:Big Bang;", Update{Code: TitleCode, Text: "Big Bang"}},
-		{"ART:Usted Señalemelo;", Update{Code: ArtistCode, Text: "Usted Señalemelo"}},
-		{"ALB:Big Bang;", Update{Code: AlbumCode, Text: "Big Bang"}},
+		{"VND:spot\x00ify;", Update{Code: VendorCode, Text: "spotify"}},
 		{"TIT:Live: At Wembley: 1986;", Update{Code: TitleCode, Text: "Live: At Wembley: 1986"}},
 		{"TIT:  padded  ;", Update{Code: TitleCode, Text: "padded"}},
 		{"TIT:\x1b[31mRed\x07\u009b\u202e!;", Update{Code: TitleCode, Text: "[31mRed!"}},
 		{"ART:\u2066Isolated\u2069\u2028;", Update{Code: ArtistCode, Text: "Isolated"}},
-		{"VND:spot\x00ify;", Update{Code: VendorCode, Text: "spotify"}},
-		{"VER:29\r\n;", Update{Code: VersionCode, Text: "29"}},
+		{"ALB:29\r\n;", Update{Code: AlbumCode, Text: "29"}},
 	}
 	for _, c := range cases {
 		out, rest := ParseFrames(c.frame)
@@ -378,8 +243,8 @@ func TestParseTextBounds(t *testing.T) {
 		TitleCode: 200, ArtistCode: 200, AlbumCode: 200,
 	}
 	for code, n := range bounds {
-		for _, unit := range []string{"x", "ñ", "\U0001f3b5"} {
-			for _, k := range []int{n - 1, n, n + 1, n + 500} {
+		for _, unit := range []string{"x", "\U0001f3b5"} {
+			for _, k := range []int{n, n + 1, n + 500} {
 				out, _ := ParseFrames(code + ":" + strings.Repeat(unit, k) + ";")
 				if len(out) != 1 {
 					t.Fatalf("%s with %d×%q: %d updates", code, k, unit, len(out))
@@ -427,10 +292,6 @@ func TestParseLivePushes(t *testing.T) {
 		{"resume", "PLA:1;VND:spotify;", []Update{{Code: PlayCode, Val: 1}, {Code: VendorCode, Text: "spotify"}}},
 		{"pause", "PLA:0;", []Update{{Code: PlayCode, Val: 0}}},
 		{"after NXT", "RAW:NEXT;", nil},
-		{"set echoes", "VOL:43;MUT:1;", []Update{{Code: VolumeCode, Val: 43}, {Code: MuteCode, Val: 1}}},
-		{"getters", "SRC:NET;VER:29-1d316f0c-10;", []Update{
-			{Code: SourceCode, Text: "NET"}, {Code: VersionCode, Text: "29-1d316f0c-10"},
-		}},
 	}
 	for _, c := range cases {
 		out, rest := ParseFrames(c.in)

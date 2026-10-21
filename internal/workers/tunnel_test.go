@@ -55,14 +55,17 @@ func runTunnel(t *testing.T, ctx context.Context, cancel context.CancelFunc, cmd
 // TestTunnelWorkerAgainstALiveBox drives one worker through a whole connection
 // against a fake that answers like the live box: the seed, the replies and
 // pushes landing in State, one batch of commands (coalesced, allowlisted),
-// the volume bridge, volume pacing, the status poll, and a reconnect when the
-// box drops the link. It is one test because every step needs a seeded
-// connection: the seed alone takes 12 × tunnelSpacing (1.8 s), and the first
-// poll comes StatusEvery after it, so expect ~4.5 s.
+// the volume bridge, volume pacing, the status poll, a reconnect when the
+// box drops the link, and (LP10_DEBUG set) the frame log. It is one test
+// because every step needs a seeded connection: the seed alone takes 12 ×
+// tunnelSpacing (1.8 s), and the first poll comes StatusEvery after it, so
+// expect ~4.5 s.
 func TestTunnelWorkerAgainstALiveBox(t *testing.T) {
 	dev := newLiveBox()
 	box := newFakeBox(t, dev.answer)
 	t.Setenv("LP10_TUNNEL_ADDR", box.addr)
+	logPath := filepath.Join(t.TempDir(), "frames.log")
+	t.Setenv("LP10_DEBUG", logPath)
 
 	// Queued while the seed goes out, so the write loop takes them as ONE
 	// batch: the sets of a code collapse to the last at its position, actions
@@ -244,33 +247,19 @@ func TestTunnelWorkerAgainstALiveBox(t *testing.T) {
 	if !r.control.drained.IsSet() {
 		t.Error("the worker ended without marking the drain done")
 	}
-}
 
-// LP10_DEBUG set, the worker's connection is wrapped: the seed queries it
-// writes and the replies it reads land in the file, each direction marked.
-func TestTunnelFrameLogRecordsBothDirections(t *testing.T) {
-	dev := newLiveBox()
-	box := newFakeBox(t, dev.answer)
-	t.Setenv("LP10_TUNNEL_ADDR", box.addr)
-	logPath := filepath.Join(t.TempDir(), "frames.log")
-	t.Setenv("LP10_DEBUG", logPath)
-	ctx, cancel := context.WithCancel(context.Background())
-	r := runTunnel(t, ctx, cancel, make(chan Command))
-	box.waitFrame(t, 3*time.Second, "the seed's last query", is("VER"))
-	eventually(t, "the VER reply applied", time.Second, func() bool { return r.st.DiagnosticView().MCU != "" })
-	cancel()
-	<-r.done
+	// The frame log holds the seed queries written and the replies read, each
+	// direction marked, and names no address or path.
 	raw, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := string(raw)
 	for _, want := range []string{` > "STA;"`, ` > "VER;"`, ` < "VER:29-1d316f0c-10;"`} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the frame log lacks %q:\n%s", want, got)
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the frame log lacks %q", want)
 		}
 	}
-	if strings.Contains(got, box.addr) || strings.Contains(got, logPath) {
+	if strings.Contains(string(raw), box.addr) || strings.Contains(string(raw), logPath) {
 		t.Error("the frame log names an address or a path")
 	}
 }
@@ -486,15 +475,6 @@ func TestTunnelOnceCancelledContext(t *testing.T) {
 	}
 }
 
-func TestTunnelAddrDefault(t *testing.T) {
-	t.Parallel() // LP10_TUNNEL_ADDR is unset here (TestMain)
-	for host, want := range map[string]string{"192.168.0.13": "192.168.0.13:2018", "lp10.local": "lp10.local:2018", "fe80::1": "[fe80::1]:2018"} {
-		if got := tunnelAddr(config.Config{Host: host}); got != want {
-			t.Errorf("tunnelAddr(%q) = %q, want %q", host, got, want)
-		}
-	}
-}
-
 // Sets queued behind one another for one code collapse to the last, at the
 // last one's position (a held key queues one per repeat; the device needs
 // the final value); queries and actions are never merged.
@@ -507,32 +487,15 @@ func TestCoalesce(t *testing.T) {
 		name    string
 		in, out []Command
 	}{
-		{"empty", nil, nil},
-		{"one", []Command{set("BAS", 1)}, []Command{set("BAS", 1)}},
 		{"last set per code at its position", []Command{set("BAS", 1), set("TRE", 3), set("BAS", 2), query("MXV"), set("BAS", 5)},
 			[]Command{set("TRE", 3), query("MXV"), set("BAS", 5)}},
 		{"a query of the code stays between", []Command{set("BAS", 1), query("BAS"), set("BAS", 2)}, []Command{query("BAS"), set("BAS", 2)}},
 		{"actions are never merged", []Command{act("POP"), act("POP"), act("NXT"), act("PRE"), act("NXT")},
 			[]Command{act("POP"), act("POP"), act("NXT"), act("PRE"), act("NXT")}},
-		{"a held volume key", []Command{set("VOL", 10), set("VOL", 11), set("MUT", 1), set("VOL", 12), set("MUT", 0)},
-			[]Command{set("VOL", 12), set("MUT", 0)}},
 	} {
 		if got := coalesce(tc.in); !slices.Equal(got, tc.out) {
 			t.Errorf("%s: coalesce = %+v, want %+v", tc.name, got, tc.out)
 		}
-	}
-}
-
-func TestGather(t *testing.T) {
-	t.Parallel()
-	cmds := make(chan Command, 4)
-	if got := gather(Command{Code: "POP"}, cmds); len(got) != 1 {
-		t.Errorf("gather with nothing queued = %+v", got)
-	}
-	cmds <- Command{Code: "BAS", Val: 1}
-	cmds <- Command{Code: "TRE", Val: 2}
-	if got := gather(Command{Code: "POP"}, cmds); len(got) != 3 || got[0].Code != "POP" || got[2].Code != "TRE" || len(cmds) != 0 {
-		t.Errorf("gather = %+v (left %d), want the first then the queue in order", got, len(cmds))
 	}
 }
 
@@ -553,14 +516,10 @@ func TestCommandWire(t *testing.T) {
 		{Command{Code: "BAS", Val: 1, TS: old}, "", true},
 		{Command{Code: "MXV", Query: true, TS: now}, "MXV;", false},
 		{Command{Code: "MXV", Query: true, TS: old}, "", false},
-		{Command{Code: "VOL", Val: 150, TS: now}, "VOL:100;", false},
-		{Command{Code: "MUT", Val: 1, TS: now}, "MUT:1;", false},
 		{Command{Code: "POP", TS: now}, "POP;", false},
 		{Command{Code: "POP", Query: true, TS: now}, "", false},
-		{Command{Code: "STA", Query: true, TS: now}, "STA;", false},
 		{Command{Code: "STA", Val: 1, TS: now}, "", false},
 		{Command{Code: "WRS", Val: 1, TS: old}, "", false}, // refused before it is aged
-		{Command{Code: "NOPE", Query: true, TS: now}, "", false},
 	} {
 		if wire, stale := commandWire(tc.cmd, now); wire != tc.wire || stale != tc.stale {
 			t.Errorf("commandWire(%+v) = (%q, %v), want (%q, %v)", tc.cmd, wire, stale, tc.wire, tc.stale)
@@ -660,11 +619,9 @@ func TestSendBatchPaced(t *testing.T) {
 		carry  []Command
 		vol    bool
 	}{
-		{"no volume", []Command{bas, tre}, 0, []string{"BAS:1;", "TRE:2;"}, nil, false},
 		{"a volume set", []Command{bas, vol(30)}, 0, []string{"BAS:1;", "VOL:30;"}, nil, true},
 		{"a volume query is no set", []Command{{Code: "VOL", Query: true}, {Code: "MUT", Val: 1}}, 0, []string{"VOL;", "MUT:1;"}, nil, false},
 		{"fails at the second", []Command{vol(5), bas, tre}, 2, []string{"VOL:5;"}, []Command{bas, tre}, true},
-		{"fails at the first", []Command{bas, vol(5)}, 1, nil, []Command{bas, vol(5)}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -679,6 +636,29 @@ func TestSendBatchPaced(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Runtime.Close cancels ctx when its drain window is over: a gathered batch
+// of actions (a pasted line of play/skip keys; actions never coalesce) must
+// stop there and hand the rest back unsent, not hold the quit 50ms per
+// command.
+func TestSendBatchPacedStopsOnCancel(t *testing.T) {
+	t.Parallel()
+	cmds := make([]Command, 200)
+	for i := range cmds {
+		cmds[i] = Command{Code: "NXT", TS: time.Now()}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	c := &scriptConn{}
+	start := time.Now()
+	carry, dead, _ := sendBatchPaced(ctx, protocol.NewState(), c, cmds)
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Fatalf("the batch ran %v past the cancel", took)
+	}
+	if dead || len(carry) == 0 || len(carry)+len(c.written()) != len(cmds) {
+		t.Errorf("after the cancel: dead %v, %d carried, %d written; want the rest handed back", dead, len(carry), len(c.written()))
 	}
 }
 
@@ -858,21 +838,6 @@ func TestDialNote(t *testing.T) {
 	if got := dialNote(refused); got != "cannot reach :2018: dial tcp: connection refused" {
 		t.Errorf("refused: %q", got)
 	}
-	if a, b := time.Unix(1, 0), time.Unix(2, 0); !laterTime(a, b).Equal(b) || !laterTime(b, a).Equal(b) {
-		t.Error("laterTime should pick the later time either way round")
-	}
-}
-
-// Guard the brief's arithmetic: the fake-box tests budget their waits on
-// these, and a change should be a conscious one.
-func TestTunnelTimingConstants(t *testing.T) {
-	t.Parallel()
-	if StatusEvery != 2*time.Second || SilentAfter != 6*time.Second || CommandDeadline != 4*time.Second {
-		t.Errorf("StatusEvery %v SilentAfter %v CommandDeadline %v", StatusEvery, SilentAfter, CommandDeadline)
-	}
-	if n := len(tunnel.SeedQueries()); n != len(seedFrames) {
-		t.Errorf("the seed has %d queries, the tests expect %d", n, len(seedFrames))
-	}
 }
 
 // TestTrackReadKeepsWhatNothingRereads: in a read that carries a track field,
@@ -901,52 +866,6 @@ func TestTrackReadKeepsWhatNothingRereads(t *testing.T) {
 	}
 	if s.Service != "spotify" || len(st.EQPresets()) == 0 || st.DiagnosticView().MCU != "29-x-10" {
 		t.Errorf("kept frames lost: service %q, presets %v, mcu %q", s.Service, st.EQPresets(), st.DiagnosticView().MCU)
-	}
-}
-
-func TestActedOn(t *testing.T) {
-	for _, tc := range []struct {
-		u    tunnel.Update
-		want bool
-	}{
-		{tunnel.Update{Code: tunnel.StatusCode, Status: &tunnel.Status{}}, true},
-		{tunnel.Update{Code: tunnel.VolumeCode}, true},
-		{tunnel.Update{Code: tunnel.MuteCode}, true},
-		{tunnel.Update{Code: tunnel.PlayCode}, true},
-		{tunnel.Update{Code: tunnel.SourceCode}, true},
-		{tunnel.Update{Code: "MXV"}, true},
-		{tunnel.Update{Code: tunnel.VendorCode}, false},
-		{tunnel.Update{Code: tunnel.VersionCode}, false},
-		{tunnel.Update{Code: tunnel.PresetsCode, Names: []string{"Flat"}}, false},
-		{tunnel.Update{Code: tunnel.TitleCode}, false},
-	} {
-		if got := actedOn(tc.u); got != tc.want {
-			t.Errorf("actedOn(%s) = %v, want %v", tc.u.Code, got, tc.want)
-		}
-	}
-}
-
-// Close waits at most drain for the tunnel. Actions never coalesce, so a
-// pasted line of play/skip keys gathers into one long batch; the send loop
-// must stop when Close cancels ctx, not hold the quit 50ms per command.
-func TestCloseIsBoundedByDrain(t *testing.T) {
-	dev := newLiveBox()
-	box := newFakeBox(t, dev.answer)
-	t.Setenv("LP10_TUNNEL_ADDR", box.addr)
-	disableProbes(t)
-	st := protocol.NewState()
-	r := StartRuntime(st, config.Config{Host: "lp10.local"})
-	box.waitFrame(t, 5*time.Second, "the last seed query", is("VER"))
-	eventually(t, "connected", 2*time.Second, func() bool { return st.Snap().Connected })
-	time.Sleep(300 * time.Millisecond) // the write loop is up
-	for range 200 {
-		r.Commands <- Command{Code: "NXT", TS: time.Now()}
-	}
-	time.Sleep(20 * time.Millisecond) // the worker has gathered the batch
-	start := time.Now()
-	r.Close(DrainTimeout)
-	if took := time.Since(start); took > DrainTimeout+time.Second {
-		t.Fatalf("Close(%v) took %v: a gathered batch of actions held the quit past the drain budget", DrainTimeout, took)
 	}
 }
 

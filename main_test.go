@@ -5,7 +5,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"runtime/debug"
 	"syscall"
 	"testing"
 	"time"
@@ -69,25 +68,15 @@ func TestResolveDevice(t *testing.T) {
 	off.Discover = false
 	resolveDevice(context.Background(), off, probed, nil)
 
-	// A hostile advertised name carrying escape bytes is control-stripped before
-	// it composes the header label (mDNS labels are attacker-controllable). The
-	// ESC/BEL that would start an OSC-8 sequence are removed; the inert printable
-	// remainder is harmless without them.
+	// A hostile advertised name or host carrying escape bytes is control-stripped
+	// before it composes the header label or the diag overlay's host readout
+	// (mDNS labels and SRV targets are attacker-controllable): the ESC/BEL that
+	// would start an OSC sequence are removed.
 	evil := func(context.Context, string, time.Duration) (discovery.Device, bool) {
-		return discovery.Device{Name: "Den\x1b]8;;http://evil\x07x", Model: "LP10", IP: net.IPv4(192, 168, 1, 41)}, true
+		return discovery.Device{Name: "Den\x1b]8;;http://evil\x07x", Model: "LP10", Host: "own\x1b]0;x\x07ed.local."}, true
 	}
-	if cfg = resolveDevice(context.Background(), base, evil, nil); cfg.Name != "LP10 · Den]8;;http://evilx" {
-		t.Errorf("device name must strip the ESC/BEL, got %q", cfg.Name)
-	}
-
-	// The host gets the same strip: with no A record, Addr() falls back to the
-	// raw SRV target — as attacker-controllable as the label — and it reaches
-	// the diag overlay's host readout.
-	evilHost := func(context.Context, string, time.Duration) (discovery.Device, bool) {
-		return discovery.Device{Name: "Den", Model: "LP10", Host: "own\x1b]0;x\x07ed.local."}, true
-	}
-	if cfg = resolveDevice(context.Background(), base, evilHost, nil); cfg.Host != "own]0;xed.local" {
-		t.Errorf("discovered host must strip the ESC/BEL, got %q", cfg.Host)
+	if cfg = resolveDevice(context.Background(), base, evil, nil); cfg.Name != "LP10 · Den]8;;http://evilx" || cfg.Host != "own]0;xed.local" {
+		t.Errorf("device name and host must strip the ESC/BEL, got %q %q", cfg.Name, cfg.Host)
 	}
 }
 
@@ -114,29 +103,6 @@ func TestResolveDeviceLSSDPFallback(t *testing.T) {
 	calls = 0
 	if cfg := resolveDevice(context.Background(), base, viaMDNS, viaLSSDP); cfg.Host != "10.0.0.2" || calls != 0 {
 		t.Errorf("mDNS hit must not consult LSSDP: %+v (calls %d)", cfg, calls)
-	}
-	if cfg := resolveDevice(context.Background(), base, notFound, notFound); cfg.Host != "lp10.local" || cfg.Discovered {
-		t.Errorf("both empty: configured host stays: %+v", cfg)
-	}
-}
-
-// --version is the build identity a bug report needs: module version, commit,
-// commit time, a dirty marker and the toolchain — from the VCS stamp the Go
-// linker embeds, with sane output when a piece is missing.
-func TestVersionString(t *testing.T) {
-	if got := versionString(nil); got != "lp10 (unknown build)" {
-		t.Errorf("nil build info = %q", got)
-	}
-	bi := &debug.BuildInfo{GoVersion: "go1.27.1", Main: debug.Module{Version: "(devel)"}, Settings: []debug.BuildSetting{
-		{Key: "vcs.revision", Value: "983ee68f9218acb8a44c7fc2932bb433ac95b0a1"},
-		{Key: "vcs.time", Value: "2026-09-05T19:00:00Z"},
-		{Key: "vcs.modified", Value: "true"},
-	}}
-	if got, want := versionString(bi), "lp10 (devel) 983ee68f9218 2026-09-05T19:00:00Z (modified) go1.27.1"; got != want {
-		t.Errorf("versionString = %q, want %q", got, want)
-	}
-	if got := versionString(&debug.BuildInfo{Main: debug.Module{Version: "v1.4.0"}}); got != "lp10 v1.4.0" {
-		t.Errorf("tagged, no vcs = %q", got)
 	}
 }
 

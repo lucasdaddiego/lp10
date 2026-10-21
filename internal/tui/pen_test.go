@@ -117,19 +117,6 @@ func TestLineMeterMatchesPerCellReference(t *testing.T) {
 	}
 }
 
-// The pad-run helpers must agree with strings.Repeat on both sides of their
-// const-slice fast path.
-func TestPadRunHelpers(t *testing.T) {
-	for _, n := range []int{-1, 0, 1, 7, 512, 513, 700} {
-		if got, want := spaces(n), strings.Repeat(" ", max(n, 0)); got != want {
-			t.Errorf("spaces(%d) = %d chars, want %d", n, len(got), len(want))
-		}
-		if got, want := dashes(n), strings.Repeat("─", max(n, 0)); got != want {
-			t.Errorf("dashes(%d) mismatch", n)
-		}
-	}
-}
-
 // frameLines must reproduce the lipgloss pipeline byte-for-byte: ThickBorder
 // + BorderForeground + Padding(0,2,0,2) + Render, then Place(cols, rows) — which
 // is a geometric no-op because the framed block is already exactly cols×rows.

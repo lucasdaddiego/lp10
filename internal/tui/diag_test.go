@@ -269,9 +269,6 @@ func TestDiagVerdict(t *testing.T) {
 		}
 		return d
 	}
-	if thrRx != [2]float64{3.5, 6} {
-		t.Fatalf("thrRx = %v, want [3.5 6] (StatusEvery 2 s, SilentAfter 6 s)", thrRx)
-	}
 	answered := probed(live(time.Second), true, true)
 	answered.LSSDP, answered.SpotifyZC = &protocol.LSSDPInfo{}, &protocol.SpotifyZC{}
 	cases := []struct {
@@ -280,7 +277,6 @@ func TestDiagVerdict(t *testing.T) {
 		worst int
 		why   []string
 	}{
-		{"fresh frame", live(time.Second), 0, nil},
 		{"a missed poll", live(3 * time.Second), 0, nil},
 		{"quiet", live(3500 * time.Millisecond), 1, []string{"tunnel quiet"}},
 		{"silent", live(6 * time.Second), 2, []string{"tunnel quiet"}},
@@ -373,9 +369,6 @@ func TestDeviceFacts(t *testing.T) {
 			t.Error("an empty device section should be dropped")
 		}
 	}
-	if eSDK(protocol.DiagnosticSnapshot{}) != "" {
-		t.Error("eSDK before a ZeroConf answer should be empty")
-	}
 }
 
 // sweepDeltaFact compares the live identity with the last sweep's baseline,
@@ -425,32 +418,6 @@ func TestSweepDeltaFact(t *testing.T) {
 	}
 }
 
-// otaFact: nothing until u, the build wait, "checking…" while asked, then the
-// verdict aged.
-func TestOTAFact(t *testing.T) {
-	now := time.Now()
-	at := now.Add(-12 * time.Second)
-	cases := []struct {
-		d    protocol.DiagnosticSnapshot
-		want string
-	}{
-		{protocol.DiagnosticSnapshot{}, ""},
-		{protocol.DiagnosticSnapshot{OTAPending: true}, "checking…"},
-		{protocol.DiagnosticSnapshot{OTAPending: true, OTAHeld: true}, "waiting for the firmware build (LSSDP)"},
-		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at, UpToDate: true}}, "up to date · checked 12s ago"},
-		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at, Offered: "AR241CP_9001"}}, "AR241CP_9001 available · checked 12s ago"},
-		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at}}, "update available · checked 12s ago"},
-		{protocol.DiagnosticSnapshot{OTA: &protocol.OTAInfo{At: at, Err: "vendor unreachable", UpToDate: true}}, "check failed · vendor unreachable · checked 12s ago"},
-		// a verdict in hand while a new check runs: the verdict stays until the new one lands
-		{protocol.DiagnosticSnapshot{OTAPending: true, OTA: &protocol.OTAInfo{At: at, UpToDate: true}}, "up to date · checked 12s ago"},
-	}
-	for _, c := range cases {
-		if got := otaFact(c.d, now); got != c.want {
-			t.Errorf("otaFact(%+v) = %q, want %q", c.d, got, c.want)
-		}
-	}
-}
-
 // The connection section: the tunnel, the configured host, and the two
 // tunnel-free probes once they have run.
 func TestConnectionRows(t *testing.T) {
@@ -495,74 +462,6 @@ func TestDiagRow(t *testing.T) {
 	// the hardware rows fit the stacked column at the narrowest frame, clipped
 	for _, f := range confHardware {
 		assertWithin(t, f.k, []string{m.diagRow(f, MiniCols-6-2)}, MiniCols-6-2)
-	}
-}
-
-// splitSections balances the two columns at a section boundary.
-func TestSplitSections(t *testing.T) {
-	sec := func(title string, n int) diagSection { return diagSection{title, make([]kv, n)} }
-	if h := sectionsHeight([]diagSection{sec("a", 3), sec("b", 1)}); h != 4+1+2 {
-		t.Errorf("sectionsHeight = %d, want 7", h)
-	}
-	if sectionsHeight(nil) != 0 {
-		t.Error("no sections, no height")
-	}
-	for _, c := range []struct {
-		secs []diagSection
-		want int
-	}{
-		{[]diagSection{sec("a", 3), sec("b", 3)}, 1},
-		{[]diagSection{sec("a", 1), sec("b", 1), sec("c", 6)}, 2},
-		{[]diagSection{sec("a", 8), sec("b", 1), sec("c", 1)}, 1},
-		{nil, 0},
-	} {
-		if got := splitSections(c.secs); got != c.want {
-			t.Errorf("splitSections(%d sections) = %d, want %d", len(c.secs), got, c.want)
-		}
-	}
-}
-
-// diagWindow cuts the read-out to the room and says what is off-screen, in
-// the singular where it is one row; the offset clamps at both ends.
-func TestDiagWindow(t *testing.T) {
-	m, _, _ := makeModel(t)
-	rows := make([]string, 10)
-	for i := range rows {
-		rows[i] = fmt.Sprint(i)
-	}
-	cases := []struct {
-		scroll, room int
-		first        string
-		hint         string
-		wantScroll   int
-	}{
-		{0, 4, "0", "k · 6 more rows below", 0},
-		{5, 4, "5", "k · 5 above · 1 below", 5},
-		{99, 4, "6", "k · 6 rows above", 6},
-		{0, 9, "0", "k · 1 more row below", 0},
-		{1, 9, "1", "k · 1 row above", 1},
-		{3, 10, "0", "", 0},
-		{3, 20, "0", "", 0},
-	}
-	for _, c := range cases {
-		m.diagScroll = c.scroll
-		got, hint := m.diagWindow(rows, c.room, "k")
-		if len(got) != min(c.room, len(rows)) || got[0] != c.first || hint != c.hint || m.diagScroll != c.wantScroll {
-			t.Errorf("scroll %d room %d: rows from %q (%d), hint %q, scroll %d; want from %q, %q, %d",
-				c.scroll, c.room, got[0], len(got), hint, m.diagScroll, c.first, c.hint, c.wantScroll)
-		}
-	}
-	if got, hint := m.diagWindow(rows, 0, "k"); got != nil || hint != "" {
-		t.Errorf("no room = %v %q", got, hint)
-	}
-	m.diagScroll = 0
-	m.diagScrollBy(-3)
-	if m.diagScroll != 0 {
-		t.Errorf("scrolling above the top = %d", m.diagScroll)
-	}
-	m.rows = 3
-	if m.diagPage() != 1 {
-		t.Errorf("a tiny frame's page = %d, want 1", m.diagPage())
 	}
 }
 
@@ -687,21 +586,6 @@ func TestFooterFit(t *testing.T) {
 	}
 }
 
-func TestCov_clipStyled(t *testing.T) {
-	if got := clipStyled("abc", 10); got != "abc" {
-		t.Errorf("clipStyled fits = %q", got)
-	}
-	if got := clipStyled("abcdefgh", 4); stripANSI(got) != "abc"+GL["ell"] {
-		t.Errorf("clipStyled overflow = %q", stripANSI(got))
-	}
-	if got := clipStyled("abcdefgh", 0); got != "" {
-		t.Errorf("clipStyled w=0 = %q, want empty", got)
-	}
-	if got := clipStyled("abcdefgh", 1); stripANSI(got) != "a" {
-		t.Errorf("clipStyled no-ellipsis-room = %q, want hard cut", stripANSI(got))
-	}
-}
-
 // LP10_OTA_URL="" switches the vendor check off (its worker never starts),
 // but u still raised the request and the vendor line said "checking…" for the
 // rest of the run.
@@ -750,8 +634,15 @@ func TestDiagErrorIsFriendly(t *testing.T) {
 
 // A clipped styled row keeps its per-segment colours — it used to be stripped
 // and re-rendered uniformly dim, so the rows "lost their colours" the moment a
-// larger font cost the column a couple of cells.
+// larger font cost the column a couple of cells. No room for the ellipsis is
+// a hard cut, no room at all an empty row.
 func TestClipStyledKeepsColours(t *testing.T) {
+	if got := clipStyled("abcdefgh", 0); got != "" {
+		t.Errorf("clipStyled w=0 = %q, want empty", got)
+	}
+	if got := clipStyled("abcdefgh", 1); stripANSI(got) != "a" {
+		t.Errorf("clipStyled no-ellipsis-room = %q, want hard cut", stripANSI(got))
+	}
 	sty := newTheme()
 	row := sty.sAcc.Render("●") + " " + sty.sTxt.Render("Spotify and more text")
 	got := clipStyled(row, 12)

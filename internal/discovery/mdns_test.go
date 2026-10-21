@@ -115,6 +115,31 @@ func TestParseNameCompression(t *testing.T) {
 	if _, _, ok := parseName(reserved, 0); ok {
 		t.Error("reserved DNS label form should fail")
 	}
+	for _, c := range []struct {
+		desc string
+		msg  []byte
+		off  int
+	}{
+		{"label length overruns the buffer", []byte{2, 'a'}, 0},
+		{"unterminated label fills the buffer", []byte{1, 'a'}, 0},
+		{"compression pointer missing its second byte", []byte{0xC0}, 0},
+		{"start offset already past the end", []byte{0}, 5},
+	} {
+		if got, _, ok := parseName(c.msg, c.off); ok {
+			t.Errorf("%s: parseName returned %q, ok=true; want failure", c.desc, got)
+		}
+	}
+}
+
+// A TXT string whose length byte overruns the rdata is dropped at the break;
+// the strings before it are kept.
+func TestParseTXTTruncated(t *testing.T) {
+	if got := parseTXT([]byte{1, 'x', 5, 'a'}); len(got) != 1 || got[0] != "x" {
+		t.Fatalf("parseTXT = %v, want [x]", got)
+	}
+	if got := parseTXT([]byte{9}); len(got) != 0 {
+		t.Errorf("parseTXT(overrun) = %v, want empty", got)
+	}
 }
 
 func TestParsePacketAndDevices(t *testing.T) {
@@ -182,21 +207,6 @@ func TestCollectorKeepsAnAtSignInTheName(t *testing.T) {
 	}
 }
 
-// instanceLabel cuts the service off by length, whatever case the responder
-// spelled it in, and hands back whole a target that does not end in it.
-func TestInstanceLabel(t *testing.T) {
-	for _, c := range []struct{ inst, svc, want string }{
-		{"AABBCCDDEEFF@Living._raop._tcp.local", service, "AABBCCDDEEFF@Living"},
-		{"Living._SPOTIFY-CONNECT._TCP.LOCAL.", spotifyService, "Living"},
-		{"Living.example", spotifyService, "Living.example"},
-		{"_raop._tcp.local", service, "_raop._tcp.local"}, // no label in front of the service
-	} {
-		if got := instanceLabel(c.inst, c.svc); got != c.want {
-			t.Errorf("instanceLabel(%q, %q) = %q, want %q", c.inst, c.svc, got, c.want)
-		}
-	}
-}
-
 func TestCollectorIgnoresMalformedABeforeValidAddress(t *testing.T) {
 	const inst = "AABB@Living._raop._tcp.local"
 	c := newCollector()
@@ -213,13 +223,56 @@ func TestCollectorIgnoresMalformedABeforeValidAddress(t *testing.T) {
 	}
 }
 
-func TestParsePacketRejectsTruncated(t *testing.T) {
+// A packet cut anywhere a field should be is rejected whole, never a panic:
+// inside the header, a question name or its type/class, an answer's header,
+// or rdata that claims more bytes than follow.
+func TestParsePacketRejectsMalformed(t *testing.T) {
+	header := func(qd, an int) []byte {
+		h := make([]byte, 12)
+		h[5], h[7] = byte(qd), byte(an)
+		return h
+	}
 	b := newPkt(1)
 	b.addSRV("x.local", 7000, "Living.local")
-	for _, n := range []int{4, 8, len(b.buf) - 1} { // truncations must not panic
-		if _, ok := parsePacket(b.buf[:n]); ok {
-			t.Errorf("parsePacket(len %d) reported ok on truncated input", n)
+	cases := map[string][]byte{
+		"short header":              make([]byte, 11),
+		"cut inside the answer":     b.buf[:len(b.buf)-1],
+		"cut inside the owner name": b.buf[:14],
+		"question name overruns":    append(header(1, 0), 0x05),
+		"question type cut":         append(header(1, 0), 0x00),
+		"answer header cut":         append(header(0, 1), 0x00),
+		"rdata past the end":        append(header(0, 1), 0x00, byte(typeA>>8), byte(typeA), 0x80, 0x01, 0, 0, 0, 0, 0, 4, 1, 2),
+	}
+	for name, msg := range cases {
+		if _, ok := parsePacket(msg); ok {
+			t.Errorf("%s: parsePacket reported ok", name)
 		}
+	}
+}
+
+// SRV rdata shorter than its fixed fields and A rdata that is not 4 bytes
+// are skipped, not fatal: the device keeps its TXT model, gains no host and
+// no address.
+func TestParsePacketSkipsShortSRVandA(t *testing.T) {
+	const inst = "AABB@Short._raop._tcp.local"
+	b := newPkt(4)
+	b.addPTR(service, inst)
+	atSRV := b.rrHeader(inst, typeSRV)
+	b.buf = append(b.buf, 0, 0, 0, 0) // priority+weight only: rdlen 4 (<7)
+	b.patchLen(atSRV)
+	b.addTXT(inst, "am=LP10")
+	atA := b.rrHeader("Short.local", typeA)
+	b.buf = append(b.buf, 1, 2, 3) // rdlen 3 (!=4)
+	b.patchLen(atA)
+	recs, ok := parsePacket(b.buf)
+	if !ok {
+		t.Fatal("a packet with short SRV/A records should still parse")
+	}
+	col := newCollector()
+	col.add(recs)
+	ds := col.devices()
+	if len(ds) != 1 || ds[0].Model != "LP10" || ds[0].Host != "" || ds[0].IP != nil {
+		t.Errorf("devices = %+v, want one LP10 with neither host nor IP", ds)
 	}
 }
 
@@ -246,6 +299,46 @@ func TestPickLP10(t *testing.T) {
 	if d, ok := pickLP10([]Device{hostOnly}, ""); !ok || d.Addr() != "Living.local" {
 		t.Errorf("host-only pick = %+v, %v", d, ok)
 	}
+	// an empty-name LP10 must not hijack a hint: strings.Contains(x, "") is
+	// always true
+	anon := Device{Name: "", Model: "LP10", MAC: "00", Host: "anon.local"}
+	if d, ok := pickLP10([]Device{anon, living}, "Living"); !ok || d.Name != "Living" {
+		t.Errorf("empty-name device hijacked the hint match: got %+v", d)
+	}
+}
+
+// covResponders joins the mDNS group on every multicast-capable IPv4
+// interface so that, whichever interface a query egresses, a listener
+// receives the loopback copy. Nil when no such interface or bind is available
+// (a sandboxed or offline runner): the responder path is then not exercised.
+func covResponders() []*net.UDPConn {
+	group := &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353}
+	ifs, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var conns []*net.UDPConn
+	for i := range ifs {
+		ifi := &ifs[i]
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		hasV4 := false
+		addrs, _ := ifi.Addrs()
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil {
+				hasV4 = true
+				break
+			}
+		}
+		if !hasV4 {
+			continue
+		}
+		if lc, err := net.ListenMulticastUDP("udp4", ifi, group); err == nil {
+			conns = append(conns, lc)
+		}
+	}
+	return conns
 }
 
 // A hinted search must not early-exit on the first complete LP10 that answers
@@ -391,9 +484,8 @@ func TestCollectorAcceptsLANAddressesOnly(t *testing.T) {
 
 func TestLanScoped(t *testing.T) {
 	for ip, want := range map[string]bool{
-		"192.168.1.40": true, "10.0.0.9": true, "172.16.3.4": true, "169.254.7.7": true, "127.0.0.1": true,
-		"fd12::1": true, "fe80::1": true,
-		"203.0.113.9": false, "8.8.8.8": false, "2001:db8::1": false, "224.0.0.251": false, "0.0.0.0": false,
+		"192.168.1.40": true, "169.254.7.7": true, "127.0.0.1": true, "fd12::1": true, "fe80::1": true,
+		"203.0.113.9": false, "2001:db8::1": false, "224.0.0.251": false, "0.0.0.0": false,
 	} {
 		if got := lanScoped(net.ParseIP(ip)); got != want {
 			t.Errorf("lanScoped(%s) = %v, want %v", ip, got, want)

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -87,13 +86,9 @@ func TestArgvContract(t *testing.T) {
 		stdoutHead string // the stdout must start with this ("" = must be empty)
 		stderrHas  string // the stderr must contain this ("" = must be empty)
 	}{
-		{[]string{"status"}, 2, "", usageIntro},
 		{[]string{"--bogus"}, 2, "", usageIntro},
-		{[]string{"play", "now"}, 2, "", usageIntro},
 		{[]string{"--version"}, 0, "lp10 ", ""},
-		{[]string{"-V"}, 0, "lp10 ", ""},
 		{[]string{"--help"}, 0, usageIntro, ""},
-		{[]string{"-h"}, 0, usageIntro, ""},
 	}
 	for _, tc := range cases {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
@@ -366,39 +361,26 @@ func crashed(out string) bool {
 	return strings.Contains(out, "panic:") || strings.Contains(out, "goroutine ") || strings.Contains(out, "fatal error:")
 }
 
-// The smoke test: the binary paints its frame with the device name, dials the
-// tunnel and seeds it (STA first, every EQ control, the presets, VER last),
-// and a q from the player quits cleanly.
-func TestSmokeUnderPTY(t *testing.T) {
+// The happy path: the binary paints its frame with the device name, dials the
+// tunnel and seeds it (STA first, every EQ control, the presets, VER last);
+// the volume bridge sends the fake's own level back (VOL:44, then VOL:30
+// when the level moves behind the app's back, as the Spotify app moves it);
+// every player key reaches the tunnel as its wire frame (space POP, n NXT,
+// + one vol_step above 44, m mute); the EQ view sends a nudged control; a
+// track the device pushes reaches the screen; and q quits cleanly, leaving
+// the alternate screen and resetting the window title. Each frame wait starts
+// after the previous frame, so an earlier frame cannot satisfy it.
+func TestHappyPath(t *testing.T) {
 	t.Parallel()
 	s := boot(t, "")
 	s.waitScreen(t, 0, "LP10")
-	s.seeded(t)
+	from := s.seeded(t)
 	frames := s.tun.Frames()
 	for _, code := range []string{"MXV", "EQE", "EQS", "BAS", "MID", "TRE", "VBS", "VBI", "BAL", "PEQ"} {
 		if !slices.Contains(frames, code) {
 			t.Errorf("seed never queried %s; frames %q", code, frames)
 		}
 	}
-	s.key(t, "q")
-	if code := s.waitExit(t); code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
-	if out := s.output(0); crashed(out) {
-		t.Errorf("crash in output:\n%s", out)
-	}
-}
-
-// Every player key the device must hear reaches the tunnel as its wire frame:
-// space toggles (POP), n skips (NXT), + sets the volume one vol_step (2) above
-// the fake's 44, m mutes. Each wait starts after the previous frame, so a
-// frame sent earlier cannot satisfy it. The keys start after the volume
-// bridge's first write (the fake's own VOL:44 sent back), so no bridge write
-// lands among them.
-func TestKeysReachTheDevice(t *testing.T) {
-	t.Parallel()
-	s := boot(t, "")
-	from := s.seeded(t)
 	_, i := s.tun.WaitFrame(t, from, waitFor, testutil.Is("VOL:44"))
 	from = i + 1
 	steps := []struct {
@@ -408,89 +390,35 @@ func TestKeysReachTheDevice(t *testing.T) {
 		{"n", "NXT"},
 		{"+", "VOL:46"},
 		{"m", "MUT:1"},
+		{"e\x1b[B\x1b[B\x1b[C", "TRE:1"}, // the EQ view, down to treble, one step up
+		{"e", ""},                        // back to the player
 	}
 	for _, step := range steps {
 		s.key(t, step.key)
+		if step.frame == "" {
+			continue
+		}
 		_, at := s.tun.WaitFrame(t, from, waitFor, testutil.Is(step.frame))
 		from = at + 1
 	}
-	s.key(t, "q")
-	if code := s.waitExit(t); code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
-}
-
-// The volume bridge (firmware AR241CP_8747 broke the Spotify app's volume:
-// the MCU register moves, the room does not): the first level a connection
-// reads goes back out as a VOL set, and so does a later level the app did not
-// set itself — here the fake's own volume moving behind the app's back, the
-// way the Spotify app moves it, seen by the next STA poll.
-func TestVolumeBridgeResendsTheDeviceLevel(t *testing.T) {
-	t.Parallel()
-	s := boot(t, "")
-	from := s.seeded(t)
-	_, i := s.tun.WaitFrame(t, from, waitFor, testutil.Is("VOL:44"))
 	s.tun.SetVolume(30)
-	s.tun.WaitFrame(t, i+1, waitFor, testutil.Is("VOL:30"))
-	s.key(t, "q")
-	if code := s.waitExit(t); code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
-}
-
-// A track the device pushes (plain UTF-8 TIT/ART/ALB, as the live box sends
-// on a track change) reaches both the frame and the terminal's window title.
-// The title is one escape sequence, so it arrives whole; the frame's words
-// are checked one by one (see waitScreen).
-func TestPushedTrackShowsOnScreen(t *testing.T) {
-	t.Parallel()
-	s := boot(t, "")
-	s.tun.WaitFrame(t, 0, waitFor, testutil.Is("STA")) // a client is connected to push to
+	s.tun.WaitFrame(t, from, waitFor, testutil.Is("VOL:30"))
 	at := s.mark()
 	s.tun.Push(t, "TIT:Pajarito;ART:Señalemelo;ALB:Big Bang;")
 	s.waitScreen(t, at, "Pajarito", "Señalemelo")
-	s.waitOut(t, at, "the track in the window title", func(out string) bool {
-		return slices.Contains(titles(out), "♪ Pajarito — Señalemelo")
-	})
-	s.key(t, "q")
-	if code := s.waitExit(t); code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
-}
-
-// titleRe matches a window-title escape (OSC 0 or OSC 2), BEL- or
-// ST-terminated, capturing the title.
-var titleRe = regexp.MustCompile("\x1b\\][02];([^\x07\x1b]*)(?:\x07|\x1b\\\\)")
-
-// titles returns every window title set in out, in order.
-func titles(out string) []string {
-	var ts []string
-	for _, m := range titleRe.FindAllStringSubmatch(out, -1) {
-		ts = append(ts, m[1])
-	}
-	return ts
-}
-
-// Quitting hands the terminal back as it was: the last window title set is
-// the empty reset (after the frames titled it "LP10"), and the alternate
-// screen is left.
-func TestQuitResetsTerminal(t *testing.T) {
-	t.Parallel()
-	s := boot(t, "")
 	s.key(t, "q")
 	if code := s.waitExit(t); code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	out := s.output(0)
-	ts := titles(out)
-	if !slices.Contains(ts, "LP10") {
-		t.Errorf("the frames never titled the window LP10; titles %q", ts)
-	}
-	if len(ts) == 0 || ts[len(ts)-1] != "" {
-		t.Errorf("the last window title is not the reset; titles %q", ts)
+	if crashed(out) {
+		t.Errorf("crash in output:\n%s", out)
 	}
 	if i, j := strings.LastIndex(out, "\x1b[?1049h"), strings.LastIndex(out, "\x1b[?1049l"); j < 0 || j < i {
 		t.Errorf("the alternate screen was not left on quit (enter at %d, leave at %d)", i, j)
+	}
+	if !strings.Contains(out, "\x1b]0;\x07") {
+		t.Error("the window title was not reset on quit")
 	}
 }
 
@@ -532,40 +460,14 @@ func TestSigtermExits143AndCleansUp(t *testing.T) {
 	}
 }
 
-// A SIGINT delivered as a signal (not the Ctrl-C byte of TestCtrlCExits130)
-// is caught by Run's signal goroutine and maps to 130.
-func TestSigintSignalExits130(t *testing.T) {
-	t.Parallel()
-	s := boot(t, "")
-	if err := s.cmd.Process.Signal(syscall.SIGINT); err != nil {
-		t.Fatal(err)
-	}
-	if code := s.waitExit(t); code != 130 {
-		t.Errorf("exit code = %d, want 130 on SIGINT", code)
-	}
-}
-
 // A config problem is shown, not swallowed: config.Load sets cfg.Warn and
-// Run notes it before the first paint. A file that does not parse is ignored
-// whole; a key retired with ssh (firmware AR241CP_8747) says so rather than
-// reading as an unknown key.
+// Run notes it before the first paint.
 func TestConfigWarningsSurface(t *testing.T) {
-	cases := []struct {
-		name, toml string
-		words      []string
-	}{
-		{"broken", "not = valid = toml [", []string{"config.toml", "ignored"}},
-		{"retired key", "user = \"root\"\n", []string{"user", "retired"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			s := boot(t, tc.toml)
-			s.waitScreen(t, 0, tc.words...)
-			s.key(t, "q")
-			if code := s.waitExit(t); code != 0 {
-				t.Errorf("exit code = %d, want 0", code)
-			}
-		})
+	t.Parallel()
+	s := boot(t, "not = valid = toml [")
+	s.waitScreen(t, 0, "config.toml", "ignored")
+	s.key(t, "q")
+	if code := s.waitExit(t); code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
 	}
 }

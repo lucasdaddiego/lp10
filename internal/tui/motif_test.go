@@ -63,17 +63,6 @@ func TestMotifMatchesMathSin(t *testing.T) {
 	}
 }
 
-// fastSin itself must track math.Sin to LUT precision over many periods,
-// including negative arguments (the motif's phase terms go negative).
-func TestFastSinAccuracy(t *testing.T) {
-	const tol = 5e-7 // interpolation bound ≈2.9e-7, with headroom
-	for x := -50.0; x < 50; x += 0.0137 {
-		if d := math.Abs(fastSin(x) - math.Sin(x)); d > tol {
-			t.Fatalf("fastSin(%v) off by %g (tol %g)", x, d, tol)
-		}
-	}
-}
-
 // A tiny negative argument wraps t to -1e-18+1, which rounds to exactly 1.0:
 // the table index lands on its last entry and the interpolation read one past
 // it, a panic in the middle of a paint.

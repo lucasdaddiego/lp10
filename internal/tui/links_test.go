@@ -52,23 +52,9 @@ func TestOsc8ZeroWidth(t *testing.T) {
 	}
 }
 
-// The OSC 8 wrapper must never inflate a line's measured width, even when the
-// title overflows and is marquee-windowed — the path that runs dispWindow and
-// then wraps the result. lipgloss must still see each line as <= the column.
-func TestMetaLinesHyperlinkWidthOnOverflow(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.sty = newTheme()
-	m.scroll = 7 // mid-marquee, exercises dispWindow edge-straddling
-	const w = 8  // narrower than every metadata line -> all overflow and scroll
-	for i, ln := range m.metaLines(m.st.Snap(), w) {
-		if got := lipgloss.Width(ln); got > w {
-			t.Errorf("line %d width %d exceeds column %d: %q", i, got, w, ln)
-		}
-	}
-}
-
-// The title line carries a clickable Spotify link, and the link must not inflate
-// the line's display width (column alignment depends on it).
+// The title line carries a clickable Spotify link, and the OSC 8 wrapper must
+// never inflate a line's measured width — not even when the title overflows
+// and is marquee-windowed, the path that runs dispWindow and then wraps it.
 func TestMetaLinesHyperlinked(t *testing.T) {
 	m, _, _ := makeModel(t)
 	m.sty = newTheme()
@@ -81,5 +67,12 @@ func TestMetaLinesHyperlinked(t *testing.T) {
 	}
 	if w := lipgloss.Width(lines[0]); w > 40 {
 		t.Errorf("hyperlinked title width %d exceeds column 40", w)
+	}
+	m.scroll = 7 // mid-marquee, exercises dispWindow edge-straddling
+	const w = 8  // narrower than every metadata line -> all overflow and scroll
+	for i, ln := range m.metaLines(m.st.Snap(), w) {
+		if got := lipgloss.Width(ln); got > w {
+			t.Errorf("line %d width %d exceeds column %d: %q", i, got, w, ln)
+		}
 	}
 }

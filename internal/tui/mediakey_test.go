@@ -5,27 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-
-	"github.com/lucasdaddiego/lp10/internal/mediakey"
 )
-
-func TestKeyToAction(t *testing.T) {
-	cases := []struct {
-		k    mediakey.Key
-		want string
-		ok   bool
-	}{
-		{mediakey.PlayPause, "toggle", true},
-		{mediakey.Next, "next", true},
-		{mediakey.Prev, "prev", true},
-		{mediakey.KeyNone, "", false},
-	}
-	for _, c := range cases {
-		if got, ok := keyToAction(c.k); got != c.want || ok != c.ok {
-			t.Errorf("keyToAction(%v) = (%q,%v), want (%q,%v)", c.k, got, ok, c.want, c.ok)
-		}
-	}
-}
 
 // A mediaKeyMsg must run the mapped action through do() on the update loop:
 // each transport key reaches the tunnel as its own code.

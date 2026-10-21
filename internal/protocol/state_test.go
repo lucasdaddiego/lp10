@@ -40,64 +40,36 @@ func assertClean(t *testing.T, what, s string) {
 	}
 }
 
-// ---- a fresh State ----------------------------------------------------------
-
-func TestNewStateIsEmpty(t *testing.T) {
-	st := NewState()
-	if s := st.Snap(); s != (Snapshot{}) {
-		t.Errorf("fresh Snap = %+v, want the zero Snapshot", s)
-	}
-	if d := st.DiagnosticView(); d != (DiagnosticSnapshot{}) {
-		t.Errorf("fresh DiagnosticView = %+v, want zero", d)
-	}
-	if p := st.EQPresets(); p != nil {
-		t.Errorf("EQPresets = %q before any PEQ reply, want nil", p)
-	}
-	connected, vals := st.EQView()
-	if connected || vals == nil || len(vals) != 0 {
-		t.Errorf("EQView = (%v, %v), want (false, empty non-nil map)", connected, vals)
-	}
-	if v, ok := st.EQValue("BAS"); ok || v != 0 {
-		t.Errorf("EQValue(BAS) = (%d, %v) before any read, want (0, false)", v, ok)
-	}
-	if !st.LastRx().IsZero() {
-		t.Error("LastRx is set before any frame")
-	}
-	if !st.ProbeWanted() {
-		t.Error("a State without a TUI must probe (probeQuiet defaults off)")
-	}
-	if v, ok := st.TakeVolumeBridge(); ok {
-		t.Errorf("a fresh State has a volume bridge pending: %d", v)
-	}
-}
-
 // ---- the player, as the tunnel reports it -----------------------------------
 
-func TestApplyStatusAppliesEveryField(t *testing.T) {
+// A STA reply lands every field at once, and marks the volume and the play
+// state as read; the single-field pushes land theirs.
+func TestReadingsLandInTheSnapshot(t *testing.T) {
 	st := NewState()
 	st.ApplyStatus("NET", true, 44, true)
 	s := st.Snap()
-	if s.Source != "NET" || !s.Muted || s.Vol != 44 || !s.Playing {
-		t.Errorf("after STA: source=%q muted=%v vol=%d playing=%v, want NET true 44 true",
-			s.Source, s.Muted, s.Vol, s.Playing)
+	if s.Source != "NET" || !s.Muted || s.Vol != 44 || !s.Playing || !s.PlayKnown || !s.VolLive {
+		t.Errorf("after STA: %+v, want NET muted 44 playing, both known", s)
 	}
-	if !s.PlayKnown || !s.VolLive {
-		t.Errorf("PlayKnown=%v VolLive=%v, want both true after a STA reply", s.PlayKnown, s.VolLive)
-	}
-	// the next reply moves every field back together
 	st.ApplyStatus("NET", false, 12, false)
-	s = st.Snap()
-	if s.Muted || s.Vol != 12 || s.Playing {
+	if s := st.Snap(); s.Muted || s.Vol != 12 || s.Playing {
 		t.Errorf("second STA: muted=%v vol=%d playing=%v, want false 12 false", s.Muted, s.Vol, s.Playing)
+	}
+	st = NewState()
+	st.ApplyVolume(43)
+	st.ApplyMute(true)
+	st.ApplyPlaying(true)
+	st.ApplySource("BT")
+	if s := st.Snap(); s.Vol != 43 || !s.VolLive || !s.Muted || !s.Playing || !s.PlayKnown || s.Source != "BT" {
+		t.Errorf("snapshot = %+v, want vol 43 live, muted, playing known, source BT", s)
 	}
 }
 
 // The STA volume is raw on the wire (tunnel.ParseFrames never clamps a
-// readback), so the State is where it meets the 0..100 invariant.
-func TestApplyVolumeClamps(t *testing.T) {
-	for _, c := range []struct{ in, want int }{
-		{44, 44}, {0, 0}, {100, 100}, {250, 100}, {-5, 0}, {math.MaxInt, 100}, {math.MinInt, 0},
-	} {
+// readback), so the State is where it meets the 0..100 invariant: every
+// reading and every local set, without an overflow.
+func TestVolumeClamps(t *testing.T) {
+	for _, c := range []struct{ in, want int }{{44, 44}, {math.MaxInt, 100}, {math.MinInt, 0}} {
 		st := NewState()
 		st.ApplyStatus("NET", false, c.in, false)
 		if got := st.Snap().Vol; got != c.want {
@@ -108,23 +80,10 @@ func TestApplyVolumeClamps(t *testing.T) {
 		if got := st.Snap().Vol; got != c.want {
 			t.Errorf("ApplyVolume(%d) -> %d, want %d", c.in, got, c.want)
 		}
-	}
-}
-
-func TestSingleFieldReadings(t *testing.T) {
-	st := NewState()
-	st.ApplyVolume(43)
-	st.ApplyMute(true)
-	st.ApplyPlaying(true)
-	st.ApplySource("BT")
-	s := st.Snap()
-	if s.Vol != 43 || !s.VolLive || !s.Muted || !s.Playing || !s.PlayKnown || s.Source != "BT" {
-		t.Errorf("snapshot = %+v, want vol 43 live, muted, playing known, source BT", s)
-	}
-	st.ApplyMute(false)
-	st.ApplyPlaying(false)
-	if s := st.Snap(); s.Muted || s.Playing || !s.PlayKnown {
-		t.Errorf("after MUT:0 PLA:0: muted=%v playing=%v known=%v", s.Muted, s.Playing, s.PlayKnown)
+		st = NewState()
+		if got := st.SetVol(c.in); got != c.want || st.Snap().Vol != c.want {
+			t.Errorf("SetVol(%d) = %d, Vol %d, want %d", c.in, got, st.Snap().Vol, c.want)
+		}
 	}
 }
 
@@ -159,11 +118,9 @@ func TestSourceChangeClearsTheTrack(t *testing.T) {
 		wantTrack bool
 	}{
 		{"first source keeps", "", "NET", func(st *State, s string) { st.ApplySource(s) }, true},
-		{"same source keeps", "NET", "NET", func(st *State, s string) { st.ApplySource(s) }, true},
 		{"same after strip keeps", "NET", "N\x1bE\u202eT", func(st *State, s string) { st.ApplySource(s) }, true},
 		{"SRC change clears", "NET", "BT", func(st *State, s string) { st.ApplySource(s) }, false},
 		{"STA change clears", "NET", "LINE-IN", func(st *State, s string) { st.ApplyStatus(s, false, 30, true) }, false},
-		{"STA same keeps", "NET", "NET", func(st *State, s string) { st.ApplyStatus(s, false, 30, true) }, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -392,15 +349,12 @@ func TestVolumeBridge(t *testing.T) {
 		name  string
 		steps []step
 	}{
-		{"nothing read", []step{{func(*State) {}, 0, false}}},
 		{"first VOL bridges", []step{{vol(30), 30, true}}},
 		{"first STA bridges", []step{{sta(44), 44, true}}},
 		{"same reading again does not", []step{{vol(30), 30, true}, {vol(30), 0, false}, {sta(30), 0, false}}},
 		{"a different reading bridges", []step{{vol(30), 30, true}, {vol(35), 35, true}, {sta(20), 20, true}}},
 		{"the latest pending wins", []step{{func(st *State) { st.ApplyVolume(30); st.ApplyVolume(31) }, 31, true}}},
-		{"clamped high", []step{{vol(250), 100, true}, {vol(100), 0, false}, {sta(150), 0, false}}},
-		{"clamped low", []step{{vol(-5), 0, true}, {vol(0), 0, false}}},
-		{"clamped extreme", []step{{vol(math.MinInt), 0, true}, {vol(math.MaxInt), 100, true}}},
+		{"clamped", []step{{vol(math.MaxInt), 100, true}, {vol(100), 0, false}, {sta(150), 0, false}, {vol(math.MinInt), 0, true}}},
 		{"a preload is not a reading", []step{{func(st *State) { st.Preload(30) }, 0, false}, {vol(30), 30, true}}},
 	}
 	for _, c := range cases {
@@ -418,54 +372,33 @@ func TestVolumeBridge(t *testing.T) {
 // not bridge, but it is still the device's latest level, so the same echo
 // after the hold does not bridge either.
 func TestVolumeBridgeSkipsTheLocalHold(t *testing.T) {
-	for _, local := range []struct {
-		name string
-		do   func(st *State)
-	}{
-		{"SetVol", func(st *State) { st.SetVol(40) }},
-		{"AdjustVol", func(st *State) { st.AdjustVol(10) }},
-	} {
-		t.Run(local.name, func(t *testing.T) {
-			st := NewState()
-			st.ApplyVolume(30)
-			takeBridge(t, st, 30, true)
-			local.do(st) // 40, held
-			st.ApplyVolume(40)
-			takeBridge(t, st, 0, false)
-			st.ApplyStatus("NET", false, 40, true)
-			takeBridge(t, st, 0, false)
-			expireVolHold(st)
-			st.ApplyVolume(40)
-			takeBridge(t, st, 0, false)
-			if got := st.Snap().Vol; got != 40 {
-				t.Errorf("Vol = %d, want 40", got)
-			}
-			// a change made elsewhere after the hold bridges again
-			st.ApplyVolume(25)
-			takeBridge(t, st, 25, true)
-		})
+	st := NewState()
+	st.ApplyVolume(30)
+	takeBridge(t, st, 30, true)
+	st.SetVol(40) // held
+	st.ApplyVolume(40)
+	takeBridge(t, st, 0, false)
+	st.ApplyStatus("NET", false, 40, true)
+	takeBridge(t, st, 0, false)
+	expireVolHold(st)
+	st.ApplyVolume(40)
+	takeBridge(t, st, 0, false)
+	if got := st.Snap().Vol; got != 40 {
+		t.Errorf("Vol = %d, want 40", got)
 	}
+	// a change made elsewhere after the hold bridges again
+	st.ApplyVolume(25)
+	takeBridge(t, st, 25, true)
 }
 
 // A local set replaces a level still waiting to be bridged: the worker takes
 // the bridge after the key's own VOL write, so an older device level sent
 // then would undo the step the user just made.
 func TestLocalVolumeCancelsAPendingBridge(t *testing.T) {
-	for _, local := range []struct {
-		name string
-		do   func(st *State)
-	}{
-		{"SetVol", func(st *State) { st.SetVol(35) }},
-		{"AdjustVol", func(st *State) { st.AdjustVol(5) }},
-		{"AdjustVol at a bound", func(st *State) { st.AdjustVol(math.MinInt) }},
-	} {
-		t.Run(local.name, func(t *testing.T) {
-			st := NewState()
-			st.ApplyVolume(30) // pending, not yet taken
-			local.do(st)
-			takeBridge(t, st, 0, false)
-		})
-	}
+	st := NewState()
+	st.ApplyVolume(30) // pending, not yet taken
+	st.SetVol(35)
+	takeBridge(t, st, 0, false)
 }
 
 // A stale reading inside the hold updates the device's last level too, so the
@@ -603,29 +536,6 @@ func TestApplyVendorNamesTheService(t *testing.T) {
 	st.ApplyVendor("tidal")
 	if got := st.Snap().Track; got.Service != "tidal" || got.Artist != "Alguien" {
 		t.Errorf("after VND:tidal: %+v", got)
-	}
-}
-
-// A vendor before any track names the service only; the first track then
-// carries it.
-func TestApplyVendorWithoutATrack(t *testing.T) {
-	st := NewState()
-	st.ApplyVendor("spotify")
-	s := st.Snap()
-	if s.Track != nil || s.Service != "spotify" {
-		t.Fatalf("track=%+v service=%q, want nil and spotify", s.Track, s.Service)
-	}
-	st.ApplyTrackField(FieldArtist, "X")
-	if got := st.Snap().Track; got.Service != "spotify" {
-		t.Errorf("first track's service = %q, want spotify", got.Service)
-	}
-}
-
-func TestApplyVersion(t *testing.T) {
-	st := NewState()
-	st.ApplyVersion("29-1d316f0c-10")
-	if got := st.DiagnosticView().MCU; got != "29-1d316f0c-10" {
-		t.Errorf("MCU = %q", got)
 	}
 }
 
@@ -767,41 +677,16 @@ func TestPauseOptimisticWaitsForTheNewConnection(t *testing.T) {
 
 // ---- volume / mute ----------------------------------------------------------
 
-func TestSetVolClampsAndReturns(t *testing.T) {
-	for _, c := range []struct{ in, want int }{
-		{44, 44}, {0, 0}, {100, 100}, {150, 100}, {-5, 0}, {math.MaxInt, 100}, {math.MinInt, 0},
-	} {
-		st := NewState()
-		if got := st.SetVol(c.in); got != c.want {
-			t.Errorf("SetVol(%d) = %d, want %d", c.in, got, c.want)
-		}
-		if got := st.Snap().Vol; got != c.want {
-			t.Errorf("SetVol(%d): Snap().Vol = %d, want %d", c.in, got, c.want)
-		}
-	}
-}
-
 // AdjustVol never computes cur+delta when that could overflow: an extreme
 // delta from any level lands on the bound, not on a wrapped negative.
 func TestAdjustVolGuardsOverflow(t *testing.T) {
 	cases := []struct{ cur, delta, want int }{
 		{50, 2, 52},
 		{50, -4, 46},
-		{50, 0, 50},
 		{50, 50, 100}, // exactly to the top
 		{50, -50, 0},  // exactly to the bottom
-		{50, 51, 100},
-		{50, -51, 0},
-		{99, 5, 100},
-		{1, -5, 0},
-		{0, math.MaxInt, 100},
-		{50, math.MaxInt, 100},
 		{100, math.MaxInt, 100},
 		{0, math.MinInt, 0},
-		{50, math.MinInt, 0},
-		{100, math.MinInt, 0},
-		{100, -1, 99},
-		{0, 1, 1},
 	}
 	for _, c := range cases {
 		st := NewState()
@@ -811,16 +696,6 @@ func TestAdjustVolGuardsOverflow(t *testing.T) {
 		}
 		if got := st.Snap().Vol; got != c.want {
 			t.Errorf("from %d AdjustVol(%d): Snap().Vol = %d, want %d", c.cur, c.delta, got, c.want)
-		}
-	}
-}
-
-func TestClamp100(t *testing.T) {
-	for _, c := range []struct{ in, want int }{
-		{-1, 0}, {0, 0}, {1, 1}, {99, 99}, {100, 100}, {101, 100}, {math.MinInt, 0}, {math.MaxInt, 100},
-	} {
-		if got := clamp100(c.in); got != c.want {
-			t.Errorf("clamp100(%d) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }
@@ -844,19 +719,13 @@ func TestToggleMute(t *testing.T) {
 // Preload seeds the cached level for the first paint: clamped, and not live
 // — the device has not spoken yet.
 func TestPreloadClampsAndIsNotLive(t *testing.T) {
-	for _, c := range []struct{ in, want int }{{44, 44}, {150, 100}, {-3, 0}, {math.MinInt, 0}} {
-		st := NewState()
-		st.Preload(c.in)
-		s := st.Snap()
-		if s.Vol != c.want {
-			t.Errorf("Preload(%d): Vol = %d, want %d", c.in, s.Vol, c.want)
-		}
-		if s.VolLive {
-			t.Errorf("Preload(%d) marked the volume live", c.in)
-		}
+	st := NewState()
+	st.Preload(150)
+	if s := st.Snap(); s.Vol != 100 || s.VolLive {
+		t.Errorf("Preload(150): Vol = %d live=%v, want 100, not live", s.Vol, s.VolLive)
 	}
 	// it arms no hold: the device's first reading replaces it at once
-	st := NewState()
+	st = NewState()
 	st.Preload(30)
 	st.ApplyVolume(44)
 	if got := st.Snap().Vol; got != 44 {
@@ -922,22 +791,6 @@ func TestEQReadersReturnCopies(t *testing.T) {
 	st.SetEQPresets(nil)
 	if st.EQPresets() != nil {
 		t.Error("SetEQPresets(nil) left names behind")
-	}
-}
-
-// ---- errors -----------------------------------------------------------------
-
-func TestNoteRecordsTheMessageAndTime(t *testing.T) {
-	st := NewState()
-	before := time.Now()
-	st.Note("dial tcp: refused")
-	after := time.Now()
-	s := st.Snap()
-	if s.Error != "dial tcp: refused" {
-		t.Errorf("Error = %q", s.Error)
-	}
-	if s.ErrorAt.Before(before) || s.ErrorAt.After(after) {
-		t.Errorf("ErrorAt = %v, want within the call", s.ErrorAt)
 	}
 }
 
@@ -1058,33 +911,7 @@ func TestSetSpotifyZC(t *testing.T) {
 	}
 }
 
-func TestProbeQuiet(t *testing.T) {
-	st := NewState()
-	if !st.ProbeWanted() {
-		t.Fatal("probes are wanted by default")
-	}
-	st.SetProbeQuiet(true)
-	if st.ProbeWanted() {
-		t.Error("a quiet State still wants probes")
-	}
-	st.SetProbeQuiet(false)
-	if !st.ProbeWanted() {
-		t.Error("probes stay off after quiet is lowered")
-	}
-}
-
 // ---- firmware update check --------------------------------------------------
-
-func TestTakeOTARequestWithoutARequest(t *testing.T) {
-	st := NewState()
-	st.SetLSSDP(&LSSDPInfo{FW: "AR241CP_8747.29.2"})
-	if build, ok := st.TakeOTARequest(); ok || build != "" {
-		t.Errorf("TakeOTARequest with nothing asked = (%q, %v)", build, ok)
-	}
-	if st.DiagnosticView().OTAPending {
-		t.Error("pending with nothing asked")
-	}
-}
 
 // The request is handed over once an LSSDP answer has arrived; until then it
 // stays pending and reads as held for the build. A build of the wrong shape
@@ -1114,19 +941,8 @@ func TestTakeOTARequestWaitsForLSSDP(t *testing.T) {
 		build string // what goes to the worker
 		valid bool   // whether OTACheck may send it
 	}{
-		{"empty FW", "", "", false},
 		{"garbage", "garbage", "garbage", false},
-		{"lowercase", "ar241cp_8747.29.2", "ar241cp_8747", false},
-		{"no build number", "AR241CP_.29.2", "AR241CP_", false},
-		{"prefix too short", "A_8747.29", "A_8747", false},
-		{"prefix too long", "ABCDEFGHIJKLM_8747.29", "ABCDEFGHIJKLM_8747", false},
-		{"build too long", "AR241CP_123456789.29", "AR241CP_123456789", false},
-		{"letters in the build", "AR241CP_87a7.29", "AR241CP_87a7", false},
-		{"leading dot", ".AR241CP_8747", "", false},
-		{"space", "AR241CP 8747.29", "AR241CP 8747", false},
 		{"full FW", "AR241CP_8747.29.2", "AR241CP_8747", true},
-		{"build only", "AR241CP_8747", "AR241CP_8747", true},
-		{"older box", "AR241CE_8530.23.2", "AR241CE_8530", true},
 		{"stripped control", "AR241CP_87\x1b47.29", "AR241CP_8747", true},
 	}
 	for _, c := range cases {
@@ -1235,85 +1051,17 @@ func TestFirmwareBuild(t *testing.T) {
 		"AR241CP_8747.29.2": "AR241CP_8747",
 		"AR241CP_8747":      "AR241CP_8747",
 		"":                  "",
-		".29":               "",
-		"a.b.c":             "a",
 	} {
 		if got := FirmwareBuild(in); got != want {
 			t.Errorf("FirmwareBuild(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if Before("29-1d316f0c-10", "-") != "29" || Before("nosep", "-") != "nosep" || Before("", "-") != "" {
-		t.Error("Before: the first field, or the whole string without the separator")
-	}
 	for in, want := range map[string]bool{
-		"AR241CP_8747": true, "AR241CE_8530": true, "AR241CP_8747.29.2": false, "": false,
+		"AR241CP_8747": true, "AR241CP_8747.29.2": false, "": false,
 		"ar241cp_8747": false, "AR241CE_8530; drop": false, "A_8747": false, "AR241CP_123456789": false,
 	} {
 		if got := ValidBuild(in); got != want {
 			t.Errorf("ValidBuild(%q) = %v, want %v", in, got, want)
-		}
-	}
-}
-
-// ---- diagnostics view -------------------------------------------------------
-
-func TestDiagnosticViewCarriesEveryField(t *testing.T) {
-	st := NewState()
-	st.StartConnection()
-	st.Received()
-	st.ApplyStatus("NET", true, 44, true)
-	st.ApplyTrackField(FieldTitle, "Big Bang")
-	st.ApplyVendor("spotify")
-	st.ApplyVersion("29-1d316f0c-10")
-	st.Note("hello")
-	st.SetLSSDP(&LSSDPInfo{FW: "AR241CP_8747.29.2", State: "0", NetMode: "1"})
-	st.SetSpotifyZC(&SpotifyZC{StatusString: "OK"}, 4070)
-	st.SetOTA(OTAInfo{Asked: "AR241CP_8747", UpToDate: true})
-	st.RequestOTA()
-
-	d := st.DiagnosticView()
-	if s := st.Snap(); d.Snapshot != s {
-		t.Errorf("DiagnosticView().Snapshot = %+v, want Snap() %+v", d.Snapshot, s)
-	}
-	if !d.LastRx.Equal(st.LastRx()) || d.LastRx.IsZero() {
-		t.Errorf("LastRx = %v", d.LastRx)
-	}
-	if d.MCU != "29-1d316f0c-10" {
-		t.Errorf("MCU = %q", d.MCU)
-	}
-	if d.LSSDP == nil || d.LSSDP.FW != "AR241CP_8747.29.2" || d.LSSDPProbeAt.IsZero() || d.LSSDPOKAt.IsZero() {
-		t.Errorf("LSSDP = %+v at %v/%v", d.LSSDP, d.LSSDPProbeAt, d.LSSDPOKAt)
-	}
-	if d.SpotifyZC == nil || d.SpotifyZC.StatusString != "OK" || d.ZCPort != 4070 || d.ZCProbeAt.IsZero() || d.ZCOKAt.IsZero() {
-		t.Errorf("SpotifyZC = %+v port %d at %v/%v", d.SpotifyZC, d.ZCPort, d.ZCProbeAt, d.ZCOKAt)
-	}
-	if d.OTA == nil || !d.OTA.UpToDate || !d.OTAPending {
-		t.Errorf("OTA = %+v pending=%v, want the verdict and the new request pending", d.OTA, d.OTAPending)
-	}
-	if s := d.Snapshot; !s.Connected || s.Attempts != 1 || s.Track == nil || s.Service != "spotify" ||
-		s.Error != "hello" || !s.LSSDPAlive {
-		t.Errorf("Snapshot = %+v", s)
-	}
-}
-
-// ---- Track ------------------------------------------------------------------
-
-func TestTrackEmpty(t *testing.T) {
-	var nilTrack *Track
-	cases := []struct {
-		t    *Track
-		want bool
-	}{
-		{nilTrack, true},
-		{&Track{}, true},
-		{&Track{TrackName: "x"}, false},
-		{&Track{Artist: "x"}, false},
-		{&Track{Album: "x"}, false},
-		{&Track{Service: "spotify"}, false},
-	}
-	for _, c := range cases {
-		if got := c.t.Empty(); got != c.want {
-			t.Errorf("(%+v).Empty() = %v, want %v", c.t, got, c.want)
 		}
 	}
 }

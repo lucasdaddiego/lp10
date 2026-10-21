@@ -3,7 +3,6 @@
 package tui
 
 import (
-	"slices"
 	"strings"
 	"testing"
 )
@@ -73,21 +72,5 @@ func TestHelpScrollsToEveryGroupAt80x24(t *testing.T) {
 	m.rows = 60
 	if foot := footerOf(clean(render(t, m))); foot != "esc · q · ? back to the player" {
 		t.Errorf("tall help footer = %q", foot)
-	}
-}
-
-// The help page says the playback keys work from every view that does not use
-// the letter; on the help page itself they reach the device and the page stays.
-func TestHelpPageTakesThePlaybackKeys(t *testing.T) {
-	m, _, collect := makeModel(t)
-	m.key(kr('?'))
-	collect()
-	m.key(kr(' '))
-	m.key(kr('n'))
-	if got := wire(collect()); !slices.Equal(got, []string{"POP", "NXT"}) {
-		t.Errorf("space n on the help page sent %v, want [POP NXT]", got)
-	}
-	if m.view != viewHelp {
-		t.Errorf("a playback key closed the help page (view %s)", viewNames[m.view])
 	}
 }

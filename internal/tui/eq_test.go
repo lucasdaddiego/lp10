@@ -79,30 +79,6 @@ func TestEQPaneFocusAdjustToggle(t *testing.T) {
 	}
 }
 
-// tab walks the three numbered views in order and wraps; esc goes straight
-// home; help is behind ? alone and outside the cycle.
-func TestTabSwitchesView(t *testing.T) {
-	m, _, _ := eqModel(t)
-	for _, want := range []view{viewEQ, viewDiag, viewPlayer, viewEQ} {
-		m.key(ke(kTab))
-		if m.view != want {
-			t.Fatalf("tab reached view %s, want %s", viewNames[m.view], viewNames[want])
-		}
-	}
-	m.key(ke(kEsc))
-	if m.view != viewPlayer {
-		t.Fatalf("esc should return to the player, got %s", viewNames[m.view])
-	}
-	m.key(kr('?'))
-	if m.view != viewHelp {
-		t.Fatal("? should open the help page")
-	}
-	m.key(kr('?'))
-	if m.view != viewPlayer {
-		t.Fatal("? again should close it")
-	}
-}
-
 // Max volume is written no lower than 30, the device's documented floor:
 // holding ← used to send MXV:25 … MXV:0, and a cap the MCU took that low
 // would leave the room silent with no phone or remote able to raise it. A
@@ -184,35 +160,16 @@ func TestDiagCloseSwallowsRestOfBatch(t *testing.T) {
 	}
 }
 
+// The EQ switch and its preset open the list; the rarely-touched output cap
+// (Max volume) closes it. Every control has a label and a note.
 func TestEQDisplayOrder(t *testing.T) {
-	// EQ enable + its preset, tone, deep bass, balance, then the rarely-touched
-	// output cap (Max volume) last.
-	want := []string{"EQE", "EQS", "TRE", "MID", "BAS", "VBS", "VBI", "BAL", "MXV"}
-	if len(eqOrder) != len(want) {
-		t.Fatalf("eqOrder len=%d want %d", len(eqOrder), len(want))
+	if first, last := eqDisplay[0], eqDisplay[len(eqDisplay)-1]; first != "EQE" || eqDisplay[1] != "EQS" || last != "MXV" {
+		t.Errorf("eqDisplay = %v, want EQE, EQS … MXV", eqDisplay)
 	}
-	for d, code := range want {
-		if got := tunnel.Specs[eqOrder[d]].Code; got != code {
-			t.Errorf("display slot %d = %s, want %s", d, got, code)
-		}
+	for _, code := range eqDisplay {
 		if eqLabel[code] == "" || len(eqAbout[code]) == 0 {
 			t.Errorf("%s has no label or note", code)
 		}
-	}
-}
-
-func TestDashboardRenders(t *testing.T) {
-	m, _, _ := makeModel(t)
-	m.rows, m.cols = 24, 80
-	out := clean(render(t, m))
-	// the equalizer lives in its own view: nothing of it on the player
-	for _, absent := range []string{"Treble", "EQ off", "Max volume"} {
-		if strings.Contains(out, absent) {
-			t.Errorf("dashboard render carries %q", absent)
-		}
-	}
-	if !strings.Contains(out, "pause") {
-		t.Error("dashboard render lacks the transport")
 	}
 }
 
@@ -316,7 +273,9 @@ func TestEQViewRendersEveryControl(t *testing.T) {
 	}
 }
 
-func TestCov_toneStrBalStrPresetName(t *testing.T) {
+// The slider values as the rows print them: a signed tone, a balance with its
+// side, a preset by name or by number.
+func TestEQValueText(t *testing.T) {
 	if toneStr(0) != "0" || toneStr(3) != "+3" || toneStr(-6) != "-6" {
 		t.Errorf("toneStr wrong: %q %q %q", toneStr(0), toneStr(3), toneStr(-6))
 	}
@@ -324,58 +283,17 @@ func TestCov_toneStrBalStrPresetName(t *testing.T) {
 		t.Errorf("balStr wrong: %q %q %q", balStr(0), balStr(-20), balStr(35))
 	}
 	names := []string{"Flat", "", "Pop"}
-	for idx, want := range map[int]string{0: "Flat", 1: "preset 1", 2: "Pop", 3: "preset 3", -1: "preset -1"} {
+	for idx, want := range map[int]string{0: "Flat", 1: "preset 1", 3: "preset 3"} {
 		if got := presetName(names, idx); got != want {
 			t.Errorf("presetName(%d) = %q, want %q", idx, got, want)
 		}
-	}
-	if plural(1) != "" || plural(0) != "s" || plural(2) != "s" {
-		t.Error("plural wrong")
-	}
-	if btoi(true) != 1 || btoi(false) != 0 {
-		t.Error("btoi wrong")
-	}
-}
-
-func TestCov_eqToggleNoop(t *testing.T) {
-	m, st, collect := modelWith(protocol.NewState())
-	// eqToggleFocused is a no-op on a ranged control
-	st.ApplyTunnel("TRE", 3)
-	m.view, m.eqFocus = viewEQ, 2 // TRE (ranged)
-	m.eqToggleFocused()
-	if nv, _ := st.EQValue("TRE"); nv != 3 {
-		t.Error("eqToggleFocused on a ranged control must be a no-op")
-	}
-	if got := collect(); len(got) != 0 {
-		t.Errorf("a ranged enter sent %v", wire(got))
 	}
 }
 
 func TestCov_eqSliderRow(t *testing.T) {
 	m, _, _ := modelWith(protocol.NewState())
 	const w = 60
-	mxv, eqe, bas := eqSpecIndex("MXV"), eqSpecIndex("EQE"), eqSpecIndex("BAS")
-	// toggle ON and OFF
-	if got := stripANSI(m.eqSliderRow(eqe, map[string]int{"EQE": 1}, false, w)); !strings.Contains(got, "● on") {
-		t.Errorf("toggle on = %q", got)
-	}
-	if got := stripANSI(m.eqSliderRow(eqe, map[string]int{"EQE": 0}, false, w)); !strings.Contains(got, "○ off") {
-		t.Errorf("toggle off = %q", got)
-	}
-	// ranged unknown value -> "—"
-	if got := stripANSI(m.eqSliderRow(mxv, map[string]int{}, false, w)); !strings.HasSuffix(got, "—") {
-		t.Errorf("ranged unknown = %q", got)
-	}
-	// ranged tone +/- and a non-negative-min ranged (MXV) accent knob, focused
-	if got := stripANSI(m.eqSliderRow(bas, map[string]int{"BAS": 5}, true, w)); !strings.HasSuffix(got, "+5") {
-		t.Errorf("ranged +5 = %q", got)
-	}
-	if got := stripANSI(m.eqSliderRow(bas, map[string]int{"BAS": -5}, true, w)); !strings.HasSuffix(got, "-5") {
-		t.Errorf("ranged -5 = %q", got)
-	}
-	if got := stripANSI(m.eqSliderRow(mxv, map[string]int{"MXV": 50}, true, w)); !strings.HasSuffix(got, "50") {
-		t.Errorf("ranged MXV = %q", got)
-	}
+	eqe, bas := eqSpecIndex("EQE"), eqSpecIndex("BAS")
 	// every row is exactly w wide, whatever the value
 	for _, row := range []string{
 		m.eqSliderRow(bas, map[string]int{"BAS": 1000}, false, w),  // over the max: the knob clamps

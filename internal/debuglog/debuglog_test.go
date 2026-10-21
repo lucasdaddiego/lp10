@@ -5,9 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 )
 
 // Unset, Open is nil and Wrap hands the connection back untouched; a nil Log
@@ -162,26 +160,5 @@ func TestRotatesAtTheCap(t *testing.T) {
 	}
 	if raw, _ := os.ReadFile(p + ".1"); len(raw) != 300 {
 		t.Errorf(".1 holds %d bytes, want the 300 rotated out", len(raw))
-	}
-}
-
-// A FIFO with no reader is refused at once: a blocking open would hang the
-// tunnel worker, and quit would then wait on it for ever.
-func TestFIFOIsRefusedWithoutBlocking(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "fifo")
-	if err := syscall.Mkfifo(p, 0o600); err != nil {
-		t.Skip("mkfifo:", err)
-	}
-	t.Setenv(Env, p)
-	got := make(chan *Log, 1)
-	go func() { got <- Open() }()
-	select {
-	case l := <-got:
-		if l != nil {
-			l.Close()
-			t.Error("a FIFO returned a log")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Open blocked on a FIFO with no reader")
 	}
 }

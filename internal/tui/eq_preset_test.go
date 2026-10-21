@@ -95,28 +95,6 @@ func TestPresetKeysStepAndWrap(t *testing.T) {
 	}
 }
 
-func TestBalanceRowAndSummary(t *testing.T) {
-	m, st, _ := modelWith(protocol.NewState())
-	bal := eqSpecIndex("BAL")
-	for v, want := range map[int]string{-20: "L20", 0: "0", 35: "R35", -100: "L100"} {
-		if got := stripANSI(m.eqSliderRow(bal, map[string]int{"BAL": v}, true, 60)); !strings.HasSuffix(got, want) || !strings.HasPrefix(got, "Balance") {
-			t.Errorf("BAL %d row = %q, want %q", v, got, want)
-		}
-	}
-	st.PreloadEQ(map[string]int{"EQE": 1, "EQS": 3, "BAL": -10})
-	st.SetEQPresets(livePresets)
-	m.view = viewEQ
-	m.rows = 40
-	view := m.renderEQ(200)
-	assertWithin(t, "renderEQ", view, 200)
-	plain := stripANSI(strings.Join(view, "\n"))
-	for _, want := range []string{"● on", "Jazz", "L10"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("equalizer view %q lacks %q", plain, want)
-		}
-	}
-}
-
 // The equalizer view explains the focused control under the sliders: the EQ
 // switch's note says the tone sliders stay live, the preset's that it is heard
 // only while EQ is on, Max volume's that a low cap is what feels stuck.

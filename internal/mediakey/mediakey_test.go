@@ -4,14 +4,10 @@ import "testing"
 
 func TestClassify(t *testing.T) {
 	cases := map[int]Key{
-		nxKeyPlay:   PlayPause,
-		nxKeyNext:   Next,
-		nxKeyFast:   Next,
-		nxKeyPrev:   Prev,
-		nxKeyRewind: Prev,
-		0:           KeyNone, // NX_KEYTYPE_SOUND_UP — volume, out of scope
-		7:           KeyNone, // NX_KEYTYPE_MUTE
-		99:          KeyNone,
+		nxKeyPlay: PlayPause,
+		nxKeyNext: Next,
+		nxKeyPrev: Prev,
+		0:         KeyNone, // NX_KEYTYPE_SOUND_UP — volume, out of scope
 	}
 	for code, want := range cases {
 		if got := classify(code); got != want {

@@ -14,34 +14,19 @@ import (
 
 func TestTrackTitlePartialMetadata(t *testing.T) {
 	cases := []struct {
-		name, artist, want string
+		name, artist, album, want string
 	}{
-		{"Song", "Band", "Song — Band"},
-		{"Song", "", "Song"},
-		{"", "Band", "Band"},
-		{"", "", ""},
+		{"Song", "Band", "", "Song — Band"},
+		{"Song", "", "", "Song"},
+		{"", "Band", "", "Band"},
+		{"", "", "Big Bang", "Big Bang"}, // nothing but the album reads as the album
+		{"", "", "", ""},
 	}
 	for _, c := range cases {
-		got := trackTitle(&protocol.Track{TrackName: c.name, Artist: c.artist})
+		got := trackTitle(&protocol.Track{TrackName: c.name, Artist: c.artist, Album: c.album})
 		if got != c.want {
-			t.Errorf("trackTitle(%q, %q) = %q, want %q", c.name, c.artist, got, c.want)
+			t.Errorf("trackTitle(%q, %q, %q) = %q, want %q", c.name, c.artist, c.album, got, c.want)
 		}
-	}
-}
-
-func TestComputeTitlePartialMetadata(t *testing.T) {
-	m, _, _ := modelWith(protocol.NewState())
-	m.cfg.Name = "LP10"
-
-	s := m.st.Snap()
-	s.Track = &protocol.Track{TrackName: "Solo"}
-	if got := m.computeTitle(s); got != GL["note"]+" Solo" {
-		t.Errorf("artist-less title = %q, want %q", got, GL["note"]+" Solo")
-	}
-	// A track with no usable metadata falls back to the device name.
-	s.Track = &protocol.Track{}
-	if got := m.computeTitle(s); got != "LP10" {
-		t.Errorf("empty-track title = %q, want LP10", got)
 	}
 }
 

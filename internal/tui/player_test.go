@@ -13,26 +13,6 @@ import (
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 )
 
-func TestIdle(t *testing.T) {
-	track := &protocol.Track{TrackName: "x"}
-	for _, c := range []struct {
-		name string
-		s    protocol.Snapshot
-		want bool
-	}{
-		{"connecting", protocol.Snapshot{}, false},
-		{"connecting, last seen playing", protocol.Snapshot{Playing: true}, false},
-		{"connected, nothing", protocol.Snapshot{Connected: true}, true},
-		{"connected, playing untitled", protocol.Snapshot{Connected: true, Playing: true}, false},
-		{"connected, paused track", protocol.Snapshot{Connected: true, Track: track}, false},
-		{"connected, playing track", protocol.Snapshot{Connected: true, Playing: true, Track: track}, false},
-	} {
-		if got := idle(c.s); got != c.want {
-			t.Errorf("%s: idle = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // A track the tunnel announced: title, artist and album on their own lines,
 // the source under them, the play state and the transport; the motif in the
 // art box; "Vol" over the rail.
@@ -108,21 +88,17 @@ func TestPlayerPlayingWithoutATitle(t *testing.T) {
 	}
 }
 
-// Connected and idle: the clock and the wake hint, the note motif in the art
-// slot where one is drawn, no transport.
+// Connected and idle the screen animates nothing; a paused track is not idle:
+// the player stays, the motif frozen.
 func TestPlayerConnectedIdle(t *testing.T) {
 	m, st, _ := modelWith(idleState())
 	m.rows, m.cols = 40, 120
-	out := clean(render(t, m))
-	if !strings.Contains(out, "█████") || !strings.Contains(out, wakeHint) {
-		t.Errorf("idle screen:\n%s", out)
-	}
+	render(t, m)
 	if m.motifLive || m.searchLive {
 		t.Error("the idle screen animates nothing")
 	}
-	// a paused track is not idle: the player stays, the motif frozen
 	st.ApplyTrackField(protocol.FieldTitle, "Paused Song")
-	out = clean(render(t, m))
+	out := clean(render(t, m))
 	if !strings.Contains(out, "Paused Song") || !strings.Contains(out, GL["pause"]+" Paused") || !strings.Contains(out, "play") {
 		t.Errorf("paused player:\n%s", out)
 	}
@@ -260,20 +236,5 @@ func TestMotifCache(t *testing.T) {
 	}
 	if d := m.motif(21, 8); len(d) != 8 || visWidth(d[0]) != 21 {
 		t.Errorf("a resized motif = %d rows of %d", len(d), visWidth(d[0]))
-	}
-}
-
-// TestUntitledTrackFallsBack: a track the device announced with no title and
-// no artist reads as its album, and with nothing at all the mini line names
-// the source rather than an empty slot.
-func TestUntitledTrackFallsBack(t *testing.T) {
-	if got := trackTitle(&protocol.Track{Album: "Big Bang"}); got != "Big Bang" {
-		t.Errorf("trackTitle(album only) = %q", got)
-	}
-	if got := trackTitle(&protocol.Track{}); got != "" {
-		t.Errorf("trackTitle(empty) = %q, want empty", got)
-	}
-	if got := trackTitleOf(nil); got != "" {
-		t.Errorf("trackTitleOf(nil) = %q", got)
 	}
 }

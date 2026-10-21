@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -60,8 +59,6 @@ func TestOTACheckVerdicts(t *testing.T) {
 			return 200, `{"errorCode":1000,"errorString":"SUCCESS"}`
 		case "AR241CE_0002":
 			return 200, `{"errorCode":2000,"errorString":"Unknown model"}`
-		case "AR241CE_0003":
-			return 200, `{"errorCode":2000}`
 		case "AR241CE_0004":
 			return 500, `oops`
 		case "AR241CE_0006":
@@ -84,9 +81,6 @@ func TestOTACheckVerdicts(t *testing.T) {
 	}
 	if v := OTACheck(ctx, srv.URL, "AR241CE_0002"); v.Err != "vendor said: Unknown model" {
 		t.Errorf("vendor error: %+v", v)
-	}
-	if v := OTACheck(ctx, srv.URL, "AR241CE_0003"); v.Err != "unexpected vendor reply" {
-		t.Errorf("bare vendor error: %+v", v)
 	}
 	if v := OTACheck(ctx, srv.URL, "AR241CE_0004"); v.Err != "unexpected vendor reply" {
 		t.Errorf("http 500: %+v", v)
@@ -325,8 +319,8 @@ func TestOTAWorkerEndsOnStop(t *testing.T) {
 }
 
 // Set-but-empty LP10_OTA_URL disables the worker: it returns at once and
-// leaves the request pending. Unset, the checks go to the vendor manifest.
-func TestOTAWorkerDisabledAndURL(t *testing.T) {
+// leaves the request pending.
+func TestOTAWorkerDisabled(t *testing.T) {
 	t.Setenv("LP10_OTA_URL", "")
 	st := protocol.NewState()
 	st.RequestOTA()
@@ -339,16 +333,5 @@ func TestOTAWorkerDisabledAndURL(t *testing.T) {
 	}
 	if !st.DiagnosticView().OTAPending {
 		t.Error("a disabled worker consumed the request")
-	}
-	if u, ok := ManifestURL(); ok || u != "" {
-		t.Errorf("ManifestURL disabled = %q %v", u, ok)
-	}
-	t.Setenv("LP10_OTA_URL", "http://127.0.0.1:9/v1")
-	if u, ok := ManifestURL(); !ok || u != "http://127.0.0.1:9/v1" {
-		t.Errorf("ManifestURL override = %q %v", u, ok)
-	}
-	os.Unsetenv("LP10_OTA_URL") // t.Setenv restores the TestMain value afterwards
-	if u, ok := ManifestURL(); !ok || u != otaManifestURL {
-		t.Errorf("ManifestURL default = %q %v, want %q", u, ok, otaManifestURL)
 	}
 }

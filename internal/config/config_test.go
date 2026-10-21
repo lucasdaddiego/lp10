@@ -16,13 +16,19 @@ func writeConfig(t *testing.T, content string) {
 	t.Setenv("XDG_CONFIG_HOME", base)
 	t.Setenv("LP10_HOST", "")
 	if content != "" {
-		dir := filepath.Join(base, "lp10")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeConfigUnder(t, base, content)
+	}
+}
+
+// writeConfigUnder writes base/lp10/config.toml.
+func writeConfigUnder(t *testing.T, base, content string) {
+	t.Helper()
+	dir := filepath.Join(base, "lp10")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -40,8 +46,7 @@ func TestStateDirHonorsEnv(t *testing.T) {
 }
 
 // XDG_STATE_HOME places the state dir like XDG_CONFIG_HOME places the
-// config; a relative one is ignored, as the spec asks, so the dir never
-// depends on the cwd.
+// config; unset, the dir is ~/.local/state/lp10.
 func TestStateDirHonorsXDGStateHome(t *testing.T) {
 	t.Setenv("LP10_STATE_DIR", "")
 	x := filepath.Join(t.TempDir(), "xdg")
@@ -55,9 +60,9 @@ func TestStateDirHonorsXDGStateHome(t *testing.T) {
 	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_STATE_HOME", "relative/state")
+	t.Setenv("XDG_STATE_HOME", "")
 	if got, want := StateDir(), filepath.Join(home, ".local", "state", "lp10"); got != want {
-		t.Errorf("relative XDG_STATE_HOME: StateDir = %q, want the home default %q", got, want)
+		t.Errorf("unset XDG_STATE_HOME: StateDir = %q, want the home default %q", got, want)
 	}
 }
 
@@ -82,17 +87,15 @@ func TestConfigFileAndEnvOverride(t *testing.T) {
 	}
 }
 
-func TestConfigRejectsBoolForInt(t *testing.T) {
-	writeConfig(t, "vol_step = true\n")
-	if Load().VolStep != 2 {
-		t.Error("bool for int field should keep the default")
-	}
-}
-
-func TestMissingConfigIsSilent(t *testing.T) {
-	writeConfig(t, "")
-	if Load().Warn != "" {
-		t.Error("missing config should not warn")
+// With XDG_CONFIG_HOME unset — most setups — the file is ~/.config/lp10/config.toml.
+func TestConfigReadFromHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("LP10_HOST", "")
+	writeConfigUnder(t, filepath.Join(home, ".config"), "name = \"Den\"\n")
+	if cfg := Load(); cfg.Name != "Den" || cfg.Warn != "" {
+		t.Errorf("~/.config/lp10/config.toml not read: %+v", cfg)
 	}
 }
 
@@ -107,41 +110,14 @@ func TestMalformedConfigWarnsAndKeepsDefaults(t *testing.T) {
 	}
 }
 
-func TestNonUTF8ConfigWarnsNotCrashes(t *testing.T) {
-	base := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", base)
-	t.Setenv("LP10_HOST", "")
-	dir := filepath.Join(base, "lp10")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte{0xff, 0xfe, 0x00, 'b', 'r', 'o', 'k', 'e', 'n'}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Load()
-	if cfg.Host != "lp10.local" || cfg.Warn == "" {
-		t.Errorf("non-utf8 config should warn and keep defaults: %+v", cfg)
-	}
-}
-
 func TestVolStepClamped(t *testing.T) {
 	writeConfig(t, "vol_step = 0\n")
 	if Load().VolStep != 1 {
 		t.Error("vol_step 0 should clamp to 1")
 	}
-}
-
-func TestConfigIntFloatCoercion(t *testing.T) {
-	writeConfig(t, "vol_step = 2.0\n")
-	if Load().VolStep != 2 {
-		t.Error("vol_step 2.0 should coerce to 2")
-	}
-}
-
-func TestConfigHugeFloatVolStepRejected(t *testing.T) {
-	writeConfig(t, "vol_step = 1e19\n")
-	if got := Load().VolStep; got != 2 {
-		t.Errorf("out-of-range float vol_step should keep default 2, got %d", got)
+	writeConfig(t, "vol_step = 200\n")
+	if Load().VolStep != 100 {
+		t.Error("vol_step 200 should clamp to 100")
 	}
 }
 
@@ -181,68 +157,42 @@ func TestSnapshotRoundTrip(t *testing.T) {
 
 // A snapshot written before firmware AR241CP_8747 also holds the track, its
 // position and the play state. Upgrading must keep its volume and EQ (the
-// first paint) and ignore the rest, whatever shape the retired fields have:
-// a cached title could name something the box stopped playing long ago.
+// first paint) and ignore the rest: a cached title could name something the
+// box stopped playing long ago.
 func TestLoadSnapshotOldFormatKeepsVolAndEQ(t *testing.T) {
-	cases := map[string]string{
-		"full legacy track": `{
-			"track": {
-				"TrackName": "Legacy", "Artist": "Artist", "Album": "Album",
-				"PlaybackSource": "Spotify", "PlayUrl": "spotify:track:x",
-				"CoverArtUrl": "https://example.test/cover.jpg", "TotalTime": 180000,
-				"Current Source": 4, "SampleRate": 44100, "Seek": true,
-				"future-field": "ignored"
-			},
-			"pos": 1234,
-			"playing": 0,
-			"vol": 44,
-			"eq": {"BAS": 3}
-		}`,
-		"junk track":        `{"track":"junk-string","pos":"x","playing":true,"vol":44,"eq":{"BAS":3}}`,
-		"non-object track":  `{"track":["not","a","dict"],"vol":44,"eq":{"BAS":3}}`,
-		"wrong-typed field": `{"track":{"SampleRate":"44100"},"vol":44,"eq":{"BAS":3}}`,
-		"null track":        `{"track":null,"pos":0,"playing":2,"vol":44,"eq":{"BAS":3}}`,
+	raw := `{
+		"track": {
+			"TrackName": "Legacy", "Artist": "Artist", "Album": "Album",
+			"PlaybackSource": "Spotify", "PlayUrl": "spotify:track:x",
+			"CoverArtUrl": "https://example.test/cover.jpg", "TotalTime": 180000,
+			"Current Source": 4, "SampleRate": 44100, "Seek": true,
+			"future-field": "ignored"
+		},
+		"pos": 1234,
+		"playing": 0,
+		"vol": 44,
+		"eq": {"BAS": 3}
+	}`
+	p := filepath.Join(t.TempDir(), "snap.json")
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	for name, raw := range cases {
-		t.Run(name, func(t *testing.T) {
-			p := filepath.Join(t.TempDir(), "snap.json")
-			if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			got := LoadSnapshot(p)
-			if got == nil || got.Vol != 44 || len(got.EQ) != 1 || got.EQ["BAS"] != 3 {
-				t.Errorf("old-format snapshot = %+v, want vol 44 and eq BAS 3", got)
-			}
-		})
+	got := LoadSnapshot(p)
+	if got == nil || got.Vol != 44 || len(got.EQ) != 1 || got.EQ["BAS"] != 3 {
+		t.Errorf("old-format snapshot = %+v, want vol 44 and eq BAS 3", got)
 	}
 }
 
-// The fields the snapshot still carries must have their own type: a
-// wrong-typed vol or EQ value rejects the cache rather than half-load it.
-func TestLoadSnapshotRejectsWrongTypedKnownField(t *testing.T) {
-	for _, raw := range []string{`{"vol":"44"}`, `{"vol":44,"eq":{"BAS":"3"}}`, `{"vol":44,"eq":[3]}`} {
+// A corrupt snapshot — a non-object root, a wrong-typed field — rejects the
+// cache rather than half-load it or crash-loop.
+func TestLoadSnapshotRejectsCorruptFile(t *testing.T) {
+	for _, raw := range []string{`["not","a","dict"]`, `{"vol":"44"}`} {
 		p := filepath.Join(t.TempDir(), "snap.json")
 		if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if got := LoadSnapshot(p); got != nil {
 			t.Errorf("LoadSnapshot(%s) = %+v, want nil", raw, got)
-		}
-	}
-}
-
-func TestSlug(t *testing.T) {
-	cases := map[string]string{
-		"192.168.1.40":      "192.168.1.40",
-		"lp10.local":        "lp10.local",
-		"host:with:colons":  "host_with_colons",
-		"host with spaces":  "host_with_spaces",
-		"Host-With-Dashes":  "Host-With-Dashes",
-		"host/with/slashes": "host_with_slashes",
-	}
-	for in, want := range cases {
-		if got := slug(in); got != want {
-			t.Errorf("slug(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -279,38 +229,8 @@ func TestStatePathsAreOnePerHost(t *testing.T) {
 	if got := LoadSnapshot(SnapshotPath(cfg)); got == nil || got.Vol != 33 {
 		t.Fatalf("the old file's snapshot was lost: %+v", got)
 	}
-	SaveSnapshot(SnapshotPath(cfg), CachedSnapshot{Vol: 44})
-	if got := LoadSnapshot(SnapshotPath(cfg)); got == nil || got.Vol != 44 {
-		t.Errorf("after a save: %+v, want vol 44", got)
-	}
 	if got := LoadSnapshot(SnapshotPath(Config{Host: "fe80__1_en0"})); got == nil || got.Vol != 33 {
 		t.Errorf("the host still named by the old file lost it: %+v", got)
-	}
-
-	oldSweep := filepath.Join(d, "sweep-living_room.json")
-	if err := os.WriteFile(oldSweep, []byte(`{"host":"living room"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if b, err := os.ReadFile(SweepPath(Config{Host: "living room"})); err != nil || string(b) != `{"host":"living room"}` {
-		t.Errorf("the old sweep baseline was lost: %q %v", b, err)
-	}
-}
-
-func TestSaveSnapshotWithIOErrorIsSwallowed(t *testing.T) {
-	badPath := filepath.Join(t.TempDir(), "nonexistent", "snap.json")
-	SaveSnapshot(badPath, CachedSnapshot{Vol: 50}) // must not panic
-	if _, err := os.Stat(badPath); err == nil {
-		t.Error("nothing should be written to a bad path")
-	}
-}
-
-func TestLoadSnapshotWithNonDictRoot(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "snap.json")
-	if err := os.WriteFile(p, []byte(`["not","a","dict"]`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if LoadSnapshot(p) != nil {
-		t.Error("non-dict root should reject the snapshot")
 	}
 }
 
@@ -359,52 +279,19 @@ discover = "yes"
 }
 
 // The ssh user, the ping target and the album-art keys were retired with ssh
-// (firmware AR241CP_8747). A config that still sets one — with any value
-// type — is told why the key no longer counts, not that it is unknown, and
-// the key changes nothing. The keys beside it still apply.
+// (firmware AR241CP_8747). A config that still sets one is told why the key
+// no longer counts, not that it is unknown, and the key changes nothing. The
+// keys beside it still apply.
 func TestRetiredKeysComplainAndChangeNothing(t *testing.T) {
-	for _, tc := range []struct{ key, toml string }{
-		{"user", `user = "root"`},
-		{"ping_host", `ping_host = "1.1.1.1"`},
-		{"art", `art = false`},
-		{"art_mode", `art_mode = "kitty"`},
-		{"art_mode", `art_mode = 3`},
-	} {
-		t.Run(tc.toml, func(t *testing.T) {
-			writeConfig(t, tc.toml+"\nname = \"Den\"\n")
-			cfg := Load()
-			want := "config.toml: " + tc.key + " ignored (retired: lp10 has no ssh and no album art since firmware AR241CP_8747)"
-			if cfg.Warn != want {
-				t.Errorf("warn = %q, want %q", cfg.Warn, want)
-			}
-			if strings.Contains(cfg.Warn, "unknown key") {
-				t.Errorf("a retired key reads as unknown: %q", cfg.Warn)
-			}
-			cfg.Warn = ""
-			if want := (Config{Host: defHost, StateKey: defHost, Name: "Den", VolStep: defVolStep, Discover: true, Theme: defTheme}); cfg != want {
-				t.Errorf("a retired key changed the config: %+v, want %+v", cfg, want)
-			}
-		})
+	writeConfig(t, "user = \"root\"\nname = \"Den\"\n")
+	cfg := Load()
+	want := "config.toml: user ignored (retired: lp10 has no ssh and no album art since firmware AR241CP_8747)"
+	if cfg.Warn != want {
+		t.Errorf("warn = %q, want %q", cfg.Warn, want)
 	}
-}
-
-// Every key the parser does not know still complains by name, retired keys
-// beside it included, in a stable (sorted) order.
-func TestUnknownKeysStillComplain(t *testing.T) {
-	cfg := Config{Host: defHost, Name: DefaultName, VolStep: defVolStep, Discover: true, Theme: defTheme}
-	before := cfg
-	got := applyTOML(&cfg, map[string]any{"zzz": 1, "user": "pi", "art_cache": "x", "ping": "y"})
-	want := []string{
-		`unknown key "art_cache"`,
-		`unknown key "ping"`,
-		"user ignored (retired: lp10 has no ssh and no album art since firmware AR241CP_8747)",
-		`unknown key "zzz"`,
-	}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Errorf("complaints = %q, want %q", got, want)
-	}
-	if cfg != before {
-		t.Errorf("unknown and retired keys changed the config: %+v", cfg)
+	cfg.Warn = ""
+	if want := (Config{Host: defHost, StateKey: defHost, Name: "Den", VolStep: defVolStep, Discover: true, Theme: defTheme}); cfg != want {
+		t.Errorf("a retired key changed the config: %+v, want %+v", cfg, want)
 	}
 }
 

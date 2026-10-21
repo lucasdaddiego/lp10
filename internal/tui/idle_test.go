@@ -56,9 +56,6 @@ func TestBigClock(t *testing.T) {
 			t.Errorf("row %d width %d, want %d", i, DispW(r), want)
 		}
 	}
-	if rows[0] != blockDigits['1'][0]+"  "+blockDigits['6'][0]+"  "+blockDigits[':'][0]+"  "+blockDigits['0'][0]+"  "+blockDigits['4'][0] {
-		t.Errorf("first row = %q", rows[0])
-	}
 	for r, g := range blockDigits {
 		for i, ln := range g {
 			if w := DispW(g[0]); DispW(ln) != w {

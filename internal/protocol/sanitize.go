@@ -21,11 +21,6 @@ type Track struct {
 	Service   string // the VND word, e.g. "spotify" ("" until the device names one)
 }
 
-// Empty reports whether t contains no sanitized track data.
-func (t *Track) Empty() bool {
-	return t == nil || *t == (Track{})
-}
-
 // Printable strips control/separator characters from a device-supplied string
 // before it reaches the terminal, so a raw ESC/BEL/C1 byte can't start an
 // escape sequence (SGR colour bleed, an injected OSC-8 hyperlink) in the

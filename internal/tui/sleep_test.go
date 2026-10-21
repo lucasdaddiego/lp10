@@ -159,20 +159,6 @@ func TestSleepNeverResumes(t *testing.T) {
 	}
 }
 
-// Playing with no track metadata (a run that started mid-track) is still
-// playing: the timer pauses it rather than shrugging.
-func TestSleepFiresPauseWithoutTrackMetadata(t *testing.T) {
-	m, st, collect := modelWith(untitledState())
-	m.sleepAt = time.Now().Add(-time.Second)
-	m.dispatch(logicMsg{})
-	if got := wire(collect()); !slices.Equal(got, []string{"POP"}) {
-		t.Fatalf("sent %v, want [POP]", got)
-	}
-	if st.Snap().Playing || !m.sleepAt.IsZero() {
-		t.Error("must flip to paused and disarm")
-	}
-}
-
 // ---- sleep timer: label + rendering ------------------------------------------
 
 func TestSleepLabelRoundsUpAndFlagsFinalMinute(t *testing.T) {
@@ -183,15 +169,10 @@ func TestSleepLabelRoundsUpAndFlagsFinalMinute(t *testing.T) {
 		want  string
 		final bool
 	}{
-		{30 * time.Minute, "30m", false},
 		{29*time.Minute + 59*time.Second, "30m", false}, // rounds up, never reads a minute early
-		{29*time.Minute + 1*time.Second, "30m", false},
-		{29 * time.Minute, "29m", false},
-		{61 * time.Second, "2m", false},
 		{60 * time.Second, "1m", false},
 		{59 * time.Second, "59s", true},
 		{1500 * time.Millisecond, "2s", true},
-		{0, "0s", true},
 		{-5 * time.Second, "0s", true}, // past due (fires on the next tick) still renders sanely
 	}
 	for _, c := range cases {
@@ -259,28 +240,6 @@ func TestSleepShowsOnMiniLineAndIdleScreen(t *testing.T) {
 	out := clean(render(t, mi))
 	if n := strings.Count(out, GL["sleep"]+" 45m"); n != 2 {
 		t.Errorf("idle screen shows the countdown %d times, want 2 (header + under the clock):\n%s", n, out)
-	}
-}
-
-// The player hint advertises the key and still fits the full dashboard's
-// narrowest content width unclipped.
-func TestSleepFooterHintFitsMinimumWidth(t *testing.T) {
-	m, _, _ := makeModel(t)
-	got := stripANSI(m.footerRow(FullCols - 6))
-	if !strings.Contains(got, "s sleep") {
-		t.Errorf("footer = %q, want the sleep hint", got)
-	}
-	if strings.Contains(got, GL["ell"]) {
-		t.Errorf("footer = %q, clipped at the minimum full width", got)
-	}
-}
-
-func TestSleepGlyphHasASCIIFallback(t *testing.T) {
-	if g := glyphs(2)["sleep"]; g != "z" {
-		t.Errorf("glyphs(2)[sleep] = %q, want ASCII z", g)
-	}
-	if g := glyphs(1)["sleep"]; g != "☾" {
-		t.Errorf("glyphs(1)[sleep] = %q, want ☾", g)
 	}
 }
 

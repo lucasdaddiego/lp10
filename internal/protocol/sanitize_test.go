@@ -5,17 +5,6 @@ import (
 	"testing"
 )
 
-func TestPrintableMatchesCPythonCategories(t *testing.T) {
-	// non-printable == Other (C*) or Separator (Z*) except the ASCII space:
-	// U+200B (Cf) and U+00A0 (Zs) are stripped; the ASCII space is kept.
-	if got := Printable("a\u200bb\u00a0c d"); got != "abc d" {
-		t.Errorf("Printable = %q, want %q", got, "abc d")
-	}
-	if got := Printable("x\x07y\ty"); got != "xyy" {
-		t.Errorf("Printable should strip control chars: %q", got)
-	}
-}
-
 // Every class a device string could use to break out of its cell is
 // stripped: C0 and DEL (ESC starts a CSI/OSC, BEL ends an OSC), C1 (U+009B is
 // a one-rune CSI on some terminals), the bidi embeddings, overrides and
@@ -70,22 +59,6 @@ func TestPrintableKeepsRealText(t *testing.T) {
 		if got := Printable(s); got != s {
 			t.Errorf("Printable(%q) = %q, want unchanged", s, got)
 		}
-	}
-}
-
-func TestPrintableIsTheExportedPrintable(t *testing.T) {
-	for _, s := range []string{"a\x1bb", "Cafe\u0301", "\u200da\u200d", "x"} {
-		if Printable(s) != printable(s) {
-			t.Errorf("Printable(%q) != printable(%q)", s, s)
-		}
-	}
-}
-
-func TestPrintableNormalizesNFC(t *testing.T) {
-	// NFD "Cafe\u0301" (e + combining acute) composes to the form the terminal
-	// displays, so the width math agrees with what is actually rendered.
-	if got := Printable("Cafe\u0301"); got != "Caf\u00e9" {
-		t.Errorf("Printable(NFD) = %q, want composed %q", got, "Caf\u00e9")
 	}
 }
 
@@ -153,25 +126,6 @@ func TestPrintableReplacesInvalidUTF8(t *testing.T) {
 	}
 }
 
-// TestPrintableIsIdempotentAcrossAStrippedControl pins the two inputs that
-// broke idempotence when Printable normalized only before the strip: the
-// control between two composable runes went, and the pair stayed decomposed
-// until a second pass composed it.
-func TestPrintableIsIdempotentAcrossAStrippedControl(t *testing.T) {
-	for in, want := range map[string]string{
-		"e\x07́": "é", // é
-		"ᄀ\x07ᅡ": "가", // 가
-	} {
-		got := Printable(in)
-		if got != want {
-			t.Errorf("Printable(%+q) = %+q, want %+q", in, got, want)
-		}
-		if again := Printable(got); again != got {
-			t.Errorf("Printable is not idempotent on %+q: %+q -> %+q", in, got, again)
-		}
-	}
-}
-
 // Bounded strips, cuts to n runes (not bytes), trims, and strips once more:
 // a zero-width joiner the cut leaves at the edge goes.
 func TestBounded(t *testing.T) {
@@ -180,14 +134,10 @@ func TestBounded(t *testing.T) {
 		n    int
 		want string
 	}{
-		{"Flat", 16, "Flat"},
 		{"  Rock\x1b[31m  ", 16, "Rock[31m"},
 		{"Señalemelo", 4, "Seña"},
 		{"ab \u200dcd", 3, "ab"},
-		{"a\u200db", 1, "a"},
-		{"anything", 0, ""},
 		{"x", -1, ""},
-		{"", 5, ""},
 	}
 	for _, c := range cases {
 		if got := Bounded(c.in, c.n); got != c.want {

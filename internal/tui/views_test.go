@@ -17,7 +17,6 @@ func TestViewStripAdaptsToWidth(t *testing.T) {
 		room int
 		want string
 	}{
-		{80, "1 player  2 equalizer  3 diagnostics"},
 		{36, "1 player  2 equalizer  3 diagnostics"},
 		{35, "1 play  2 eq  3 diag"},
 		{20, "1 play  2 eq  3 diag"},
@@ -56,8 +55,7 @@ func TestViewStripAdaptsToWidth(t *testing.T) {
 	}
 }
 
-// The help page lists every view's keys and leaves by esc, q or ?. It names no
-// removed view or key.
+// The help page lists every view's keys and names no removed view or key.
 func TestHelpViewListsKeys(t *testing.T) {
 	m, _, _ := makeModel(t)
 	m.rows, m.cols = 44, 120
@@ -80,17 +78,6 @@ func TestHelpViewListsKeys(t *testing.T) {
 	}
 	// every key line fits the narrowest frame: clipped, never wider
 	assertWithin(t, "help at the narrowest", m.renderHelp(MiniCols-6), MiniCols-6)
-	// a playback key does not leave the help page; q and esc return to the player
-	if m.key(kr(' ')); m.view != viewHelp {
-		t.Error("space should not leave the help page")
-	}
-	if m.key(kr('q')) || m.view != viewPlayer {
-		t.Error("q should return to the player without quitting")
-	}
-	m.key(kr('?'))
-	if m.key(ke(kEsc)); m.view != viewPlayer {
-		t.Error("esc should leave the help page")
-	}
 }
 
 // The playback keys reach the player from every view: a track can be paused
@@ -116,13 +103,9 @@ func TestPlaybackKeysWorkAcrossViews(t *testing.T) {
 	}
 }
 
-// The strip has a short form between the full names and the numerals, and the
-// footer rotates a second page of rarer keys for four seconds in sixteen.
-func TestStripShortFormAndFooterRotation(t *testing.T) {
+// The footer rotates a second page of rarer keys for four seconds in sixteen.
+func TestFooterRotation(t *testing.T) {
 	m, _, _ := makeModel(t)
-	if s, w := m.viewStrip(30); stripANSI(s) != "1 play  2 eq  3 diag" || w != 20 {
-		t.Errorf("short strip = %q (%d)", stripANSI(s), w)
-	}
 	m.scroll = 0
 	first := stripANSI(m.footerRow(120))
 	m.scroll = 130

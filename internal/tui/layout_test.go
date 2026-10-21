@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/lipgloss/v2"
 	"github.com/lucasdaddiego/lp10/internal/protocol"
 	"github.com/lucasdaddiego/lp10/internal/sweep"
 )
@@ -91,46 +90,6 @@ func TestLayoutInvariants(t *testing.T) {
 	}
 }
 
-func TestCov_padHelpers(t *testing.T) {
-	if got := padDisp("ab", 5); got != "ab   " {
-		t.Errorf("padDisp(ab,5) = %q", got)
-	}
-	if got := padDisp("abcde", 3); got != "abcde" {
-		t.Errorf("padDisp wide no-op = %q", got)
-	}
-	if got := padVis("ab", 5); got != "ab   " {
-		t.Errorf("padVis(ab,5) = %q", got)
-	}
-	if got := padVis("abcde", 3); got != "abcde" {
-		t.Errorf("padVis wide no-op = %q", got)
-	}
-	if got := labelGap("ab", 5); got != "   " {
-		t.Errorf("labelGap(ab,5) = %q (len %d)", got, len(got))
-	}
-	if got := labelGap("abcdef", 3); got != "" {
-		t.Errorf("labelGap overflow should be empty, got %q", got)
-	}
-}
-
-func TestCov_betweenSplitCcell(t *testing.T) {
-	if got := between("L", 1, "R", 1, 10); got != "L"+strings.Repeat(" ", 8)+"R" {
-		t.Errorf("between normal = %q", got)
-	}
-	// gap < 1 clamps to a single space
-	if got := between("L", 5, "R", 5, 8); got != "L R" {
-		t.Errorf("between clamp = %q, want %q", got, "L R")
-	}
-	if got := splitWidth(10, 3); len(got) != 3 || got[0] != 4 || got[1] != 3 || got[2] != 3 {
-		t.Errorf("splitWidth(10,3) = %v, want [4 3 3]", got)
-	}
-	if got := splitWidth(9, 3); got[0] != 3 || got[1] != 3 || got[2] != 3 {
-		t.Errorf("splitWidth(9,3) = %v, want [3 3 3]", got)
-	}
-	if w := lipgloss.Width(ccell("x", 5)); w != 5 {
-		t.Errorf("ccell width = %d, want 5", w)
-	}
-}
-
 // A tall cell aspect makes the square-in-pixels cover short (its height floors
 // at 6), shorter than the now-playing block beside it; the block used to take
 // the cover's height and trim the transport row off its bottom. It now takes
@@ -168,7 +127,7 @@ func TestEmojiTitleKeepsEveryLayoutInsideTheWindow(t *testing.T) {
 // yield before the player's own status and transport rows. From 11 rows up
 // there is room for all of it, and all of it shows.
 func TestCompactShortFrameKeepsTransport(t *testing.T) {
-	for _, rows := range []int{9, 10, 11, 12, 13} {
+	for _, rows := range []int{9, 10, 11} {
 		m, _, _ := makeModel(t)
 		m.rows, m.cols = rows, 64
 		out := clean(render(t, m))

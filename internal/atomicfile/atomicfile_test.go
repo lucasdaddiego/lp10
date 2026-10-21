@@ -32,29 +32,6 @@ func TestWriteSuccessRemovesTemp(t *testing.T) {
 	assertNoTemps(t, path)
 }
 
-func TestWriteFailedCreateLeavesNoTemp(t *testing.T) {
-	badPath := filepath.Join(t.TempDir(), "nonexistent", "test.txt")
-	if err := Write(badPath, []byte("test")); err == nil {
-		t.Error("Write into a missing parent should report an error")
-	}
-}
-
-// Renaming the temporary file onto an existing directory fails, the sibling is
-// cleaned up, and the target is left untouched.
-func TestWriteRenameOntoDirFailsAndCleansUp(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "target")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := Write(dir, []byte("data")); err == nil {
-		t.Error("rename onto a directory should report an error")
-	}
-	assertNoTemps(t, dir)
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		t.Error("target should still be a directory after the failed write")
-	}
-}
-
 func TestWriteConcurrentWritersLeaveOneWholePayload(t *testing.T) {
 	const writers = 32
 

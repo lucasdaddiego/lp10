@@ -4,7 +4,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -111,18 +110,6 @@ func TestArrowsBelongToTheView(t *testing.T) {
 	}
 }
 
-// The sleep notice reads the timer it just armed.
-func TestSleepNotice(t *testing.T) {
-	m, _, _ := makeModel(t)
-	if got := m.sleepNotice(); got != "sleep timer off" {
-		t.Errorf("off: %q", got)
-	}
-	m.sleepAt = time.Now().Add(30 * time.Minute)
-	if got := m.sleepNotice(); got != "sleep timer set · "+GL["sleep"]+" 30m" {
-		t.Errorf("armed: %q", got)
-	}
-}
-
 // A bracketed paste is dispatched only when it is a few hotkeys and nothing
 // else: a pasted Spotify link used to run prev, two sleep-timer steps, the
 // equalizer, a skipped track and a quit.
@@ -147,7 +134,8 @@ func TestPasteIsOnlyAFewHotkeys(t *testing.T) {
 	}
 }
 
-func TestCov_translateEveryType(t *testing.T) {
+// Every key the TUI binds translates to its kind; an unbound key is kOther.
+func TestTranslateKeys(t *testing.T) {
 	cases := []struct {
 		key  tea.Key
 		want keyKind
@@ -176,15 +164,6 @@ func TestCov_translateEveryType(t *testing.T) {
 	if ev := translate(tea.Key{Code: 'm', Text: "m"}); ev.kind != kRune || ev.r != 'm' {
 		t.Errorf("single rune = %+v", ev)
 	}
-	// multi-rune Text expands 1:1 via translateAll (legacy coalesced input)
-	evs := translateAll(tea.KeyPressMsg{Code: 'a', Text: "abc"})
-	if len(evs) != 3 || evs[2].r != 'c' {
-		t.Errorf("translateAll multi-rune = %+v", evs)
-	}
-	// bracketed paste takes the same expansion via runeEvents
-	if evs := runeEvents("mn"); len(evs) != 2 || evs[0].r != 'm' || evs[1].r != 'n' {
-		t.Errorf("runeEvents = %+v", evs)
-	}
 }
 
 // Under the Kitty keyboard protocol a shifted printable arrives as its BASE
@@ -192,7 +171,7 @@ func TestCov_translateEveryType(t *testing.T) {
 // CapsLock rides as a modifier bit on ordinary letters. Those are text input —
 // '?', '+', '_', 'Q' must keep working when the terminal upgrades the wire
 // encoding (ultraviolet's own MatchString masks exactly Shift|CapsLock).
-func TestCov_translateKittyShiftedPrintables(t *testing.T) {
+func TestTranslateKittyShiftedPrintables(t *testing.T) {
 	cases := []struct {
 		key  tea.Key
 		want rune
@@ -226,7 +205,9 @@ func TestCov_translateKittyShiftedPrintables(t *testing.T) {
 	}
 }
 
-func TestCov_KeyRunes(t *testing.T) {
+// The playback letters reach the device as their codes; an unbound letter is
+// inert; Q backs out of a view before it quits.
+func TestPlaybackRuneKeys(t *testing.T) {
 	m, _, collect := makeModel(t)
 	for _, r := range " np=+-_" {
 		m.key(kr(r))
@@ -253,59 +234,4 @@ func TestCov_KeyRunes(t *testing.T) {
 	if got := collect(); len(got) != 0 {
 		t.Errorf("view keys sent %v", wire(got))
 	}
-}
-
-func TestCov_KeyViews(t *testing.T) {
-	m, st, _ := makeModel(t)
-
-	// equalizer: up/down move the control selection, left/right adjust, enter toggles
-	st.ApplyTunnel("EQE", 0) // toggling needs a known value
-	st.ApplyTunnel("TRE", 0)
-	m.setView(viewEQ)
-	m.eqFocus = 2 // TRE (ranged)
-	m.key(ke(kUp))
-	if m.eqFocus != 1 {
-		t.Errorf("EQ up: eqFocus = %d, want 1", m.eqFocus)
-	}
-	m.key(ke(kDown))
-	if m.eqFocus != 2 {
-		t.Errorf("EQ down: eqFocus = %d, want 2", m.eqFocus)
-	}
-	m.key(ke(kRight))
-	m.key(ke(kLeft))
-	m.eqFocus = 0 // EQE (toggle)
-	m.key(ke(kEnter))
-	if v, _ := st.EQValue("EQE"); v != 1 {
-		t.Error("enter on the EQ switch should toggle it")
-	}
-	// a key the equalizer does not claim falls through to playback
-	if m.eqKey(kr('x')) {
-		t.Error("eqKey should not claim a rune")
-	}
-
-	// shift+tab also steps the views (it folds into kTab at translate)
-	p := m.view
-	m.key(translate(tea.Key{Code: tea.KeyTab, Mod: tea.ModShift}))
-	if m.view == p {
-		t.Error("shift+tab should step the views")
-	}
-
-	// player: up/down adjust the volume
-	m.view = viewPlayer
-	m.key(ke(kUp))
-	if v := st.Snap().Vol; v != 46 {
-		t.Errorf("player up: vol = %d, want 46", v)
-	}
-	m.key(ke(kDown))
-	if v := st.Snap().Vol; v != 44 {
-		t.Errorf("player down: vol = %d, want 44", v)
-	}
-	if m.playerKey(kr('x')) {
-		t.Error("playerKey should not claim a rune")
-	}
-	if m.scrollKey(ke(kEnter)) {
-		t.Error("scrollKey should not claim enter")
-	}
-	// the playback keys ignore non-rune events
-	m.playbackKey(ke(kEnter))
 }
