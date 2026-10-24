@@ -90,7 +90,7 @@ deleted `adbd`, `telnetd` and `dropbear` (§9). The unauthenticated `:2018` tunn
 | Google Cast / Chromecast | `librecast` / `librecast_lite` | mDNS | **OFF** (`GoogleCast=false`, not running) |
 | Roon (RAAT) | `libreraat` + `roon_monitor` | dynamic | **OFF** (`RoonEnable=0`; not marketed) |
 | Tidal Connect | `tidalConnect` | dynamic | **OFF** (`TidalEnabled=0`, not running) |
-| Qobuz Connect | `qobuzConnect` | 8000 | **OFF** (`QobuzConnectEnabled=0`) |
+| Qobuz Connect | `qobuzConnect` | 8000 | **ON since the 2026-10-23 factory reset** (`QobuzConnectEnabled=1`; no switch without root, §8.5) |
 | Amazon Alexa (AVS) / Matter | env `AVSEnabled=0` / `MatterEnabled=0` | — | **OFF** |
 | QPlay (QQ Music) | env `QPlay_*` | — | provisioned (off) |
 | Airable / TuneIn radio + services | `UIframework` (`auth.airable.io`) | — | in-app browse (per-service login) |
@@ -320,6 +320,9 @@ into the syslog, secrets included — §10.4, §14.5.)*
   `ENV_systemENV(key TEXT PRIMARY KEY, value TEXT, dbit TEXT)`, 264 rows on 8530. Key names in Appendix A.
 - **Factory defaults:** `/factory/custom/factoryEnv.conf` — a libconfig list of `{ key = "…"; value = "…"; }`, shipped in
   the `factory_customer` squashfs and replaced by every OTA — with `/etc/custom/factoryEnv.conf` as the rootfs copy.
+  **The two differ on 8747** (bundle read 2026-10-23): `/factory/custom` sets `QobuzConnectEnabled 1`, `TidalEnabled 1`,
+  `DMRDisable 0`; the rootfs copy sets Qobuz and Tidal to `0`. A factory reset loads the `/factory/custom` one
+  (`env: Using /factory/custom/factoryEnv.conf as conf file`), so every reset turns Qobuz, Tidal and DMR on.
 - **First-boot snapshots, not backups:** `/lsync/env/env_bk.db` (230 rows) and `/lsync/env/factoryEnv_bk.conf` are
   written once, on the very first boot (`env: First boot` / `createUserDBFromFactoryCfg`), while the clock is still at
   the epoch — hence their 1969 mtimes. They record the *original* state and are only read back if the live DB is
@@ -827,8 +830,10 @@ Arylic markets **Spotify, AirPlay 2, Google Cast, Tidal, Qobuz, and DLNA/UPnP**;
 firmware also ships **Roon (RAAT), Alexa/AVS, Matter, and QPlay**. **Actually enabled on this
 unit right now** (env flag *and* a running daemon): **Spotify Connect, AirPlay 2, DLNA/UPnP,
 Bluetooth**. Installed but **off**: Google Cast (`GoogleCast=false`), Roon (`RoonEnable=0`),
-Tidal (`TidalEnabled=0`), Qobuz (`QobuzConnectEnabled=0`), Alexa (`AVSEnabled=0`), Matter
+Tidal (`TidalEnabled=0`), Alexa (`AVSEnabled=0`), Matter
 (`MatterEnabled=0`), QPlay, and USB playback (`USBEnable=0`) — all togglable via the app/web.
+Qobuz Connect was off too (`QobuzConnectEnabled=0`) until the 2026-10-23 factory reset turned it on; neither the app nor
+the web UI has a Qobuz switch (§8.5).
 
 ### 8.1 Spotify Connect
 
@@ -973,9 +978,12 @@ password (env `AirPlayHomeAccessControlEnabled`, `AirPlayAppleHomePassword`, `Ai
 `RoonOutputType=speakers`, `RoonMQACapabilities=none`, `RoonDOPEnable=0`.
 
 ### 8.5 Tidal / Qobuz Connect
-`tidalConnect` (**off**, `TidalEnabled=0`, not running) and `qobuzConnect` (**off**,
-`QobuzConnectEnabled=0`, port 8000, `QobuzConnect_AppId/AppSecret`). `rakoit_app` also speaks
-the Qobuz REST API for in-app browse.
+`tidalConnect` (**off**, `TidalEnabled=0`, not running) and `qobuzConnect` (port 8000,
+`QobuzConnect_AppId/AppSecret`; **off** with `QobuzConnectEnabled=0` until the 2026-10-23 factory reset, **on** since:
+tcp 8000 open, mDNS `_qobuz-connect._tcp` under the FriendlyName, `avahi-daemon` started with it). **No way back to off
+on 8747 without root:** `librewebserver` writes a fixed key list (`kFeatureAirplay`, `kFeatureDMR`, `kFeatureTidal`, …)
+with no `kFeatureQobuzConnect` and no generic setter, the web page has no Qobuz field, and the Arylic app has no switch.
+`rakoit_app` also speaks the Qobuz REST API for in-app browse.
 
 ### 8.6 Bluetooth
 **BlueZ 5.0** `bluetoothd` + **`bluealsa -p a2dp-source -p a2dp-sink -c SBC -c AAC`** → BT
@@ -1337,7 +1345,8 @@ fw/version).
 - **eth0 lease is dynamic** — discover via mDNS (`<device>.local`, or the `_spotify-connect._tcp` instance named after the
   FriendlyName) / LSSDP / the powerline MAC; don't hardcode. After a power cut a second DHCP server (likely the
   powerline unit) can hand out a different address for minutes (§7).
-- **Qobuz Connect intentionally OFF** — an OTA could flip `QobuzConnectEnabled`; re-check after
+- **Qobuz Connect was intentionally OFF** — a factory reset turns it on (the `/factory/custom` default is `1`, §5), and on
+  8747 nothing short of root turns it off again (§8.5). An OTA could also flip `QobuzConnectEnabled`; re-check after
   firmware updates.
 - **Both Spotify flags set = no Spotify at all** (§8.1) — the state an OTA's factory flip can leave behind; always write
   the pair.
@@ -1385,7 +1394,7 @@ differs**:
 | Optical out | up to 24-bit/192 kHz | ✓ SoC S/PDIF DAI → TOSLINK |
 | USB-A | flash playback (≤1000 songs / 16 GB) | ✓ host port |
 | USB-C | power **+ PC audio** | ✓ 5V/2A + RNDIS/ADB gadget (8747: no IP, no `adbd`); the "PC audio" UAC path wasn't separately confirmed (`snd_usb_audio` not loaded on 8530; 8747 loads it at boot) |
-| Streaming | Cast / AirPlay 2 / Tidal / Spotify / Qobuz / DLNA | all present; **enabled now: Spotify, AirPlay 2, DLNA, BT**. Cast/Tidal/Qobuz/Roon/Alexa/Matter/QPlay installed but **off** (env-gated) |
+| Streaming | Cast / AirPlay 2 / Tidal / Spotify / Qobuz / DLNA | all present; **enabled now: Spotify, AirPlay 2, DLNA, BT** (+ Qobuz since the 2026-10-23 reset, §8.5). Cast/Tidal/Roon/Alexa/Matter/QPlay installed but **off** (env-gated) |
 | Power | USB-C 5 V/2 A | ✓ |
 | In box | unit, manual, 3.5 mm aux cable, 2-to-1 RCA cable, PSU, USB-C cable, IR remote | — |
 
@@ -1704,7 +1713,8 @@ bridge re-sending the Spotify app's levels.
 - **Processes** — the 8747 list in §4: of the two Spotify engines, `spotifymusicpro` only; not running: `dropbear`,
   `telnetd`, `adbd`, `newspotifyhifi`, `qobuzConnect`, `tidalConnect`, `librecast_lite`.
 - **Env** (non-secret keys): `SpotifyEnabled 0`, `SpotifyProEnabled 1` — the 8530 both-at-1 trap did not recur: the
-  09-04 pin held through the OTA, and 8747's own defaults are `0/1` — `QobuzConnectEnabled 0`, `RoonEnable 0`,
+  09-04 pin held through the OTA, and 8747's own Spotify defaults are `0/1`. Live values (not reset defaults:
+  `/factory/custom` sets Qobuz to `1`, §5): `QobuzConnectEnabled 0`, `RoonEnable 0`,
   `SoundTrackEnabled 0`, `OtaStandbyUpdate 0`, `logpolicystate true`, `metrics_url` empty, `GCASTVersion
   1.68.cast_20240119_0202_RC07.599752810`.
 - **`io_handler`** — `Feature IO_handler is not Supported!!!` (env `iohandler` 0): inert.
