@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-26.04, macos-latest] # explicit Linux label: ubuntu-latest moved to 26.04 on 2026-10-19
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
